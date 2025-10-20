@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Read the README file
 this_directory = Path(__file__).parent
-long_description = (this_directory / "README.md").read_text() if (this_directory / "README.md").exists() else ""
+long_description = (this_directory / "README.md").read_text(encoding='utf-8') if (this_directory / "README.md").exists() else ""
 
 # Read requirements
 requirements = []
@@ -17,16 +17,16 @@ if (this_directory / "requirements.txt").exists():
 
 setup(
     name="campfirevalley",
-    version="0.1.0",
-    author="CampfireValley Team",
-    author_email="team@campfirevalley.dev",
-    description="A Python library for distributed AI agent communities using the valley metaphor",
+    version="1.0.0",
+    author="Mike Hibbert",
+    author_email="mike@hibbertitsolutions.co.uk",
+    description="A sophisticated multi-agent AI system for collaborative problem-solving through specialized AI campfires",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/campfirevalley/campfirevalley",
+    url="https://github.com/MikeHibbert/pyCamperValley",
     packages=find_packages(),
     classifiers=[
-        "Development Status :: 3 - Alpha",
+        "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
