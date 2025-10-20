@@ -1,0 +1,53 @@
+# Example Campfire Configuration (GitHub Actions job style)
+name: "helper-campfire"
+runs_on: "valley"
+
+# Environment variables
+env:
+  HELPER_TYPE: "general"
+  MAX_REQUESTS: "100"
+
+# Strategy matrix for multiple configurations
+strategy:
+  matrix:
+    helper_type: ["coding", "writing", "analysis"]
+
+# Steps similar to GitHub Actions/Ansible tasks
+steps:
+  - name: "Setup helper environment"
+    uses: "camper/loader@v1"
+    with:
+      rag_path: "./rag/helper_knowledge"
+      
+  - name: "Initialize helper camper"
+    uses: "camper/helper@v1"
+    with:
+      specialization: "${{ matrix.helper_type }}"
+      
+  - name: "Setup quality assurance"
+    uses: "camper/auditor@v1"
+    if: "${{ env.security_level == 'high' }}"
+    with:
+      audit_level: "strict"
+
+# Dependencies on other campfires
+needs: []
+
+# Conditional execution
+if: "${{ env.dock_mode != 'private' }}"
+
+# Outputs for other campfires to use
+outputs:
+  helper_endpoint: "${{ steps.initialize-helper.outputs.endpoint }}"
+  capabilities: "${{ steps.initialize-helper.outputs.capabilities }}"
+
+# Traditional campfire settings
+rag_paths:
+  - "./rag/general_knowledge"
+  - "./rag/helper_patterns"
+
+auditor_enabled: true
+
+channels:
+  - "help-requests"
+  - "general-chat"

@@ -1,0 +1,33 @@
+# Example Valley Configuration (GitHub Actions/Ansible style)
+name: "ExampleValley"
+version: "1.0"
+
+# Environment configuration
+env:
+  dock_mode: "public"          # public, partial, private
+  security_level: "standard"   # basic, standard, high
+  auto_create_dock: true
+
+# Campfire definitions (similar to GitHub Actions jobs)
+campfires:
+  visible: ["welcome", "helper"]
+  hidden: ["internal-audit"]
+
+# Dock setup steps (similar to Ansible tasks)
+dock:
+  steps:
+    - name: "Initialize gateway"
+      uses: "dock/gateway@v1"
+      with:
+        port: 6379
+        encryption: true
+    - name: "Setup discovery"
+      uses: "dock/discovery@v1"
+      if: "${{ env.dock_mode == 'public' }}"
+      with:
+        broadcast_interval: 30
+
+# Community configuration
+community:
+  discovery: true
+  trusted_valleys: ["FriendlyValley", "HelperValley"]
