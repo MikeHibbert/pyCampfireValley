@@ -1,0 +1,463 @@
+name: "problem-decomposer"
+type: "LLMCampfire"
+description: "Intelligent problem decomposition system that analyzes complex tasks and breaks them into manageable, prioritized subtasks"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.4
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "problem_decomposer"
+  expertise_areas:
+    - "Complex Problem Analysis"
+    - "Task Decomposition"
+    - "Dependency Mapping"
+    - "Priority Assessment"
+    - "Resource Estimation"
+    - "Risk Analysis"
+    - "Workflow Optimization"
+    - "Team Coordination"
+    - "Timeline Planning"
+    - "Quality Gate Definition"
+
+# Communication Channels
+channels:
+  - "problem-analysis"
+  - "task-planning"
+  - "project-coordination"
+  - "dev-team"
+  - "architecture"
+  - "resource-planning"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 3.0
+  max_concurrent: 3
+  
+  routing_rules:
+    - pattern: "decompose|break down|analyze|plan"
+      priority: "high"
+      auto_accept: true
+    - pattern: "complex|large|project|epic"
+      priority: "high"
+      auto_accept: true
+    - pattern: "estimate|timeline|resource|dependency"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "priority|rank|order|sequence"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "risk|challenge|blocker|constraint"
+      priority: "medium"
+      auto_accept: true
+
+# LLM Prompts
+prompts:
+  system: |
+    You are an expert problem decomposition specialist with deep expertise in:
+    - Breaking down complex problems into manageable components
+    - Identifying dependencies and critical path analysis
+    - Estimating effort, resources, and timelines accurately
+    - Risk assessment and mitigation planning
+    - Team coordination and workflow optimization
+    - Quality assurance and milestone definition
+    
+    You excel at taking ambiguous, complex requirements and transforming them
+    into clear, actionable task hierarchies with proper prioritization,
+    resource allocation, and risk management strategies.
+
+  problem_analysis: |
+    Analyze this complex problem/requirement:
+    
+    Problem Statement: {problem_description}
+    Business Context: {business_context}
+    Constraints: {constraints}
+    Success Criteria: {success_criteria}
+    Available Resources: {resources}
+    Timeline: {timeline}
+    
+    Provide comprehensive problem analysis including:
+    1. Problem Understanding and Scope
+       - Core problem definition and boundaries
+       - Stakeholder identification and needs
+       - Business value and impact assessment
+       - Success metrics and acceptance criteria
+       - Assumptions and dependencies identification
+    
+    2. Complexity Assessment
+       - Technical complexity evaluation
+       - Business logic complexity
+       - Integration complexity
+       - Data complexity and volume
+       - User experience complexity
+       - Regulatory and compliance complexity
+    
+    3. Risk and Challenge Identification
+       - Technical risks and unknowns
+       - Resource and timeline risks
+       - Integration and dependency risks
+       - Business and market risks
+       - Quality and performance risks
+       - Mitigation strategies for each risk
+    
+    4. Constraint Analysis
+       - Technical constraints and limitations
+       - Resource constraints (time, budget, people)
+       - Business constraints and requirements
+       - Regulatory and compliance constraints
+       - Legacy system constraints
+       - Performance and scalability constraints
+    
+    5. Solution Approach Recommendations
+       - High-level solution architecture
+       - Technology stack recommendations
+       - Implementation methodology suggestions
+       - Quality assurance approach
+       - Deployment and rollout strategy
+       - Monitoring and maintenance plan
+    
+    Provide detailed analysis with clear reasoning and recommendations.
+
+  task_decomposition: |
+    Decompose this problem into manageable tasks:
+    
+    Problem: {problem_statement}
+    Analysis Results: {analysis_results}
+    Team Composition: {team_details}
+    Methodology: {development_methodology}
+    
+    Create comprehensive task breakdown including:
+    1. Epic and Feature Level Breakdown
+       - Major feature identification
+       - Epic definition and scope
+       - Feature prioritization and sequencing
+       - Cross-cutting concerns identification
+       - Integration points mapping
+    
+    2. User Story and Task Creation
+       - Detailed user story definition
+       - Acceptance criteria specification
+       - Task breakdown for each story
+       - Subtask identification and sizing
+       - Definition of done criteria
+    
+    3. Technical Task Identification
+       - Infrastructure and setup tasks
+       - Architecture and design tasks
+       - Development and implementation tasks
+       - Testing and quality assurance tasks
+       - Documentation and knowledge transfer tasks
+       - Deployment and operations tasks
+    
+    4. Dependency Mapping
+       - Task dependency identification
+       - Critical path analysis
+       - Parallel execution opportunities
+       - Blocking dependency resolution
+       - Resource dependency management
+       - External dependency tracking
+    
+    5. Work Package Organization
+       - Sprint/iteration planning
+       - Team assignment recommendations
+       - Skill requirement mapping
+       - Workload balancing
+       - Milestone definition
+       - Quality gate placement
+    
+    Provide structured task hierarchy with clear relationships and sequencing.
+
+  effort_estimation: |
+    Estimate effort and resources for:
+    
+    Task Breakdown: {task_list}
+    Team Skills: {team_capabilities}
+    Historical Data: {historical_estimates}
+    Constraints: {project_constraints}
+    
+    Provide detailed effort estimation including:
+    1. Task-Level Estimation
+       - Individual task effort estimates
+       - Confidence intervals and uncertainty
+       - Skill level requirements
+       - Complexity factors consideration
+       - Historical data comparison
+    
+    2. Resource Requirements
+       - Developer skill mix needed
+       - Specialist expertise requirements
+       - Infrastructure and tool needs
+       - External service dependencies
+       - Training and knowledge transfer needs
+    
+    3. Timeline Projection
+       - Critical path timeline
+       - Parallel execution opportunities
+       - Buffer time recommendations
+       - Milestone and checkpoint timing
+       - Risk-adjusted timeline scenarios
+    
+    4. Capacity Planning
+       - Team utilization analysis
+       - Bottleneck identification
+       - Resource allocation optimization
+       - Scaling recommendations
+       - Contingency planning
+    
+    5. Cost Analysis
+       - Development cost estimation
+       - Infrastructure cost projection
+       - Third-party service costs
+       - Opportunity cost assessment
+       - ROI timeline analysis
+    
+    Provide detailed estimates with methodology and assumptions clearly stated.
+
+  priority_ranking: |
+    Rank and prioritize these tasks:
+    
+    Task List: {tasks}
+    Business Priorities: {business_priorities}
+    Technical Dependencies: {dependencies}
+    Resource Constraints: {constraints}
+    Risk Factors: {risks}
+    
+    Create comprehensive prioritization including:
+    1. Business Value Assessment
+       - Revenue impact potential
+       - Customer satisfaction impact
+       - Market competitive advantage
+       - Strategic alignment score
+       - Regulatory compliance urgency
+    
+    2. Technical Priority Factors
+       - Dependency criticality
+       - Technical risk level
+       - Architecture foundation needs
+       - Integration complexity
+       - Performance impact
+    
+    3. Resource and Timeline Considerations
+       - Resource availability alignment
+       - Skill requirement matching
+       - Timeline constraint impact
+       - Parallel execution potential
+       - Learning curve factors
+    
+    4. Risk-Adjusted Prioritization
+       - Risk probability and impact
+       - Mitigation effort requirements
+       - Uncertainty and unknowns
+       - Fallback option availability
+       - Sunk cost considerations
+    
+    5. Optimization Recommendations
+       - Optimal execution sequence
+       - Quick wins identification
+       - High-impact early deliverables
+       - Risk mitigation priorities
+       - Resource utilization optimization
+    
+    Provide ranked task list with clear justification for prioritization decisions.
+
+# Workflow Integration
+workflows:
+  problem_decomposition_process:
+    - action: "receive_problem_statement"
+    - action: "conduct_problem_analysis"
+      prompt: "problem_analysis"
+    - action: "decompose_into_tasks"
+      prompt: "task_decomposition"
+    - action: "estimate_effort_resources"
+      prompt: "effort_estimation"
+    - action: "prioritize_and_sequence"
+      prompt: "priority_ranking"
+    - action: "create_execution_plan"
+    - action: "identify_quality_gates"
+    - action: "document_decomposition"
+
+  iterative_refinement:
+    - action: "gather_feedback"
+    - action: "refine_task_breakdown"
+    - action: "update_estimates"
+    - action: "adjust_priorities"
+    - action: "optimize_sequence"
+    - action: "validate_with_stakeholders"
+
+  progress_monitoring:
+    - action: "track_task_completion"
+    - action: "monitor_estimate_accuracy"
+    - action: "identify_scope_changes"
+    - action: "adjust_remaining_plan"
+    - action: "update_risk_assessment"
+    - action: "communicate_status"
+
+  continuous_improvement:
+    - action: "analyze_estimation_accuracy"
+    - action: "identify_decomposition_patterns"
+    - action: "update_estimation_models"
+    - action: "refine_prioritization_criteria"
+    - action: "improve_risk_assessment"
+
+# Decomposition Strategies
+decomposition_strategies:
+  by_functionality:
+    description: "Break down by functional areas and features"
+    best_for: "Feature-rich applications"
+    approach: "Domain-driven decomposition"
+  
+  by_architecture:
+    description: "Break down by system components and layers"
+    best_for: "Complex system architectures"
+    approach: "Component-based decomposition"
+  
+  by_user_journey:
+    description: "Break down by user workflows and experiences"
+    best_for: "User-centric applications"
+    approach: "Journey-driven decomposition"
+  
+  by_risk_level:
+    description: "Break down by risk and uncertainty levels"
+    best_for: "High-risk or innovative projects"
+    approach: "Risk-driven decomposition"
+  
+  by_value_delivery:
+    description: "Break down by business value delivery"
+    best_for: "MVP and iterative development"
+    approach: "Value-driven decomposition"
+
+# Estimation Techniques
+estimation_techniques:
+  story_points:
+    description: "Relative sizing using story points"
+    accuracy: "medium"
+    best_for: "Agile teams with historical data"
+  
+  t_shirt_sizing:
+    description: "High-level sizing (XS, S, M, L, XL)"
+    accuracy: "low"
+    best_for: "Early planning and rough estimates"
+  
+  planning_poker:
+    description: "Team-based consensus estimation"
+    accuracy: "medium-high"
+    best_for: "Collaborative estimation sessions"
+  
+  three_point_estimation:
+    description: "Optimistic, pessimistic, most likely"
+    accuracy: "high"
+    best_for: "Detailed project planning"
+  
+  historical_analysis:
+    description: "Based on similar past projects"
+    accuracy: "high"
+    best_for: "Teams with extensive historical data"
+
+# Quality Gates and Checkpoints
+quality_gates:
+  decomposition_completeness: 0.90
+  dependency_coverage: 0.95
+  estimation_confidence: 0.80
+  risk_assessment_coverage: 0.85
+  
+  checkpoint_criteria:
+    - condition: "all_major_components_identified"
+      action: "proceed_to_detailed_breakdown"
+    - condition: "dependencies_mapped_and_validated"
+      action: "proceed_to_estimation"
+    - condition: "estimates_within_confidence_range"
+      action: "proceed_to_prioritization"
+    - condition: "priorities_aligned_with_business_goals"
+      action: "proceed_to_execution_planning"
+    - condition: "risks_identified_and_mitigated"
+      action: "approve_decomposition"
+
+# Metrics and Monitoring
+metrics:
+  track_decomposition_accuracy: true
+  track_estimation_accuracy: true
+  track_priority_effectiveness: true
+  track_risk_prediction: true
+  
+  performance_indicators:
+    - "decomposition_completeness_score"
+    - "estimation_accuracy_percentage"
+    - "priority_alignment_score"
+    - "risk_prediction_accuracy"
+    - "task_completion_rate"
+    - "scope_change_frequency"
+    - "stakeholder_satisfaction"
+    - "delivery_predictability"
+
+# Integration with Other Systems
+integration_points:
+  project_management:
+    - "Jira"
+    - "Azure DevOps"
+    - "Asana"
+    - "Monday.com"
+  
+  estimation_tools:
+    - "Planning Poker apps"
+    - "Estimation spreadsheets"
+    - "Historical data systems"
+    - "Analytics platforms"
+  
+  communication_tools:
+    - "Slack"
+    - "Microsoft Teams"
+    - "Confluence"
+    - "Notion"
+
+# Learning and Adaptation
+learning_system:
+  collect_feedback: true
+  analyze_outcomes: true
+  improve_models: true
+  
+  feedback_sources:
+    - "Project completion data"
+    - "Team retrospectives"
+    - "Stakeholder feedback"
+    - "Delivery metrics"
+  
+  adaptation_areas:
+    - "Estimation accuracy improvement"
+    - "Decomposition pattern refinement"
+    - "Risk assessment enhancement"
+    - "Priority framework optimization"
+    - "Quality gate effectiveness"
+
+# Templates and Frameworks
+templates:
+  epic_template:
+    sections:
+      - "Epic description and goals"
+      - "User personas and stories"
+      - "Acceptance criteria"
+      - "Technical requirements"
+      - "Dependencies and constraints"
+      - "Success metrics"
+  
+  task_template:
+    sections:
+      - "Task description and scope"
+      - "Acceptance criteria"
+      - "Technical approach"
+      - "Dependencies"
+      - "Effort estimate"
+      - "Risk factors"
+  
+  estimation_template:
+    sections:
+      - "Estimation methodology"
+      - "Assumptions and constraints"
+      - "Risk factors"
+      - "Confidence level"
+      - "Historical comparison"
+      - "Validation criteria"

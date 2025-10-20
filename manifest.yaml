@@ -1,0 +1,19 @@
+name: test-valley
+version: '1.0'
+env:
+  dock_mode: private
+  security_level: standard
+  auto_create_dock: false
+campfires:
+  visible: []
+  hidden: []
+dock:
+  steps:
+  - name: Initialize gateway
+    uses: dock/gateway@v1
+    with:
+      port: 6379
+      encryption: true
+community:
+  discovery: false
+  trusted_valleys: []

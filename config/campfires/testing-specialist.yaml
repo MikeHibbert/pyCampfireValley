@@ -1,0 +1,294 @@
+name: "testing-specialist"
+type: "LLMCampfire"
+description: "Testing specialist focused on quality assurance, test automation, and comprehensive testing strategies"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.2
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "testing_specialist"
+  expertise_areas:
+    - "Test Strategy & Planning"
+    - "Test Automation"
+    - "Quality Assurance"
+    - "Performance Testing"
+    - "Security Testing"
+    - "Regression Testing"
+    - "Test Coverage Analysis"
+    - "Bug Tracking & Management"
+    - "Continuous Testing"
+    - "Test Data Management"
+
+# Communication Channels
+channels:
+  - "dev-testing"
+  - "dev-team"
+  - "auditor-review"
+  - "quality-assurance"
+  - "bug-reports"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 2.5
+  max_concurrent: 5
+  
+  routing_rules:
+    - pattern: "test|testing|qa|quality|bug|defect"
+      priority: "high"
+      auto_accept: true
+    - pattern: "automation|selenium|cypress|playwright"
+      priority: "high"
+      auto_accept: true
+    - pattern: "performance|load|stress|benchmark"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "security|vulnerability|penetration"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "coverage|regression|integration"
+      priority: "medium"
+      auto_accept: true
+
+# LLM Prompts
+prompts:
+  system: |
+    You are a senior testing specialist and quality assurance expert with deep knowledge of:
+    - Comprehensive testing strategies and methodologies
+    - Test automation frameworks and tools
+    - Quality assurance processes and best practices
+    - Performance and security testing
+    - Risk-based testing approaches
+    - Continuous testing in CI/CD pipelines
+    
+    You focus on ensuring software quality, reliability, and user satisfaction through 
+    systematic testing approaches and proactive quality measures.
+
+  test_strategy: |
+    Create a comprehensive testing strategy for:
+    
+    Project: {project_description}
+    Requirements: {requirements}
+    Technology Stack: {tech_stack}
+    Timeline: {timeline}
+    
+    Develop strategy covering:
+    1. Test scope and objectives
+    2. Testing types and levels (unit, integration, system, acceptance)
+    3. Test automation strategy
+    4. Performance testing approach
+    5. Security testing requirements
+    6. Test environment setup
+    7. Test data management
+    8. Risk assessment and mitigation
+    9. Test execution timeline
+    10. Quality metrics and success criteria
+    11. Tools and frameworks selection
+    12. Resource requirements and team structure
+    
+    Provide detailed, actionable testing plan.
+
+  test_case_design: |
+    Design comprehensive test cases for:
+    
+    Feature: {feature_description}
+    Requirements: {requirements}
+    User Stories: {user_stories}
+    
+    Create test cases covering:
+    1. Functional test scenarios (positive and negative)
+    2. Boundary value analysis
+    3. Equivalence partitioning
+    4. Error handling and edge cases
+    5. User experience validation
+    6. Performance test scenarios
+    7. Security test cases
+    8. Accessibility testing
+    9. Cross-browser/platform compatibility
+    10. Integration test scenarios
+    
+    Format as structured test cases with clear steps, expected results, and priorities.
+
+  bug_analysis: |
+    Analyze this bug report and provide comprehensive assessment:
+    
+    Bug Report: {bug_description}
+    Steps to Reproduce: {reproduction_steps}
+    Environment: {environment_details}
+    
+    Provide analysis including:
+    1. Bug severity and priority classification
+    2. Root cause analysis
+    3. Impact assessment on system and users
+    4. Reproduction verification
+    5. Additional test scenarios to validate fix
+    6. Regression testing requirements
+    7. Prevention strategies for similar issues
+    8. Test case updates needed
+    9. Documentation requirements
+    10. Risk assessment for deployment
+    
+    Focus on thorough analysis and prevention strategies.
+
+  automation_strategy: |
+    Design test automation strategy for:
+    
+    Application: {application_details}
+    Current Testing: {current_state}
+    Goals: {automation_goals}
+    
+    Provide automation strategy covering:
+    1. Automation scope and priorities
+    2. Framework selection and architecture
+    3. Test case selection criteria
+    4. Implementation approach and phases
+    5. CI/CD integration strategy
+    6. Maintenance and scalability considerations
+    7. ROI analysis and metrics
+    8. Team training requirements
+    9. Risk mitigation strategies
+    10. Timeline and resource allocation
+
+# Workflow Integration
+workflows:
+  feature_testing:
+    - action: "analyze_requirements"
+      prompt: "test_strategy"
+    - action: "design_test_cases"
+      prompt: "test_case_design"
+    - action: "create_automation_plan"
+    - action: "execute_test_suite"
+    - action: "report_results"
+    - action: "update_test_documentation"
+
+  bug_investigation:
+    - action: "analyze_bug_report"
+      prompt: "bug_analysis"
+    - action: "reproduce_issue"
+    - action: "assess_impact"
+    - action: "design_regression_tests"
+    - action: "validate_fix"
+    - action: "update_test_suite"
+
+  automation_development:
+    - action: "assess_automation_feasibility"
+    - action: "design_automation_framework"
+      prompt: "automation_strategy"
+    - action: "implement_test_scripts"
+    - action: "integrate_with_ci_cd"
+    - action: "monitor_automation_health"
+
+  quality_review:
+    - action: "review_test_coverage"
+    - action: "analyze_quality_metrics"
+    - action: "identify_quality_gaps"
+    - action: "recommend_improvements"
+    - action: "update_quality_standards"
+
+# Quality Gates
+quality_gates:
+  test_coverage_threshold: 0.85
+  automation_coverage_threshold: 0.70
+  bug_escape_rate_threshold: 0.05
+  performance_threshold: true
+  security_threshold: true
+  
+  escalation_rules:
+    - condition: "test_coverage < 0.80"
+      action: "require_additional_testing"
+    - condition: "critical_bugs_found > 0"
+      action: "block_release"
+    - condition: "performance_degradation > 10%"
+      action: "require_performance_investigation"
+    - condition: "security_vulnerabilities_found > 0"
+      action: "require_security_review"
+    - condition: "automation_failure_rate > 0.15"
+      action: "require_automation_maintenance"
+
+# Metrics and Monitoring
+metrics:
+  track_test_execution: true
+  track_defect_detection: true
+  track_automation_health: true
+  track_quality_trends: true
+  
+  performance_indicators:
+    - "test_coverage_percentage"
+    - "automation_coverage_percentage"
+    - "defect_detection_rate"
+    - "test_execution_efficiency"
+    - "bug_escape_rate"
+    - "automation_roi"
+    - "quality_score_trend"
+    - "testing_velocity"
+
+# Testing Tools Configuration
+testing_tools:
+  unit_testing:
+    - "Jest"
+    - "JUnit"
+    - "pytest"
+    - "Mocha"
+  
+  integration_testing:
+    - "Postman"
+    - "REST Assured"
+    - "Supertest"
+    - "TestContainers"
+  
+  ui_automation:
+    - "Selenium WebDriver"
+    - "Cypress"
+    - "Playwright"
+    - "TestCafe"
+  
+  performance_testing:
+    - "JMeter"
+    - "k6"
+    - "Gatling"
+    - "Artillery"
+  
+  security_testing:
+    - "OWASP ZAP"
+    - "Burp Suite"
+    - "SonarQube"
+    - "Snyk"
+  
+  mobile_testing:
+    - "Appium"
+    - "Espresso"
+    - "XCUITest"
+    - "Detox"
+
+# Integration with Justice System
+justice_integration:
+  policy_compliance: true
+  auto_check_violations: true
+  violation_types:
+    - "quality_violation"
+    - "coverage_violation"
+    - "security_violation"
+    - "performance_violation"
+    - "compliance_violation"
+
+# Test Environment Configuration
+test_environments:
+  development:
+    auto_deploy: true
+    smoke_tests: true
+    integration_tests: true
+  
+  staging:
+    full_regression: true
+    performance_tests: true
+    security_scans: true
+  
+  production:
+    monitoring_tests: true
+    health_checks: true
+    rollback_tests: true

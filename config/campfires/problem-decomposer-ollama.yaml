@@ -1,0 +1,145 @@
+name: "problem-decomposer-ollama"
+type: "LLMCampfire"
+description: "Intelligent problem decomposition system using Ollama that analyzes complex tasks and breaks them into manageable, prioritized subtasks"
+
+# LLM Configuration - Using Ollama
+llm:
+  provider: "ollama"
+  base_url: "http://host.docker.internal:11434"
+  model: "gemma3:latest"
+  temperature: 0.4
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "problem_decomposer"
+  expertise_areas:
+    - "Complex Problem Analysis"
+    - "Task Decomposition"
+    - "Dependency Mapping"
+    - "Priority Assessment"
+    - "Resource Estimation"
+    - "Risk Analysis"
+    - "Workflow Optimization"
+    - "Team Coordination"
+    - "Timeline Planning"
+    - "Quality Gate Definition"
+
+# Communication Channels
+channels:
+  - "problem-analysis"
+  - "task-planning"
+  - "project-coordination"
+  - "dev-team"
+  - "architecture"
+  - "resource-planning"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 3.0
+  max_concurrent: 3
+  
+  routing_rules:
+    - pattern: "decompose|break down|analyze|plan"
+      priority: "high"
+      auto_accept: true
+    - pattern: "complex|large|project|epic"
+      priority: "high"
+      auto_accept: true
+    - pattern: "estimate|timeline|resource|dependency"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "requirements|specification|scope"
+      priority: "medium"
+      auto_accept: true
+
+# Ollama-specific Configuration
+ollama:
+  # Alternative models that can be used
+  alternative_models:
+    - "llama3.1"
+    - "codellama"
+    - "mistral"
+    - "qwen2.5"
+  
+  # Model switching based on task complexity
+  model_selection:
+    simple_tasks: "llama3.2"
+    complex_analysis: "llama3.1"
+    code_related: "codellama"
+    
+  # Performance tuning
+  performance:
+    num_ctx: 4096
+    num_predict: 2048
+    repeat_penalty: 1.1
+    top_k: 40
+    top_p: 0.9
+
+# Enhanced prompting for local models
+prompting:
+  system_prompt: |
+    You are an expert problem decomposer and project analyst. Your role is to:
+    1. Analyze complex problems and break them into manageable tasks
+    2. Identify dependencies between tasks
+    3. Estimate effort and timeline for each component
+    4. Assess risks and propose mitigation strategies
+    5. Create clear, actionable task descriptions
+    
+    Always provide structured, detailed responses with clear reasoning.
+    
+  task_templates:
+    decomposition: |
+      Please analyze the following problem and break it down into specific, actionable tasks:
+      
+      Problem: {problem_description}
+      
+      Provide:
+      1. Main components/phases
+      2. Specific tasks for each component
+      3. Dependencies between tasks
+      4. Estimated effort (hours/days)
+      5. Risk assessment
+      6. Recommended order of execution
+      
+    estimation: |
+      Please provide effort estimation for the following task:
+      
+      Task: {task_description}
+      Context: {context}
+      
+      Consider:
+      - Complexity level
+      - Required skills/expertise
+      - Potential blockers
+      - Testing requirements
+      - Documentation needs
+
+# Integration with CampfireValley
+integration:
+  torch_types:
+    - "problem_analysis"
+    - "task_decomposition"
+    - "project_planning"
+    - "effort_estimation"
+    - "risk_assessment"
+    
+  output_formats:
+    - "structured_json"
+    - "markdown_report"
+    - "task_list"
+    - "dependency_graph"
+
+# Monitoring and Metrics
+monitoring:
+  track_metrics:
+    - "decomposition_accuracy"
+    - "estimation_precision"
+    - "task_completion_rate"
+    - "dependency_prediction_success"
+    
+  quality_gates:
+    min_task_detail_score: 0.8
+    max_decomposition_depth: 4
+    required_estimation_confidence: 0.7

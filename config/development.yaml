@@ -1,0 +1,85 @@
+# Development Environment Configuration
+# Overrides for development environment
+
+# Valley Configuration
+valley:
+  max_campfires: 10
+  enable_monitoring: true
+  
+  network:
+    port: 8080
+    max_connections: 100
+    
+  security:
+    require_authentication: false
+    max_failed_attempts: 10
+
+# Campfire Configuration
+campfire:
+  default_capacity: 10
+  processing_timeout: 5
+  enable_caching: false
+
+# VALI Services Configuration
+vali:
+  timeout: 2
+  retry_attempts: 1
+  
+  services:
+    sanitizer:
+      endpoint: "http://localhost:8081/sanitize"
+      timeout: 1
+      
+    validator:
+      endpoint: "http://localhost:8082/validate"
+      timeout: 2
+      
+    scanner:
+      endpoint: "http://localhost:8083/scan"
+      timeout: 3
+
+# Justice System Configuration
+justice:
+  enforcement_mode: "warn"
+  
+  policies:
+    - name: "rate_limiting"
+      max_requests_per_minute: 1000  # Very permissive for development
+
+# Monitoring Configuration
+monitoring:
+  metrics_retention: 3600  # 1 hour
+  alert_threshold: 0.5
+  
+  logging:
+    level: "DEBUG"
+    output: "console"
+    
+  performance:
+    track_response_times: true
+    track_memory_usage: true
+    track_cpu_usage: false
+
+# Storage Configuration
+storage:
+  party_box:
+    max_size: 1073741824  # 1GB
+    compression_enabled: false
+    encryption_enabled: false
+    
+  cache:
+    max_size: 104857600  # 100MB
+    ttl: 300
+
+# Development Settings
+development:
+  debug_mode: true
+  hot_reload: true
+  mock_services: true
+  log_requests: true
+  
+  # Mock service endpoints
+  mock_endpoints:
+    sanitizer: "http://localhost:9001/mock/sanitize"
+    validator: "http://localhost:9002/mock/validate"
+    scanner: "http://localhost:9003/mock/scan"

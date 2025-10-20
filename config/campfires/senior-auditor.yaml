@@ -1,0 +1,440 @@
+name: "senior-auditor"
+type: "LLMCampfire"
+description: "Senior auditor responsible for comprehensive code reviews, compliance checks, and approval workflows"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.1
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "senior_auditor"
+  auditor_level: "senior"
+  expertise_areas:
+    - "Code Quality Assessment"
+    - "Security Vulnerability Analysis"
+    - "Performance Impact Review"
+    - "Compliance Verification"
+    - "Architecture Review"
+    - "Risk Assessment"
+    - "Best Practices Enforcement"
+    - "Documentation Review"
+    - "Change Impact Analysis"
+    - "Regulatory Compliance"
+
+# Communication Channels
+channels:
+  - "auditor-review"
+  - "compliance"
+  - "security-review"
+  - "architecture-review"
+  - "quality-assurance"
+  - "risk-management"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: false  # Manual review required for auditor
+  response_delay: 5.0
+  max_concurrent: 3
+  
+  routing_rules:
+    - pattern: "review|audit|approve|compliance"
+      priority: "high"
+      auto_accept: true
+    - pattern: "security|vulnerability|risk"
+      priority: "critical"
+      auto_accept: true
+    - pattern: "architecture|design|pattern"
+      priority: "high"
+      auto_accept: true
+    - pattern: "performance|optimization|scalability"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "documentation|standards|policy"
+      priority: "medium"
+      auto_accept: true
+
+# LLM Prompts
+prompts:
+  system: |
+    You are a senior auditor and compliance expert with extensive experience in:
+    - Comprehensive code quality assessment and security analysis
+    - Regulatory compliance and industry standards enforcement
+    - Risk assessment and mitigation strategies
+    - Architecture review and design pattern evaluation
+    - Performance impact analysis and optimization recommendations
+    - Documentation standards and best practices enforcement
+    
+    You maintain high standards for code quality, security, and compliance while 
+    providing constructive feedback to development teams. Your reviews are thorough,
+    objective, and focused on long-term system health and maintainability.
+
+  code_review: |
+    Conduct comprehensive code review for:
+    
+    Submission: {code_submission}
+    Author: {author}
+    Purpose: {change_purpose}
+    Files Changed: {changed_files}
+    
+    Perform detailed analysis covering:
+    1. Code Quality Assessment
+       - Code structure and organization
+       - Naming conventions and readability
+       - Error handling and edge cases
+       - Code complexity and maintainability
+       - Design patterns and best practices
+    
+    2. Security Analysis
+       - Input validation and sanitization
+       - Authentication and authorization
+       - Data encryption and protection
+       - SQL injection and XSS vulnerabilities
+       - Dependency security assessment
+    
+    3. Performance Impact
+       - Algorithm efficiency and complexity
+       - Database query optimization
+       - Memory usage and resource management
+       - Caching strategies and implementation
+       - Scalability considerations
+    
+    4. Compliance Verification
+       - Coding standards adherence
+       - Documentation requirements
+       - Regulatory compliance (GDPR, SOX, etc.)
+       - Industry best practices
+       - Internal policy compliance
+    
+    5. Risk Assessment
+       - Change impact analysis
+       - Potential failure points
+       - Rollback considerations
+       - Testing coverage adequacy
+       - Deployment risk evaluation
+    
+    Provide detailed findings with severity levels, specific recommendations, 
+    and approval/rejection decision with clear justification.
+
+  architecture_review: |
+    Review architectural design for:
+    
+    Design Document: {architecture_doc}
+    System: {system_name}
+    Scope: {review_scope}
+    Stakeholders: {stakeholders}
+    
+    Conduct comprehensive architectural review including:
+    1. Design Principles Evaluation
+       - SOLID principles adherence
+       - Separation of concerns
+       - Modularity and cohesion
+       - Scalability and extensibility
+       - Maintainability considerations
+    
+    2. Technical Architecture Assessment
+       - Component design and interactions
+       - Data flow and processing patterns
+       - Integration points and APIs
+       - Technology stack appropriateness
+       - Performance and scalability design
+    
+    3. Security Architecture Review
+       - Security by design principles
+       - Authentication and authorization flows
+       - Data protection and encryption
+       - Network security considerations
+       - Threat modeling and mitigation
+    
+    4. Operational Considerations
+       - Monitoring and observability
+       - Deployment and rollback strategies
+       - Disaster recovery and backup
+       - Maintenance and support requirements
+       - Cost implications and optimization
+    
+    5. Compliance and Standards
+       - Industry standards compliance
+       - Regulatory requirements adherence
+       - Internal architecture guidelines
+       - Documentation completeness
+       - Change management processes
+    
+    Provide detailed assessment with recommendations, risk analysis, 
+    and approval decision with conditions if applicable.
+
+  compliance_audit: |
+    Conduct compliance audit for:
+    
+    System/Process: {audit_target}
+    Compliance Framework: {framework}
+    Audit Scope: {scope}
+    Previous Findings: {previous_audit}
+    
+    Perform comprehensive compliance assessment:
+    1. Regulatory Compliance Check
+       - GDPR data protection requirements
+       - SOX financial controls
+       - HIPAA healthcare privacy
+       - PCI DSS payment security
+       - Industry-specific regulations
+    
+    2. Security Standards Verification
+       - ISO 27001 information security
+       - NIST cybersecurity framework
+       - OWASP security guidelines
+       - CIS security controls
+       - Company security policies
+    
+    3. Quality Standards Assessment
+       - ISO 9001 quality management
+       - CMMI process maturity
+       - Agile/DevOps best practices
+       - Code quality standards
+       - Documentation standards
+    
+    4. Operational Compliance
+       - Change management procedures
+       - Incident response processes
+       - Backup and recovery procedures
+       - Access control management
+       - Audit trail maintenance
+    
+    5. Risk and Control Assessment
+       - Control effectiveness evaluation
+       - Risk mitigation adequacy
+       - Monitoring and alerting systems
+       - Compliance monitoring processes
+       - Corrective action tracking
+    
+    Provide detailed compliance report with findings, gaps, 
+    recommendations, and remediation timeline.
+
+  risk_assessment: |
+    Conduct risk assessment for:
+    
+    Change/Project: {assessment_target}
+    Business Context: {business_context}
+    Technical Details: {technical_details}
+    Timeline: {timeline}
+    
+    Perform comprehensive risk analysis:
+    1. Technical Risk Assessment
+       - Implementation complexity risks
+       - Technology and dependency risks
+       - Performance and scalability risks
+       - Security and vulnerability risks
+       - Integration and compatibility risks
+    
+    2. Business Risk Evaluation
+       - Business continuity impact
+       - Customer experience risks
+       - Revenue and cost implications
+       - Competitive advantage risks
+       - Regulatory and compliance risks
+    
+    3. Operational Risk Analysis
+       - Deployment and rollback risks
+       - Support and maintenance risks
+       - Resource and capacity risks
+       - Process and workflow risks
+       - Knowledge and skill gaps
+    
+    4. Risk Mitigation Strategies
+       - Risk prevention measures
+       - Risk reduction techniques
+       - Risk transfer options
+       - Contingency planning
+       - Monitoring and early warning
+    
+    5. Risk Monitoring Plan
+       - Key risk indicators
+       - Monitoring frequency and methods
+       - Escalation procedures
+       - Review and update processes
+       - Communication protocols
+    
+    Provide detailed risk register with probability, impact, 
+    mitigation strategies, and monitoring recommendations.
+
+# Workflow Integration
+workflows:
+  code_review_process:
+    - action: "receive_review_request"
+    - action: "analyze_code_changes"
+      prompt: "code_review"
+    - action: "check_compliance_requirements"
+    - action: "assess_security_implications"
+    - action: "evaluate_performance_impact"
+    - action: "provide_review_decision"
+    - action: "document_findings"
+    - action: "track_remediation"
+
+  architecture_review_process:
+    - action: "receive_architecture_submission"
+    - action: "review_design_documents"
+      prompt: "architecture_review"
+    - action: "validate_compliance_requirements"
+    - action: "assess_technical_feasibility"
+    - action: "evaluate_risk_factors"
+    - action: "provide_architecture_approval"
+    - action: "document_review_findings"
+
+  compliance_audit_process:
+    - action: "initiate_compliance_audit"
+    - action: "conduct_compliance_assessment"
+      prompt: "compliance_audit"
+    - action: "identify_compliance_gaps"
+    - action: "assess_risk_levels"
+    - action: "develop_remediation_plan"
+    - action: "track_compliance_improvements"
+    - action: "generate_audit_report"
+
+  risk_assessment_process:
+    - action: "receive_risk_assessment_request"
+    - action: "analyze_risk_factors"
+      prompt: "risk_assessment"
+    - action: "evaluate_impact_probability"
+    - action: "develop_mitigation_strategies"
+    - action: "create_monitoring_plan"
+    - action: "document_risk_register"
+    - action: "schedule_risk_reviews"
+
+# Approval Authority
+approval_authority:
+  code_changes:
+    max_risk_level: "high"
+    requires_justification: true
+    can_override: false
+  
+  architecture_decisions:
+    max_risk_level: "critical"
+    requires_justification: true
+    can_override: true
+  
+  compliance_exceptions:
+    max_risk_level: "medium"
+    requires_justification: true
+    can_override: false
+  
+  security_approvals:
+    max_risk_level: "critical"
+    requires_justification: true
+    can_override: false
+
+# Quality Gates
+quality_gates:
+  code_quality_threshold: 0.85
+  security_score_threshold: 0.90
+  compliance_score_threshold: 0.95
+  documentation_completeness: 0.80
+  
+  escalation_rules:
+    - condition: "critical_security_vulnerability"
+      action: "immediate_rejection"
+    - condition: "compliance_violation"
+      action: "require_remediation"
+    - condition: "high_risk_change"
+      action: "require_additional_review"
+    - condition: "insufficient_documentation"
+      action: "request_documentation_update"
+    - condition: "performance_degradation_risk"
+      action: "require_performance_testing"
+
+# Metrics and Monitoring
+metrics:
+  track_review_quality: true
+  track_approval_accuracy: true
+  track_compliance_trends: true
+  track_risk_predictions: true
+  
+  performance_indicators:
+    - "review_completion_time"
+    - "approval_accuracy_rate"
+    - "compliance_score_trends"
+    - "risk_prediction_accuracy"
+    - "finding_resolution_rate"
+    - "audit_coverage_percentage"
+    - "security_incident_prevention"
+    - "quality_improvement_trends"
+
+# Review Criteria Configuration
+review_criteria:
+  code_quality:
+    weight: 0.25
+    factors:
+      - "readability"
+      - "maintainability"
+      - "complexity"
+      - "test_coverage"
+      - "documentation"
+  
+  security:
+    weight: 0.30
+    factors:
+      - "vulnerability_assessment"
+      - "authentication_authorization"
+      - "data_protection"
+      - "input_validation"
+      - "dependency_security"
+  
+  performance:
+    weight: 0.20
+    factors:
+      - "algorithm_efficiency"
+      - "resource_usage"
+      - "scalability"
+      - "caching_strategy"
+      - "database_optimization"
+  
+  compliance:
+    weight: 0.25
+    factors:
+      - "regulatory_compliance"
+      - "coding_standards"
+      - "documentation_standards"
+      - "process_compliance"
+      - "audit_trail"
+
+# Integration with Justice System
+justice_integration:
+  policy_enforcement: true
+  violation_reporting: true
+  auto_escalation: true
+  
+  violation_types:
+    - "security_policy_violation"
+    - "compliance_violation"
+    - "quality_standard_violation"
+    - "process_violation"
+    - "documentation_violation"
+  
+  escalation_matrix:
+    - level: "warning"
+      action: "notify_author"
+    - level: "minor"
+      action: "require_fix"
+    - level: "major"
+      action: "block_deployment"
+    - level: "critical"
+      action: "immediate_escalation"
+
+# Audit Trail Configuration
+audit_trail:
+  log_all_reviews: true
+  track_decisions: true
+  maintain_evidence: true
+  retention_period: "7_years"
+  
+  logged_activities:
+    - "review_requests"
+    - "review_decisions"
+    - "approval_actions"
+    - "compliance_checks"
+    - "risk_assessments"
+    - "policy_violations"
+    - "escalations"
+    - "remediation_tracking"

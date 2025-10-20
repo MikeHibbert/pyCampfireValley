@@ -103,6 +103,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
 .venv
 env/
 venv/
@@ -135,10 +136,15 @@ dmypy.json
 .valley_config/
 logs/
 temp/
+reports/
+*_report_*.json
+*_report_*.html
+simplified_marketing_report_*.json
 
 # IDE
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
 *~
@@ -146,3 +152,6 @@ temp/
 # OS
 .DS_Store
 Thumbs.db
+
+*party_box*
+*.kiro*

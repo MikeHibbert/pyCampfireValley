@@ -1,9 +1,30 @@
 # Core dependencies for CampfireValley library
+# Base campfires framework
+campfires>=0.4.0
+
+# Core dependencies
 pydantic>=2.0.0
 PyYAML>=6.0
 redis>=4.5.0
 cryptography>=41.0.0
+aiofiles>=23.0.0
+
+# Enterprise features dependencies
+prometheus-client>=0.17.0  # For metrics collection
+structlog>=23.0.0         # For structured logging
+jsonschema>=4.17.0        # For configuration validation
+click>=8.1.0              # For CLI interface
 
 # Optional dependencies for enhanced functionality
-asyncio-mqtt>=0.13.0  # For MQTT support as alternative to Redis
-aiofiles>=23.0.0      # For async file operations
+asyncio-mqtt>=0.13.0      # For MQTT support as alternative to Redis
+psycopg2-binary>=2.9.0    # For PostgreSQL support
+elasticsearch>=8.0.0      # For log aggregation
+grafana-api>=1.0.3        # For dashboard integration
+
+# Development dependencies (optional)
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0

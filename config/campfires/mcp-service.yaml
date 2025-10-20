@@ -1,0 +1,524 @@
+name: "mcp-service"
+type: "LLMCampfire"
+description: "Model Context Protocol (MCP) service interface for external system integration and tool orchestration"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.3
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "mcp_service_coordinator"
+  expertise_areas:
+    - "External System Integration"
+    - "API Gateway Management"
+    - "Protocol Translation"
+    - "Service Orchestration"
+    - "Data Transformation"
+    - "Authentication & Authorization"
+    - "Error Handling & Retry Logic"
+    - "Monitoring & Observability"
+    - "Rate Limiting & Throttling"
+    - "Security & Compliance"
+
+# Communication Channels
+channels:
+  - "mcp-integration"
+  - "external-services"
+  - "api-gateway"
+  - "service-mesh"
+  - "data-pipeline"
+  - "monitoring"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 1.5
+  max_concurrent: 10
+  
+  routing_rules:
+    - pattern: "mcp|integration|external|api"
+      priority: "high"
+      auto_accept: true
+    - pattern: "service|endpoint|webhook|callback"
+      priority: "high"
+      auto_accept: true
+    - pattern: "auth|security|token|credential"
+      priority: "high"
+      auto_accept: true
+    - pattern: "transform|map|convert|translate"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "monitor|health|status|metric"
+      priority: "medium"
+      auto_accept: true
+
+# MCP Service Configuration
+mcp_config:
+  protocol_version: "2024-11-05"
+  server_info:
+    name: "CampfireValley MCP Service"
+    version: "1.0.0"
+    description: "MCP service for external system integration"
+  
+  capabilities:
+    tools: true
+    resources: true
+    prompts: true
+    logging: true
+    sampling: true
+  
+  transport:
+    type: "stdio"
+    encoding: "utf-8"
+    buffer_size: 8192
+
+# External Service Integrations
+external_services:
+  github:
+    type: "git_repository"
+    base_url: "https://api.github.com"
+    auth_type: "token"
+    rate_limit: 5000
+    capabilities:
+      - "repository_management"
+      - "issue_tracking"
+      - "pull_requests"
+      - "code_search"
+      - "webhooks"
+  
+  jira:
+    type: "project_management"
+    base_url: "https://{domain}.atlassian.net"
+    auth_type: "oauth2"
+    rate_limit: 1000
+    capabilities:
+      - "issue_management"
+      - "project_tracking"
+      - "workflow_automation"
+      - "reporting"
+      - "webhooks"
+  
+  slack:
+    type: "communication"
+    base_url: "https://slack.com/api"
+    auth_type: "oauth2"
+    rate_limit: 100
+    capabilities:
+      - "messaging"
+      - "channel_management"
+      - "file_sharing"
+      - "notifications"
+      - "bot_interactions"
+  
+  aws:
+    type: "cloud_platform"
+    base_url: "https://{service}.{region}.amazonaws.com"
+    auth_type: "iam_role"
+    rate_limit: 10000
+    capabilities:
+      - "compute_management"
+      - "storage_operations"
+      - "database_access"
+      - "monitoring"
+      - "security_services"
+  
+  database:
+    type: "data_storage"
+    connection_type: "postgresql"
+    auth_type: "credentials"
+    pool_size: 20
+    capabilities:
+      - "data_queries"
+      - "data_mutations"
+      - "schema_management"
+      - "backup_restore"
+      - "performance_monitoring"
+
+# LLM Prompts
+prompts:
+  system: |
+    You are an MCP (Model Context Protocol) service coordinator responsible for:
+    - Managing external system integrations and API communications
+    - Orchestrating service calls and data transformations
+    - Handling authentication, authorization, and security protocols
+    - Monitoring service health and performance metrics
+    - Implementing error handling and retry mechanisms
+    - Ensuring compliance with rate limits and service agreements
+    
+    You excel at translating between different protocols, managing complex
+    integration workflows, and maintaining reliable communication channels
+    with external services while ensuring security and performance.
+
+  integration_request: |
+    Handle integration request for:
+    
+    Service: {service_name}
+    Operation: {operation_type}
+    Parameters: {request_parameters}
+    Context: {integration_context}
+    
+    Process integration request including:
+    1. Request Validation and Preparation
+       - Parameter validation and sanitization
+       - Authentication token verification
+       - Rate limit checking and queuing
+       - Request format transformation
+       - Security policy compliance
+    
+    2. Service Communication
+       - Endpoint selection and routing
+       - Protocol translation (REST, GraphQL, gRPC)
+       - Request serialization and encoding
+       - Connection management and pooling
+       - Timeout and retry configuration
+    
+    3. Response Processing
+       - Response validation and parsing
+       - Data transformation and mapping
+       - Error detection and classification
+       - Status code interpretation
+       - Response caching if applicable
+    
+    4. Error Handling
+       - Error categorization and severity
+       - Retry logic and backoff strategies
+       - Fallback mechanism activation
+       - Error logging and alerting
+       - Circuit breaker pattern implementation
+    
+    5. Monitoring and Logging
+       - Performance metrics collection
+       - Request/response logging
+       - Health check execution
+       - SLA compliance monitoring
+       - Audit trail maintenance
+    
+    Provide detailed integration execution plan with error handling strategies.
+
+  service_orchestration: |
+    Orchestrate multi-service workflow:
+    
+    Workflow: {workflow_description}
+    Services: {involved_services}
+    Dependencies: {service_dependencies}
+    Requirements: {workflow_requirements}
+    
+    Design service orchestration including:
+    1. Workflow Analysis and Planning
+       - Service dependency mapping
+       - Execution sequence optimization
+       - Parallel execution opportunities
+       - Critical path identification
+       - Resource requirement assessment
+    
+    2. Transaction Management
+       - Distributed transaction coordination
+       - Saga pattern implementation
+       - Compensation action definition
+       - Rollback strategy planning
+       - Consistency guarantee mechanisms
+    
+    3. Data Flow Management
+       - Data transformation pipelines
+       - Schema mapping and validation
+       - Data quality checks
+       - Temporary data storage
+       - Data lineage tracking
+    
+    4. Service Coordination
+       - Service discovery and routing
+       - Load balancing strategies
+       - Health check integration
+       - Failover and recovery procedures
+       - Service mesh integration
+    
+    5. Monitoring and Observability
+       - End-to-end tracing
+       - Performance monitoring
+       - Business metric tracking
+       - Alert and notification setup
+       - Dashboard and reporting
+    
+    Provide comprehensive orchestration plan with monitoring and recovery strategies.
+
+  api_gateway_config: |
+    Configure API gateway for:
+    
+    Services: {backend_services}
+    Requirements: {gateway_requirements}
+    Security: {security_requirements}
+    Performance: {performance_targets}
+    
+    Design API gateway configuration including:
+    1. Routing and Load Balancing
+       - Route definition and matching
+       - Load balancing algorithms
+       - Health check configuration
+       - Failover and circuit breaker setup
+       - Geographic routing strategies
+    
+    2. Security Implementation
+       - Authentication mechanisms (JWT, OAuth2, API keys)
+       - Authorization policies and RBAC
+       - Rate limiting and throttling
+       - IP whitelisting and blacklisting
+       - SSL/TLS termination and encryption
+    
+    3. Request/Response Processing
+       - Request validation and transformation
+       - Response caching and compression
+       - Header manipulation and injection
+       - Protocol translation (HTTP/gRPC/WebSocket)
+       - Content negotiation handling
+    
+    4. Monitoring and Analytics
+       - Request/response logging
+       - Performance metrics collection
+       - Error tracking and alerting
+       - Usage analytics and reporting
+       - SLA monitoring and enforcement
+    
+    5. Developer Experience
+       - API documentation generation
+       - Testing and debugging tools
+       - SDK and client library support
+       - Versioning and deprecation management
+       - Developer portal integration
+    
+    Provide detailed gateway configuration with security and performance optimizations.
+
+  data_transformation: |
+    Design data transformation for:
+    
+    Source System: {source_system}
+    Target System: {target_system}
+    Data Types: {data_types}
+    Transformation Rules: {transformation_rules}
+    
+    Create data transformation pipeline including:
+    1. Data Mapping and Schema Translation
+       - Field mapping and type conversion
+       - Schema validation and compatibility
+       - Default value handling
+       - Null value processing
+       - Data format standardization
+    
+    2. Transformation Logic
+       - Business rule implementation
+       - Data enrichment and augmentation
+       - Calculated field generation
+       - Data aggregation and summarization
+       - Conditional transformation logic
+    
+    3. Data Quality and Validation
+       - Data quality checks and rules
+       - Validation error handling
+       - Data cleansing and normalization
+       - Duplicate detection and resolution
+       - Referential integrity verification
+    
+    4. Performance Optimization
+       - Batch processing strategies
+       - Streaming transformation setup
+       - Memory usage optimization
+       - Parallel processing implementation
+       - Caching and memoization
+    
+    5. Error Handling and Recovery
+       - Error detection and classification
+       - Dead letter queue management
+       - Retry mechanisms and backoff
+       - Data recovery procedures
+       - Audit trail and lineage tracking
+    
+    Provide comprehensive transformation design with quality assurance and monitoring.
+
+# Workflow Integration
+workflows:
+  external_integration:
+    - action: "receive_integration_request"
+    - action: "validate_request_parameters"
+    - action: "authenticate_and_authorize"
+    - action: "execute_integration"
+      prompt: "integration_request"
+    - action: "process_response"
+    - action: "handle_errors_if_any"
+    - action: "log_and_monitor"
+
+  service_orchestration:
+    - action: "analyze_workflow_requirements"
+    - action: "plan_service_execution"
+      prompt: "service_orchestration"
+    - action: "coordinate_service_calls"
+    - action: "manage_data_flow"
+    - action: "handle_failures_and_recovery"
+    - action: "monitor_workflow_health"
+
+  api_gateway_management:
+    - action: "configure_gateway_routes"
+      prompt: "api_gateway_config"
+    - action: "implement_security_policies"
+    - action: "setup_monitoring_and_alerts"
+    - action: "test_gateway_functionality"
+    - action: "deploy_and_activate"
+    - action: "monitor_gateway_performance"
+
+  data_pipeline_management:
+    - action: "design_transformation_logic"
+      prompt: "data_transformation"
+    - action: "implement_data_pipeline"
+    - action: "validate_data_quality"
+    - action: "deploy_pipeline"
+    - action: "monitor_data_flow"
+    - action: "handle_data_issues"
+
+# Security Configuration
+security:
+  authentication:
+    methods:
+      - "oauth2"
+      - "jwt_tokens"
+      - "api_keys"
+      - "mutual_tls"
+      - "iam_roles"
+    
+    token_management:
+      refresh_threshold: 300  # seconds
+      cache_duration: 3600    # seconds
+      rotation_policy: "automatic"
+  
+  authorization:
+    rbac_enabled: true
+    policy_engine: "opa"
+    permission_caching: true
+    audit_logging: true
+  
+  encryption:
+    in_transit: "tls_1_3"
+    at_rest: "aes_256"
+    key_management: "vault"
+    certificate_rotation: "automatic"
+
+# Performance Configuration
+performance:
+  connection_pooling:
+    max_connections: 100
+    idle_timeout: 300
+    connection_lifetime: 3600
+  
+  caching:
+    enabled: true
+    ttl: 300
+    max_size: "100MB"
+    eviction_policy: "lru"
+  
+  rate_limiting:
+    requests_per_second: 1000
+    burst_capacity: 2000
+    sliding_window: true
+  
+  circuit_breaker:
+    failure_threshold: 5
+    timeout: 60
+    half_open_max_calls: 3
+
+# Monitoring and Observability
+monitoring:
+  metrics:
+    - "request_count"
+    - "response_time"
+    - "error_rate"
+    - "throughput"
+    - "connection_pool_usage"
+    - "cache_hit_ratio"
+    - "circuit_breaker_state"
+  
+  health_checks:
+    interval: 30  # seconds
+    timeout: 10   # seconds
+    retries: 3
+    endpoints:
+      - "/health"
+      - "/ready"
+      - "/metrics"
+  
+  alerting:
+    error_rate_threshold: 0.05
+    response_time_threshold: 5000  # milliseconds
+    availability_threshold: 0.99
+    notification_channels:
+      - "slack"
+      - "email"
+      - "pagerduty"
+
+# Integration with Justice System
+justice_integration:
+  policy_compliance: true
+  audit_logging: true
+  violation_detection: true
+  
+  compliance_checks:
+    - "data_privacy_compliance"
+    - "security_policy_adherence"
+    - "rate_limit_compliance"
+    - "authentication_requirements"
+    - "audit_trail_completeness"
+
+# Service Registry
+service_registry:
+  discovery_mechanism: "consul"
+  health_check_integration: true
+  load_balancing: "round_robin"
+  service_versioning: true
+  
+  registered_services:
+    - name: "github-api"
+      version: "v1"
+      endpoints: ["https://api.github.com"]
+      health_check: "/status"
+    
+    - name: "jira-api"
+      version: "v2"
+      endpoints: ["https://{tenant}.atlassian.net"]
+      health_check: "/rest/api/2/serverInfo"
+    
+    - name: "slack-api"
+      version: "v1"
+      endpoints: ["https://slack.com/api"]
+      health_check: "/api.test"
+
+# Error Handling Strategies
+error_handling:
+  retry_policies:
+    exponential_backoff:
+      initial_delay: 1000  # milliseconds
+      max_delay: 30000     # milliseconds
+      multiplier: 2
+      max_retries: 5
+    
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_timeout: 60000  # milliseconds
+      half_open_max_calls: 3
+  
+  fallback_strategies:
+    - "cached_response"
+    - "default_response"
+    - "alternative_service"
+    - "graceful_degradation"
+  
+  error_classification:
+    transient_errors:
+      - "network_timeout"
+      - "service_unavailable"
+      - "rate_limit_exceeded"
+    
+    permanent_errors:
+      - "authentication_failed"
+      - "authorization_denied"
+      - "invalid_request"
+      - "resource_not_found"

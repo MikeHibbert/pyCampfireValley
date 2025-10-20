@@ -1,0 +1,170 @@
+name: "backend-developer"
+type: "LLMCampfire"
+description: "Backend developer specialized in API design, database architecture, and system integration"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.3
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "backend_developer"
+  expertise_areas:
+    - "API Design"
+    - "Database Architecture" 
+    - "System Integration"
+    - "Performance Optimization"
+    - "Microservices"
+    - "Security Implementation"
+    - "Data Processing"
+    - "Server Architecture"
+
+# Communication Channels
+channels:
+  - "dev-backend"
+  - "dev-team"
+  - "auditor-review"
+  - "architecture-discussion"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 2.0
+  max_concurrent: 3
+  
+  # Torch routing based on content
+  routing_rules:
+    - pattern: "api|endpoint|rest|graphql"
+      priority: "high"
+      auto_accept: true
+    - pattern: "database|sql|nosql|schema"
+      priority: "high" 
+      auto_accept: true
+    - pattern: "performance|optimization|scaling"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "frontend|ui|css"
+      priority: "low"
+      forward_to: "frontend-developer"
+
+# LLM Prompts for different scenarios
+prompts:
+  system: |
+    You are a senior backend developer with expertise in API design, database architecture, 
+    and system integration. You analyze tasks from a backend perspective, focusing on:
+    - Scalable architecture patterns
+    - Database design and optimization
+    - API design and integration
+    - Performance and security considerations
+    - System reliability and maintainability
+    
+    Always provide practical, implementable solutions with consideration for production environments.
+
+  task_analysis: |
+    Analyze this development task from a backend perspective:
+    
+    Task: {task_description}
+    Requirements: {requirements}
+    
+    Provide analysis covering:
+    1. Backend architecture requirements
+    2. Database design considerations
+    3. API endpoints and data flow
+    4. Performance and scalability factors
+    5. Security considerations
+    6. Integration points with other systems
+    7. Estimated effort and complexity
+    8. Potential risks and mitigation strategies
+    
+    Format your response as structured analysis with clear sections.
+
+  code_review: |
+    Review this backend code/design from a senior developer perspective:
+    
+    Code/Design: {code_content}
+    Context: {context}
+    
+    Evaluate:
+    1. Code quality and maintainability
+    2. Architecture and design patterns
+    3. Performance implications
+    4. Security considerations
+    5. Error handling and edge cases
+    6. Testing coverage and quality
+    7. Documentation completeness
+    
+    Provide specific, actionable feedback with examples where appropriate.
+
+  solution_design: |
+    Design a backend solution for this requirement:
+    
+    Requirement: {requirement}
+    Constraints: {constraints}
+    
+    Provide:
+    1. High-level architecture design
+    2. Technology stack recommendations
+    3. Database schema design
+    4. API specification outline
+    5. Implementation approach
+    6. Testing strategy
+    7. Deployment considerations
+    8. Monitoring and observability plan
+
+# Workflow Integration
+workflows:
+  task_received:
+    - action: "analyze_task"
+      prompt: "task_analysis"
+    - action: "estimate_effort"
+    - action: "identify_dependencies"
+    - action: "create_implementation_plan"
+    - action: "submit_for_review"
+      target: "senior-auditor"
+
+  code_review_request:
+    - action: "review_code"
+      prompt: "code_review"
+    - action: "provide_feedback"
+    - action: "suggest_improvements"
+
+  architecture_discussion:
+    - action: "contribute_expertise"
+    - action: "evaluate_proposals"
+    - action: "suggest_alternatives"
+
+# Quality Gates
+quality_gates:
+  complexity_threshold: "complex"
+  confidence_threshold: 0.8
+  escalation_rules:
+    - condition: "complexity > expert"
+      action: "escalate_to_architect"
+    - condition: "security_sensitive == true"
+      action: "require_security_review"
+    - condition: "performance_critical == true"
+      action: "require_performance_review"
+
+# Metrics and Monitoring
+metrics:
+  track_response_time: true
+  track_accuracy: true
+  track_task_completion: true
+  performance_indicators:
+    - "tasks_completed_per_day"
+    - "average_review_score"
+    - "escalation_rate"
+    - "code_quality_score"
+
+# Integration with Justice System
+justice_integration:
+  policy_compliance: true
+  auto_check_violations: true
+  escalate_violations: true
+  violation_types:
+    - "security_violation"
+    - "performance_violation"
+    - "quality_violation"

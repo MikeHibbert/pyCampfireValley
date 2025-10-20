@@ -1,0 +1,191 @@
+name: "backend-developer-ollama"
+type: "LLMCampfire"
+description: "Backend developer using Ollama specialized in API design, database architecture, and system integration"
+
+# LLM Configuration - Using Ollama with CodeLlama for better code generation
+llm:
+  provider: "ollama"
+  base_url: "http://host.docker.internal:11434"
+  model: "gemma2:latest"
+  temperature: 0.2
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "backend_developer"
+  expertise_areas:
+    - "API Design"
+    - "Database Architecture" 
+    - "System Integration"
+    - "Performance Optimization"
+    - "Microservices"
+    - "Security Implementation"
+    - "Data Processing"
+    - "Server Architecture"
+    - "Python Development"
+    - "FastAPI/Django"
+    - "PostgreSQL/MongoDB"
+    - "Redis/Caching"
+
+# Communication Channels
+channels:
+  - "dev-backend"
+  - "dev-team"
+  - "auditor-review"
+  - "architecture-discussion"
+  - "code-review"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 2.0
+  max_concurrent: 2
+  
+  routing_rules:
+    - pattern: "api|endpoint|route|backend"
+      priority: "high"
+      auto_accept: true
+    - pattern: "database|sql|query|schema"
+      priority: "high"
+      auto_accept: true
+    - pattern: "performance|optimization|scaling"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "security|authentication|authorization"
+      priority: "high"
+      auto_accept: true
+
+# Ollama-specific Configuration
+ollama:
+  # Code-focused models
+  alternative_models:
+    - "codellama:13b"
+    - "codellama:34b"
+    - "deepseek-coder"
+    - "starcoder2"
+  
+  # Model selection based on task type
+  model_selection:
+    code_generation: "codellama"
+    code_review: "codellama:13b"
+    architecture_design: "llama3.1"
+    debugging: "deepseek-coder"
+    
+  # Performance tuning for code tasks
+  performance:
+    num_ctx: 8192
+    num_predict: 4096
+    repeat_penalty: 1.05
+    top_k: 50
+    top_p: 0.95
+    temperature: 0.2
+
+# Enhanced prompting for backend development
+prompting:
+  system_prompt: |
+    You are an expert backend developer with deep knowledge of:
+    - Python, FastAPI, Django, Flask
+    - Database design (PostgreSQL, MongoDB, Redis)
+    - API design and RESTful services
+    - Microservices architecture
+    - Performance optimization
+    - Security best practices
+    - Testing and debugging
+    
+    Always write clean, efficient, well-documented code following best practices.
+    Consider scalability, security, and maintainability in all solutions.
+    
+  task_templates:
+    api_design: |
+      Design and implement the following API:
+      
+      Requirements: {requirements}
+      
+      Provide:
+      1. API endpoint structure
+      2. Request/response schemas
+      3. Error handling
+      4. Authentication/authorization
+      5. Input validation
+      6. Complete implementation code
+      
+    database_design: |
+      Design a database schema for:
+      
+      Requirements: {requirements}
+      
+      Include:
+      1. Entity relationship diagram
+      2. Table definitions with constraints
+      3. Indexes for performance
+      4. Migration scripts
+      5. Sample queries
+      
+    performance_optimization: |
+      Optimize the following code/system:
+      
+      Current implementation: {code}
+      Performance issues: {issues}
+      
+      Provide:
+      1. Performance analysis
+      2. Bottleneck identification
+      3. Optimization strategies
+      4. Improved implementation
+      5. Benchmarking approach
+
+# Code generation preferences
+code_generation:
+  languages:
+    primary: "python"
+    secondary: ["javascript", "sql", "yaml", "json"]
+    
+  frameworks:
+    - "fastapi"
+    - "django"
+    - "flask"
+    - "sqlalchemy"
+    - "pydantic"
+    
+  patterns:
+    - "repository_pattern"
+    - "dependency_injection"
+    - "factory_pattern"
+    - "observer_pattern"
+    
+  testing:
+    frameworks: ["pytest", "unittest"]
+    coverage_target: 90
+    include_integration_tests: true
+
+# Integration with CampfireValley
+integration:
+  torch_types:
+    - "api_development"
+    - "database_design"
+    - "code_review"
+    - "performance_optimization"
+    - "security_implementation"
+    
+  output_formats:
+    - "python_code"
+    - "sql_scripts"
+    - "api_documentation"
+    - "architecture_diagrams"
+
+# Quality gates
+quality_gates:
+  code_quality:
+    min_complexity_score: 0.8
+    max_cyclomatic_complexity: 10
+    require_docstrings: true
+    require_type_hints: true
+    
+  security:
+    require_input_validation: true
+    require_authentication: true
+    scan_for_vulnerabilities: true
+    
+  performance:
+    max_response_time_ms: 200
+    min_throughput_rps: 1000

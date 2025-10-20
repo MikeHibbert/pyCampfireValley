@@ -10,6 +10,16 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from .interfaces import IPartyBox
+from .hierarchical_storage import (
+    HierarchicalPartyBox,
+    HierarchicalStorageManager,
+    StorageTier,
+    StoragePolicy,
+    CompressionType,
+    AccessPattern,
+    create_hierarchical_party_box,
+    migrate_from_filesystem_party_box
+)
 
 
 logger = logging.getLogger(__name__)
@@ -268,3 +278,268 @@ class FileSystemPartyBox(IPartyBox):
     
     def __repr__(self) -> str:
         return f"FileSystemPartyBox(base_path='{self.base_path}')"
+
+
+class PartyBoxManager:
+    """
+    Manager for different Party Box implementations with migration capabilities.
+    """
+    
+    def __init__(self):
+        self.party_boxes: Dict[str, IPartyBox] = {}
+        self.default_type = "filesystem"
+        
+    async def create_party_box(
+        self,
+        name: str,
+        box_type: str = "filesystem",
+        base_path: Optional[str] = None,
+        **kwargs
+    ) -> IPartyBox:
+        """
+        Create a Party Box instance.
+        
+        Args:
+            name: Unique name for the Party Box
+            box_type: Type of Party Box ("filesystem" or "hierarchical")
+            base_path: Base path for storage
+            **kwargs: Additional configuration options
+            
+        Returns:
+            IPartyBox: Party Box instance
+        """
+        if base_path is None:
+            base_path = f"./party_box_{name}"
+        
+        if box_type == "filesystem":
+            party_box = FileSystemPartyBox(base_path)
+        elif box_type == "hierarchical":
+            party_box = await create_hierarchical_party_box(base_path)
+        else:
+            raise ValueError(f"Unsupported Party Box type: {box_type}")
+        
+        self.party_boxes[name] = party_box
+        logger.info(f"Created {box_type} Party Box '{name}' at {base_path}")
+        
+        return party_box
+    
+    async def get_party_box(self, name: str) -> Optional[IPartyBox]:
+        """Get a Party Box by name."""
+        return self.party_boxes.get(name)
+    
+    async def migrate_party_box(
+        self,
+        source_name: str,
+        target_name: str,
+        target_type: str = "hierarchical",
+        target_base_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Migrate data from one Party Box to another.
+        
+        Args:
+            source_name: Name of source Party Box
+            target_name: Name of target Party Box
+            target_type: Type of target Party Box
+            target_base_path: Base path for target Party Box
+            
+        Returns:
+            Dict[str, Any]: Migration statistics
+        """
+        source_box = self.party_boxes.get(source_name)
+        if not source_box:
+            raise ValueError(f"Source Party Box '{source_name}' not found")
+        
+        # Create target Party Box
+        target_box = await self.create_party_box(
+            target_name,
+            target_type,
+            target_base_path
+        )
+        
+        # Perform migration based on types
+        if isinstance(source_box, FileSystemPartyBox) and isinstance(target_box, HierarchicalPartyBox):
+            return await migrate_from_filesystem_party_box(source_box, target_box)
+        else:
+            # Generic migration
+            return await self._generic_migrate(source_box, target_box)
+    
+    async def _generic_migrate(self, source: IPartyBox, target: IPartyBox) -> Dict[str, Any]:
+        """Generic migration between any Party Box types."""
+        
+        migration_stats = {
+            "migrated_count": 0,
+            "failed_count": 0,
+            "total_size_bytes": 0
+        }
+        
+        # Get all attachments from source
+        all_attachments = await source.list_attachments()
+        
+        for attachment_id in all_attachments:
+            try:
+                # Retrieve from source
+                content = await source.retrieve_attachment(attachment_id)
+                if content:
+                    # Store in target
+                    await target.store_attachment(attachment_id, content)
+                    migration_stats["migrated_count"] += 1
+                    migration_stats["total_size_bytes"] += len(content)
+                else:
+                    migration_stats["failed_count"] += 1
+                    
+            except Exception as e:
+                logger.error(f"Failed to migrate attachment {attachment_id}: {e}")
+                migration_stats["failed_count"] += 1
+        
+        logger.info(f"Generic migration completed: {migration_stats}")
+        return migration_stats
+    
+    async def get_all_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Get statistics for all Party Boxes."""
+        
+        all_stats = {}
+        for name, party_box in self.party_boxes.items():
+            try:
+                stats = await party_box.get_storage_stats()
+                all_stats[name] = {
+                    "type": type(party_box).__name__,
+                    "stats": stats
+                }
+            except Exception as e:
+                logger.error(f"Failed to get stats for Party Box '{name}': {e}")
+                all_stats[name] = {
+                    "type": type(party_box).__name__,
+                    "error": str(e)
+                }
+        
+        return all_stats
+    
+    async def optimize_all(self) -> Dict[str, Dict[str, Any]]:
+        """Optimize all Party Boxes that support optimization."""
+        
+        optimization_results = {}
+        
+        for name, party_box in self.party_boxes.items():
+            try:
+                if hasattr(party_box, 'optimize_storage'):
+                    results = await party_box.optimize_storage()
+                    optimization_results[name] = {
+                        "type": type(party_box).__name__,
+                        "results": results
+                    }
+                else:
+                    optimization_results[name] = {
+                        "type": type(party_box).__name__,
+                        "message": "Optimization not supported"
+                    }
+            except Exception as e:
+                logger.error(f"Failed to optimize Party Box '{name}': {e}")
+                optimization_results[name] = {
+                    "type": type(party_box).__name__,
+                    "error": str(e)
+                }
+        
+        return optimization_results
+    
+    def list_party_boxes(self) -> List[Dict[str, str]]:
+        """List all registered Party Boxes."""
+        
+        return [
+            {
+                "name": name,
+                "type": type(party_box).__name__,
+                "base_path": getattr(party_box, 'base_path', 'unknown')
+            }
+            for name, party_box in self.party_boxes.items()
+        ]
+
+
+# Global Party Box manager instance
+_party_box_manager = PartyBoxManager()
+
+
+# Convenience functions
+async def create_party_box(
+    name: str,
+    box_type: str = "filesystem",
+    base_path: Optional[str] = None,
+    **kwargs
+) -> IPartyBox:
+    """Create a Party Box using the global manager."""
+    return await _party_box_manager.create_party_box(name, box_type, base_path, **kwargs)
+
+
+async def get_party_box(name: str) -> Optional[IPartyBox]:
+    """Get a Party Box by name using the global manager."""
+    return await _party_box_manager.get_party_box(name)
+
+
+async def migrate_party_box(
+    source_name: str,
+    target_name: str,
+    target_type: str = "hierarchical",
+    target_base_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """Migrate data between Party Boxes using the global manager."""
+    return await _party_box_manager.migrate_party_box(
+        source_name, target_name, target_type, target_base_path
+    )
+
+
+def get_party_box_manager() -> PartyBoxManager:
+    """Get the global Party Box manager."""
+    return _party_box_manager
+
+
+# Factory functions for specific Party Box types
+async def create_filesystem_party_box(base_path: str = "./party_box") -> FileSystemPartyBox:
+    """Create a FileSystem Party Box."""
+    return FileSystemPartyBox(base_path)
+
+
+async def create_hierarchical_party_box_with_policy(
+    base_path: str = "./hierarchical_party_box",
+    policy_name: str = "default",
+    compression: CompressionType = CompressionType.LZ4,
+    deduplication: bool = True,
+    auto_tier: bool = True
+) -> HierarchicalPartyBox:
+    """Create a Hierarchical Party Box with custom policy."""
+    
+    party_box = await create_hierarchical_party_box(base_path)
+    
+    # Create custom policy if not default
+    if policy_name != "default":
+        custom_policy = StoragePolicy(
+            name=policy_name,
+            tier_rules={
+                StorageTier.HOT: {
+                    "max_age_days": 7,
+                    "max_size_mb": 1024,
+                    "access_threshold": 10
+                },
+                StorageTier.WARM: {
+                    "max_age_days": 30,
+                    "max_size_mb": 10240,
+                    "access_threshold": 3
+                },
+                StorageTier.COLD: {
+                    "max_age_days": 365,
+                    "max_size_mb": 102400,
+                    "access_threshold": 1
+                },
+                StorageTier.ARCHIVE: {
+                    "max_age_days": None,
+                    "max_size_mb": None,
+                    "access_threshold": 0
+                }
+            },
+            compression=compression,
+            deduplication=deduplication,
+            auto_tier=auto_tier
+        )
+        
+        party_box.hsm.policies[policy_name] = custom_policy
+    
+    return party_box

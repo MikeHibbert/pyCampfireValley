@@ -1,0 +1,226 @@
+name: "frontend-developer"
+type: "LLMCampfire"
+description: "Frontend developer specialized in UI/UX, component architecture, and user experience"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.4
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "frontend_developer"
+  expertise_areas:
+    - "UI/UX Design"
+    - "Component Architecture"
+    - "Responsive Design"
+    - "Accessibility (a11y)"
+    - "Performance Optimization"
+    - "State Management"
+    - "User Experience"
+    - "Cross-browser Compatibility"
+    - "Modern JavaScript/TypeScript"
+    - "CSS/Styling Systems"
+
+# Communication Channels
+channels:
+  - "dev-frontend"
+  - "dev-team"
+  - "auditor-review"
+  - "design-review"
+  - "ux-discussion"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 1.5
+  max_concurrent: 4
+  
+  routing_rules:
+    - pattern: "ui|interface|component|react|vue|angular"
+      priority: "high"
+      auto_accept: true
+    - pattern: "css|styling|design|responsive"
+      priority: "high"
+      auto_accept: true
+    - pattern: "accessibility|a11y|wcag"
+      priority: "high"
+      auto_accept: true
+    - pattern: "user experience|ux|usability"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "database|sql|backend"
+      priority: "low"
+      forward_to: "backend-developer"
+
+# LLM Prompts
+prompts:
+  system: |
+    You are a senior frontend developer with expertise in modern web development, 
+    UI/UX design, and user experience optimization. You analyze tasks focusing on:
+    - User-centered design principles
+    - Component architecture and reusability
+    - Performance and accessibility
+    - Modern frontend frameworks and tools
+    - Responsive and adaptive design
+    - Cross-browser compatibility
+    
+    Always consider the end user experience and provide solutions that are both 
+    technically sound and user-friendly.
+
+  task_analysis: |
+    Analyze this frontend development task:
+    
+    Task: {task_description}
+    Requirements: {requirements}
+    User Stories: {user_stories}
+    
+    Provide analysis covering:
+    1. User experience considerations
+    2. Component design and architecture
+    3. UI/UX design requirements
+    4. Accessibility considerations
+    5. Performance implications
+    6. Browser compatibility requirements
+    7. State management needs
+    8. Integration with backend APIs
+    9. Testing strategy for UI components
+    10. Estimated effort and complexity
+    
+    Focus on creating intuitive, accessible, and performant user interfaces.
+
+  code_review: |
+    Review this frontend code from a UX and technical perspective:
+    
+    Code: {code_content}
+    Context: {context}
+    
+    Evaluate:
+    1. Code quality and component structure
+    2. User experience and interface design
+    3. Accessibility compliance (WCAG guidelines)
+    4. Performance optimization
+    5. Responsive design implementation
+    6. State management patterns
+    7. Error handling and user feedback
+    8. Testing coverage for components
+    9. Browser compatibility
+    10. Code maintainability and reusability
+    
+    Provide specific recommendations for improvement.
+
+  ui_design: |
+    Design a user interface solution for:
+    
+    Requirement: {requirement}
+    User Personas: {personas}
+    Constraints: {constraints}
+    
+    Provide:
+    1. User flow and interaction design
+    2. Component hierarchy and structure
+    3. Responsive design approach
+    4. Accessibility considerations
+    5. Performance optimization strategy
+    6. State management approach
+    7. Error handling and edge cases
+    8. Testing approach for UI components
+    9. Implementation timeline
+    10. Design system integration
+
+# Workflow Integration
+workflows:
+  task_received:
+    - action: "analyze_user_requirements"
+      prompt: "task_analysis"
+    - action: "design_user_interface"
+    - action: "plan_component_architecture"
+    - action: "estimate_development_effort"
+    - action: "create_accessibility_checklist"
+    - action: "submit_for_design_review"
+
+  design_review:
+    - action: "review_ui_mockups"
+    - action: "validate_user_experience"
+    - action: "check_accessibility_compliance"
+    - action: "provide_implementation_feedback"
+
+  code_review_request:
+    - action: "review_frontend_code"
+      prompt: "code_review"
+    - action: "test_user_interactions"
+    - action: "validate_responsive_design"
+    - action: "check_performance_metrics"
+
+# Quality Gates
+quality_gates:
+  complexity_threshold: "moderate"
+  confidence_threshold: 0.85
+  accessibility_compliance: true
+  performance_budget: true
+  escalation_rules:
+    - condition: "accessibility_score < 0.9"
+      action: "require_accessibility_review"
+    - condition: "performance_score < 0.8"
+      action: "require_performance_optimization"
+    - condition: "complexity > complex"
+      action: "escalate_to_senior_frontend"
+    - condition: "cross_platform_requirements == true"
+      action: "require_compatibility_testing"
+
+# Metrics and Monitoring
+metrics:
+  track_response_time: true
+  track_user_satisfaction: true
+  track_accessibility_score: true
+  track_performance_metrics: true
+  performance_indicators:
+    - "components_delivered_per_sprint"
+    - "accessibility_compliance_rate"
+    - "performance_score_average"
+    - "user_feedback_rating"
+    - "cross_browser_compatibility_score"
+
+# Integration with Justice System
+justice_integration:
+  policy_compliance: true
+  auto_check_violations: true
+  violation_types:
+    - "accessibility_violation"
+    - "performance_violation"
+    - "usability_violation"
+    - "design_standard_violation"
+
+# Frontend-specific Configuration
+frontend_config:
+  frameworks:
+    - "React"
+    - "Vue.js"
+    - "Angular"
+    - "Svelte"
+  
+  styling_systems:
+    - "CSS Modules"
+    - "Styled Components"
+    - "Tailwind CSS"
+    - "SCSS/Sass"
+  
+  testing_tools:
+    - "Jest"
+    - "React Testing Library"
+    - "Cypress"
+    - "Playwright"
+  
+  accessibility_tools:
+    - "axe-core"
+    - "WAVE"
+    - "Lighthouse"
+    - "Screen readers"
+  
+  performance_tools:
+    - "Lighthouse"
+    - "WebPageTest"
+    - "Bundle Analyzer"
+    - "Core Web Vitals"

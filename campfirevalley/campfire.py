@@ -1,39 +1,63 @@
 """
-Base Campfire implementation.
+CampfireValley Campfire implementation extending the base pyCampfires framework.
 """
 
 import asyncio
 import logging
 from typing import Optional, List, Dict, Any
+from campfires import Campfire as BaseCampfire, Camper as BaseCamper, Torch as BaseTorch
 from .interfaces import ICampfire, IMCPBroker
 from .models import Torch, CampfireConfig
+from .monitoring import get_monitoring_system, LogLevel, AlertSeverity
 
 
 logger = logging.getLogger(__name__)
 
 
-class Campfire(ICampfire):
+class Campfire(BaseCampfire, ICampfire):
     """
     Base Campfire implementation that can be extended for specific functionality.
     """
     
-    def __init__(self, config: CampfireConfig, mcp_broker: IMCPBroker):
+    def __init__(self, config: CampfireConfig, mcp_broker: IMCPBroker, party_box=None, campers=None):
         """
         Initialize a Campfire instance.
         
         Args:
             config: Campfire configuration
             mcp_broker: MCP broker for communication
+            party_box: Optional party box for storage (will create default if None)
+            campers: Optional list of campers (will create empty list if None)
         """
+        # Create default party box if none provided
+        if party_box is None:
+            from .party_box import FileSystemPartyBox
+            party_box = FileSystemPartyBox(f"./party_box_{config.name}")
+        
+        # Create empty campers list if none provided
+        if campers is None:
+            campers = []
+        
+        # Initialize base campfire with required arguments
+        super().__init__(
+            name=config.name,
+            campers=campers,
+            party_box=party_box,
+            mcp_protocol=None,  # We'll handle MCP through our own broker
+            config={}  # Additional config can be passed here if needed
+        )
+        
+        # CampfireValley specific configuration
         self.config = config
         self.mcp_broker = mcp_broker
+        self.monitoring = get_monitoring_system()
         
         # Runtime state
         self._running = False
         self._subscriptions: Dict[str, Any] = {}
         self._campers: Dict[str, 'ICamper'] = {}
         
-        logger.info(f"Campfire '{config.name}' initialized")
+        logger.info(f"CampfireValley Campfire '{config.name}' initialized")
     
     async def start(self) -> None:
         """Start the campfire"""
@@ -82,30 +106,76 @@ class Campfire(ICampfire):
         """Process an incoming torch and optionally return a response"""
         if not self._running:
             logger.warning(f"Campfire '{self.config.name}' is not running, cannot process torch")
+            await self.monitoring.log(
+                LogLevel.WARNING, 
+                f"Attempted to process torch {torch.id} on stopped campfire",
+                f"campfire.{self.config.name}"
+            )
             return None
         
         logger.debug(f"Processing torch {torch.id} in campfire '{self.config.name}'")
         
-        try:
-            # Execute campfire steps in order
-            result = await self._execute_steps(torch)
-            
-            # If there's a result, create response torch
-            if result:
-                response_torch = Torch(
-                    id=f"response_{torch.id}",
-                    sender_valley=torch.target_address.split(':')[1].split('/')[0],  # Extract valley name
-                    target_address=f"valley:{torch.sender_valley}",
-                    payload=result,
-                    signature="placeholder_signature"  # TODO: Implement proper signing
+        # Monitor performance
+        with self.monitoring.monitor_performance("campfire", "process_torch"):
+            try:
+                await self.monitoring.log(
+                    LogLevel.INFO,
+                    f"Processing torch {torch.id}",
+                    f"campfire.{self.config.name}",
+                    context={"torch_id": torch.id, "sender": torch.sender_valley}
                 )
-                return response_torch
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error processing torch {torch.id} in campfire '{self.config.name}': {e}")
-            return None
+                
+                # Execute campfire steps in order
+                result = await self._execute_steps(torch)
+                
+                # Record success metric
+                await self.monitoring.record_metric(
+                    f"campfire.{self.config.name}.torch_processed",
+                    1,
+                    tags={"status": "success"}
+                )
+                
+                # If there's a result, create response torch
+                if result:
+                    response_torch = Torch(
+                        claim="response_torch",
+                        source_campfire=self.config.name,
+                        channel="responses",
+                        torch_id=f"response_{torch.torch_id}",
+                        sender_valley=torch.target_address.split(':')[1].split('/')[0],  # Extract valley name
+                        target_address=f"valley:{torch.sender_valley}",
+                        data=result,
+                        signature="placeholder_signature"  # TODO: Implement proper signing
+                    )
+                    return response_torch
+                
+                return None
+                
+            except Exception as e:
+                logger.error(f"Error processing torch {torch.id} in campfire '{self.config.name}': {e}")
+                
+                # Log error and send alert
+                await self.monitoring.log(
+                    LogLevel.ERROR,
+                    f"Error processing torch {torch.id}: {str(e)}",
+                    f"campfire.{self.config.name}",
+                    context={"torch_id": torch.id, "error": str(e)}
+                )
+                
+                await self.monitoring.send_alert(
+                    AlertSeverity.HIGH,
+                    f"Torch processing failed in campfire {self.config.name}: {str(e)}",
+                    f"campfire.{self.config.name}"
+                )
+                
+                # Record failure metric
+                await self.monitoring.record_metric(
+                    f"campfire.{self.config.name}.torch_processed",
+                    1,
+                    tags={"status": "error"}
+                )
+                
+                return None
     
     def get_config(self) -> CampfireConfig:
         """Get the campfire configuration"""
@@ -117,6 +187,11 @@ class Campfire(ICampfire):
     
     async def _subscribe_to_channels(self) -> None:
         """Subscribe to configured MCP channels"""
+        # Check if MCP broker is connected
+        if not self.mcp_broker.is_connected():
+            logger.warning(f"MCP broker not connected, skipping channel subscriptions for campfire '{self.config.name}'")
+            return
+        
         for channel in self.config.channels:
             await self.mcp_broker.subscribe(channel, self._handle_channel_message)
             self._subscriptions[channel] = True

@@ -1,0 +1,347 @@
+name: "devops-specialist"
+type: "LLMCampfire"
+description: "DevOps specialist focused on infrastructure, deployment automation, monitoring, and operational excellence"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.3
+  max_tokens: 4000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "devops_specialist"
+  expertise_areas:
+    - "Infrastructure as Code (IaC)"
+    - "CI/CD Pipeline Design"
+    - "Container Orchestration"
+    - "Cloud Architecture"
+    - "Monitoring & Observability"
+    - "Security & Compliance"
+    - "Performance Optimization"
+    - "Disaster Recovery"
+    - "Automation & Scripting"
+    - "Cost Optimization"
+
+# Communication Channels
+channels:
+  - "dev-ops"
+  - "dev-team"
+  - "infrastructure"
+  - "monitoring"
+  - "security"
+  - "deployment"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 3.0
+  max_concurrent: 4
+  
+  routing_rules:
+    - pattern: "deploy|deployment|pipeline|ci/cd"
+      priority: "high"
+      auto_accept: true
+    - pattern: "infrastructure|terraform|ansible|kubernetes"
+      priority: "high"
+      auto_accept: true
+    - pattern: "monitoring|alerting|observability|metrics"
+      priority: "high"
+      auto_accept: true
+    - pattern: "docker|container|orchestration"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "cloud|aws|azure|gcp"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "security|compliance|vulnerability"
+      priority: "high"
+      auto_accept: true
+
+# LLM Prompts
+prompts:
+  system: |
+    You are a senior DevOps engineer and infrastructure specialist with expertise in:
+    - Modern infrastructure automation and Infrastructure as Code
+    - CI/CD pipeline design and optimization
+    - Container technologies and orchestration platforms
+    - Cloud architecture and multi-cloud strategies
+    - Monitoring, observability, and incident response
+    - Security automation and compliance frameworks
+    - Performance optimization and cost management
+    - Site reliability engineering practices
+    
+    You focus on building scalable, reliable, and secure infrastructure while 
+    enabling development teams to deploy quickly and safely.
+
+  infrastructure_design: |
+    Design infrastructure architecture for:
+    
+    Project: {project_description}
+    Requirements: {requirements}
+    Scale: {expected_scale}
+    Budget: {budget_constraints}
+    
+    Provide comprehensive infrastructure design including:
+    1. Architecture overview and component diagram
+    2. Technology stack recommendations
+    3. Infrastructure as Code implementation plan
+    4. Scalability and high availability design
+    5. Security architecture and compliance measures
+    6. Monitoring and observability strategy
+    7. Disaster recovery and backup plans
+    8. Cost optimization strategies
+    9. Migration plan (if applicable)
+    10. Operational procedures and runbooks
+    11. Performance benchmarks and SLAs
+    12. Risk assessment and mitigation strategies
+    
+    Focus on best practices, automation, and operational excellence.
+
+  cicd_pipeline: |
+    Design CI/CD pipeline for:
+    
+    Application: {application_details}
+    Technology Stack: {tech_stack}
+    Deployment Targets: {environments}
+    Team Size: {team_size}
+    
+    Create pipeline design covering:
+    1. Source code management and branching strategy
+    2. Build automation and artifact management
+    3. Testing integration (unit, integration, security, performance)
+    4. Quality gates and approval processes
+    5. Deployment automation and strategies
+    6. Environment management and promotion
+    7. Rollback and recovery procedures
+    8. Monitoring and alerting integration
+    9. Security scanning and compliance checks
+    10. Performance and load testing integration
+    11. Documentation and change management
+    12. Metrics and continuous improvement
+    
+    Provide detailed pipeline configuration and best practices.
+
+  incident_response: |
+    Analyze and respond to this incident:
+    
+    Incident: {incident_description}
+    Symptoms: {observed_symptoms}
+    Impact: {business_impact}
+    Timeline: {incident_timeline}
+    
+    Provide incident response including:
+    1. Immediate impact assessment and severity classification
+    2. Root cause analysis and investigation steps
+    3. Immediate mitigation and containment actions
+    4. Communication plan and stakeholder updates
+    5. Recovery procedures and validation steps
+    6. Post-incident review and lessons learned
+    7. Prevention measures and system improvements
+    8. Documentation updates and runbook changes
+    9. Monitoring enhancements to prevent recurrence
+    10. Process improvements and team training needs
+    
+    Focus on rapid resolution and long-term prevention.
+
+  performance_optimization: |
+    Optimize performance for:
+    
+    System: {system_description}
+    Current Performance: {current_metrics}
+    Performance Goals: {target_metrics}
+    Constraints: {constraints}
+    
+    Provide optimization strategy including:
+    1. Performance bottleneck analysis
+    2. Infrastructure optimization recommendations
+    3. Application-level optimizations
+    4. Database and storage optimizations
+    5. Network and CDN improvements
+    6. Caching strategies and implementation
+    7. Load balancing and scaling strategies
+    8. Monitoring and alerting improvements
+    9. Cost-performance trade-off analysis
+    10. Implementation roadmap and priorities
+    11. Testing and validation procedures
+    12. Long-term capacity planning
+
+# Workflow Integration
+workflows:
+  infrastructure_deployment:
+    - action: "analyze_requirements"
+      prompt: "infrastructure_design"
+    - action: "create_iac_templates"
+    - action: "validate_infrastructure"
+    - action: "deploy_infrastructure"
+    - action: "configure_monitoring"
+    - action: "document_procedures"
+
+  pipeline_setup:
+    - action: "assess_current_state"
+    - action: "design_pipeline"
+      prompt: "cicd_pipeline"
+    - action: "implement_pipeline"
+    - action: "test_pipeline"
+    - action: "train_team"
+    - action: "monitor_pipeline_health"
+
+  incident_management:
+    - action: "assess_incident"
+      prompt: "incident_response"
+    - action: "implement_mitigation"
+    - action: "communicate_status"
+    - action: "resolve_incident"
+    - action: "conduct_postmortem"
+    - action: "implement_improvements"
+
+  performance_tuning:
+    - action: "analyze_performance"
+      prompt: "performance_optimization"
+    - action: "implement_optimizations"
+    - action: "validate_improvements"
+    - action: "update_monitoring"
+    - action: "document_changes"
+
+# Quality Gates
+quality_gates:
+  deployment_success_rate: 0.98
+  infrastructure_uptime: 0.999
+  security_compliance: true
+  cost_variance_threshold: 0.10
+  
+  escalation_rules:
+    - condition: "deployment_failure_rate > 0.05"
+      action: "investigate_pipeline_issues"
+    - condition: "infrastructure_downtime > 0.001"
+      action: "trigger_incident_response"
+    - condition: "security_vulnerability_detected"
+      action: "immediate_security_review"
+    - condition: "cost_overrun > 0.15"
+      action: "cost_optimization_review"
+    - condition: "performance_degradation > 0.20"
+      action: "performance_investigation"
+
+# Metrics and Monitoring
+metrics:
+  track_deployments: true
+  track_infrastructure_health: true
+  track_security_posture: true
+  track_cost_efficiency: true
+  
+  performance_indicators:
+    - "deployment_frequency"
+    - "deployment_success_rate"
+    - "mean_time_to_recovery"
+    - "infrastructure_uptime"
+    - "security_compliance_score"
+    - "cost_per_transaction"
+    - "performance_metrics"
+    - "automation_coverage"
+
+# DevOps Tools Configuration
+devops_tools:
+  infrastructure_as_code:
+    - "Terraform"
+    - "Ansible"
+    - "CloudFormation"
+    - "Pulumi"
+  
+  ci_cd_platforms:
+    - "Jenkins"
+    - "GitLab CI"
+    - "GitHub Actions"
+    - "Azure DevOps"
+    - "CircleCI"
+  
+  container_orchestration:
+    - "Kubernetes"
+    - "Docker Swarm"
+    - "OpenShift"
+    - "ECS/Fargate"
+  
+  monitoring_observability:
+    - "Prometheus"
+    - "Grafana"
+    - "ELK Stack"
+    - "Datadog"
+    - "New Relic"
+    - "Jaeger"
+  
+  cloud_platforms:
+    - "AWS"
+    - "Azure"
+    - "Google Cloud"
+    - "DigitalOcean"
+  
+  security_tools:
+    - "Vault"
+    - "SOPS"
+    - "Falco"
+    - "Twistlock"
+    - "Aqua Security"
+
+# Cloud Configuration
+cloud_config:
+  multi_cloud_strategy: true
+  preferred_providers:
+    - "AWS"
+    - "Azure"
+    - "GCP"
+  
+  cost_optimization:
+    auto_scaling: true
+    spot_instances: true
+    reserved_instances: true
+    cost_monitoring: true
+  
+  security_baseline:
+    encryption_at_rest: true
+    encryption_in_transit: true
+    network_segmentation: true
+    access_controls: true
+    audit_logging: true
+
+# Integration with Justice System
+justice_integration:
+  policy_compliance: true
+  auto_check_violations: true
+  violation_types:
+    - "security_violation"
+    - "compliance_violation"
+    - "cost_violation"
+    - "performance_violation"
+    - "availability_violation"
+
+# Automation Scripts
+automation_scripts:
+  deployment_automation: true
+  infrastructure_provisioning: true
+  monitoring_setup: true
+  backup_automation: true
+  security_scanning: true
+  cost_reporting: true
+  
+  script_languages:
+    - "Bash"
+    - "Python"
+    - "PowerShell"
+    - "Go"
+    - "YAML"
+
+# Disaster Recovery
+disaster_recovery:
+  backup_strategy: true
+  recovery_procedures: true
+  failover_automation: true
+  data_replication: true
+  
+  recovery_objectives:
+    rto: "4 hours"  # Recovery Time Objective
+    rpo: "1 hour"   # Recovery Point Objective
+  
+  testing_schedule:
+    frequency: "quarterly"
+    scope: "full_system"
+    documentation: true

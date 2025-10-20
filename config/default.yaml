@@ -1,0 +1,128 @@
+# Default CampfireValley Configuration
+# This file contains the base configuration for all environments
+
+# Valley Configuration
+valley:
+  name: "CampfireValley"
+  max_campfires: 100
+  default_timeout: 30
+  enable_monitoring: true
+  enable_security_scanning: true
+  
+  # Networking
+  network:
+    host: "localhost"
+    port: 8080
+    max_connections: 1000
+    connection_timeout: 30
+    
+  # Security
+  security:
+    encryption_enabled: true
+    require_authentication: true
+    max_failed_attempts: 3
+    session_timeout: 3600
+    
+# Campfire Configuration
+campfire:
+  default_capacity: 50
+  processing_timeout: 10
+  enable_caching: true
+  cache_ttl: 300
+  
+  # Torch Processing
+  torch:
+    max_size: 1048576  # 1MB
+    allowed_types: ["text", "json", "binary"]
+    compression_enabled: true
+    
+# VALI Services Configuration
+vali:
+  enabled: true
+  timeout: 5
+  retry_attempts: 3
+  retry_delay: 1
+  
+  services:
+    sanitizer:
+      endpoint: "http://localhost:8081/sanitize"
+      enabled: true
+      timeout: 3
+      
+    validator:
+      endpoint: "http://localhost:8082/validate"
+      enabled: true
+      timeout: 5
+      
+    scanner:
+      endpoint: "http://localhost:8083/scan"
+      enabled: true
+      timeout: 10
+
+# Justice System Configuration
+justice:
+  enabled: true
+  enforcement_mode: "warn"  # warn, block, quarantine
+  
+  policies:
+    - name: "rate_limiting"
+      enabled: true
+      max_requests_per_minute: 60
+      
+    - name: "content_filtering"
+      enabled: true
+      blocked_patterns: ["spam", "malware"]
+      
+    - name: "size_limits"
+      enabled: true
+      max_torch_size: 1048576
+
+# Routing Configuration
+routing:
+  strategy: "round_robin"  # round_robin, weighted, least_connections
+  health_check_interval: 30
+  circuit_breaker_enabled: true
+  
+  load_balancing:
+    algorithm: "round_robin"
+    health_threshold: 0.8
+    
+  failover:
+    strategy: "immediate"
+    max_retries: 3
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  metrics_retention: 86400  # 24 hours
+  alert_threshold: 0.9
+  
+  logging:
+    level: "INFO"
+    format: "structured"
+    output: "console"
+    
+  performance:
+    track_response_times: true
+    track_memory_usage: true
+    track_cpu_usage: true
+
+# Storage Configuration
+storage:
+  party_box:
+    enabled: true
+    max_size: 10737418240  # 10GB
+    compression_enabled: true
+    encryption_enabled: true
+    
+  cache:
+    enabled: true
+    max_size: 1073741824  # 1GB
+    ttl: 3600
+    
+# Development Settings
+development:
+  debug_mode: false
+  hot_reload: false
+  mock_services: false
+  log_requests: false

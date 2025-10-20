@@ -1,0 +1,95 @@
+# Production Environment Configuration
+# Overrides for production deployment
+
+# Valley Configuration
+valley:
+  max_campfires: 500
+  network:
+    host: "0.0.0.0"
+    port: 443
+    max_connections: 5000
+    
+  security:
+    encryption_enabled: true
+    require_authentication: true
+    max_failed_attempts: 5
+    session_timeout: 7200
+
+# Campfire Configuration  
+campfire:
+  default_capacity: 200
+  processing_timeout: 30
+  cache_ttl: 1800
+
+# VALI Services Configuration
+vali:
+  timeout: 10
+  retry_attempts: 5
+  
+  services:
+    sanitizer:
+      endpoint: "https://sanitizer.vali.internal/sanitize"
+      timeout: 5
+      
+    validator:
+      endpoint: "https://validator.vali.internal/validate"
+      timeout: 10
+      
+    scanner:
+      endpoint: "https://scanner.vali.internal/scan"
+      timeout: 15
+
+# Justice System Configuration
+justice:
+  enforcement_mode: "block"
+  
+  policies:
+    - name: "rate_limiting"
+      max_requests_per_minute: 120
+      
+    - name: "content_filtering"
+      blocked_patterns: ["spam", "malware", "phishing", "virus"]
+
+# Routing Configuration
+routing:
+  health_check_interval: 15
+  
+  load_balancing:
+    health_threshold: 0.95
+
+# Monitoring Configuration
+monitoring:
+  metrics_retention: 604800  # 7 days
+  alert_threshold: 0.95
+  
+  logging:
+    level: "WARN"
+    output: "file"
+    file_path: "/var/log/campfirevalley/app.log"
+    
+# Storage Configuration
+storage:
+  party_box:
+    max_size: 107374182400  # 100GB
+    
+  cache:
+    max_size: 10737418240  # 10GB
+    ttl: 7200
+
+# Production-specific settings
+production:
+  enable_ssl: true
+  ssl_cert_path: "/etc/ssl/certs/campfirevalley.crt"
+  ssl_key_path: "/etc/ssl/private/campfirevalley.key"
+  
+  database:
+    host: "db.campfirevalley.internal"
+    port: 5432
+    name: "campfirevalley_prod"
+    pool_size: 20
+    
+  redis:
+    host: "redis.campfirevalley.internal"
+    port: 6379
+    db: 0
+    pool_size: 10

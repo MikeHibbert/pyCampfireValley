@@ -1,5 +1,6 @@
 """
 Data models for CampfireValley using Pydantic for type validation.
+Extends the base pyCampfires models with CampfireValley-specific functionality.
 """
 
 from pydantic import BaseModel, Field, validator
@@ -9,6 +10,7 @@ from enum import Enum
 import json
 import base64
 import gzip
+from campfires import Torch as BaseTorch
 
 
 class DockMode(str, Enum):
@@ -32,15 +34,22 @@ class TrustLevel(str, Enum):
     ADMIN = "admin"
 
 
-class Torch(BaseModel):
-    """Message container for inter-valley communication"""
-    id: str = Field(..., description="Unique identifier for the torch")
+class Torch(BaseTorch):
+    """
+    CampfireValley Torch extending the base pyCampfires Torch.
+    Message container for inter-valley communication with enhanced routing and security.
+    """
+    # CampfireValley-specific fields
     sender_valley: str = Field(..., description="Valley that sent this torch")
     target_address: str = Field(..., description="Target address in format valley:name/campfire/camper")
-    payload: Dict[str, Any] = Field(default_factory=dict, description="Message payload")
     attachments: List[str] = Field(default_factory=list, description="List of attachment references")
     signature: str = Field(..., description="Digital signature for authentication")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When the torch was created")
+    
+    # Override base fields with CampfireValley defaults
+    source: str = Field(default="", description="Source campfire/camper")
+    destination: str = Field(default="", description="Destination campfire/camper")
+    data: Dict[str, Any] = Field(default_factory=dict, description="Torch data payload")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Torch metadata")
     
     @validator('target_address')
     def validate_address_format(cls, v):
@@ -48,6 +57,11 @@ class Torch(BaseModel):
         if not v or ':' not in v:
             raise ValueError("Address must contain valley name with colon separator")
         return v
+    
+    @property
+    def id(self) -> str:
+        """Compatibility property that maps to torch_id"""
+        return self.torch_id
     
     def to_redis_message(self, compress: bool = True) -> Dict[str, Any]:
         """
@@ -64,10 +78,10 @@ class Torch(BaseModel):
         data['timestamp'] = self.timestamp.isoformat()
         
         # Optionally compress large payloads
-        if compress and len(json.dumps(data['payload'])) > 1024:  # 1KB threshold
-            payload_json = json.dumps(data['payload'])
+        if compress and len(json.dumps(data['data'])) > 1024:  # 1KB threshold
+            payload_json = json.dumps(data['data'])
             compressed = gzip.compress(payload_json.encode('utf-8'))
-            data['payload'] = {
+            data['data'] = {
                 '_compressed': True,
                 '_data': base64.b64encode(compressed).decode('ascii')
             }
@@ -103,11 +117,11 @@ class Torch(BaseModel):
         data = message.get('data', {})
         
         # Handle compressed payloads
-        payload = data.get('payload', {})
+        payload = data.get('data', {})
         if isinstance(payload, dict) and payload.get('_compressed'):
             compressed_data = base64.b64decode(payload['_data'])
             decompressed = gzip.decompress(compressed_data)
-            data['payload'] = json.loads(decompressed.decode('utf-8'))
+            data['data'] = json.loads(decompressed.decode('utf-8'))
         
         # Convert timestamp back to datetime
         if 'timestamp' in data:
@@ -226,6 +240,7 @@ class ValleyConfig(BaseModel):
 class CampfireConfig(BaseModel):
     """Configuration for provisioned campfires following GitHub Actions job format"""
     name: str = Field(..., description="Campfire name")
+    type: str = Field(default="Campfire", description="Type of campfire (Campfire, LLMCampfire, etc.)")
     runs_on: str = Field(default="valley", description="Where the campfire runs")
     
     # Environment variables like GitHub Actions
@@ -250,6 +265,16 @@ class CampfireConfig(BaseModel):
     rag_paths: List[str] = Field(default_factory=list)
     auditor_enabled: bool = Field(default=True)
     channels: List[str] = Field(default_factory=list)
+    
+    # Additional configuration fields for specialized campfires
+    description: Optional[str] = Field(None, description="Campfire description")
+    llm: Dict[str, Any] = Field(default_factory=dict, description="LLM configuration")
+    behavior: Dict[str, Any] = Field(default_factory=dict, description="Behavior configuration")
+    torch_processing: Dict[str, Any] = Field(default_factory=dict, description="Torch processing rules")
+    prompts: Dict[str, Any] = Field(default_factory=dict, description="LLM prompts")
+    workflows: Dict[str, Any] = Field(default_factory=dict, description="Workflow definitions")
+    performance: Dict[str, Any] = Field(default_factory=dict, description="Performance metrics")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Additional configuration")
 
 
 class CommunityMembership(BaseModel):

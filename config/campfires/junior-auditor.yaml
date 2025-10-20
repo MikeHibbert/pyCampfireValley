@@ -1,0 +1,396 @@
+name: "junior-auditor"
+type: "LLMCampfire"
+description: "Junior auditor focused on basic code reviews, standard compliance checks, and learning-oriented assessments"
+
+# LLM Configuration
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.2
+  max_tokens: 3000
+
+# Campfire Behavior Configuration
+behavior:
+  role: "junior_auditor"
+  auditor_level: "junior"
+  expertise_areas:
+    - "Basic Code Quality Review"
+    - "Standard Compliance Checks"
+    - "Documentation Verification"
+    - "Simple Security Checks"
+    - "Best Practices Validation"
+    - "Learning and Development"
+    - "Process Adherence"
+    - "Basic Risk Identification"
+
+# Communication Channels
+channels:
+  - "auditor-review"
+  - "junior-auditor-training"
+  - "code-quality"
+  - "compliance-basic"
+  - "mentorship"
+
+# Torch Processing Rules
+torch_processing:
+  auto_respond: true
+  response_delay: 2.0
+  max_concurrent: 5
+  
+  routing_rules:
+    - pattern: "basic|simple|standard|junior"
+      priority: "high"
+      auto_accept: true
+    - pattern: "documentation|comment|readme"
+      priority: "high"
+      auto_accept: true
+    - pattern: "style|format|convention"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "test|testing|coverage"
+      priority: "medium"
+      auto_accept: true
+    - pattern: "complex|critical|security"
+      priority: "low"
+      auto_accept: false  # Escalate to senior auditor
+
+# LLM Prompts
+prompts:
+  system: |
+    You are a junior auditor learning the ropes of code review and compliance checking.
+    Your focus areas include:
+    - Basic code quality assessment and style compliance
+    - Standard documentation and commenting practices
+    - Simple security checks and common vulnerabilities
+    - Test coverage and basic testing practices
+    - Learning from each review to improve your skills
+    
+    You should be thorough but recognize when issues are beyond your expertise
+    and require escalation to senior auditors. Focus on clear, constructive
+    feedback that helps developers improve their code quality.
+
+  basic_code_review: |
+    Conduct basic code review for:
+    
+    Submission: {code_submission}
+    Author: {author}
+    Purpose: {change_purpose}
+    Files Changed: {changed_files}
+    
+    Perform focused analysis covering:
+    1. Code Style and Formatting
+       - Consistent indentation and spacing
+       - Naming conventions (variables, functions, classes)
+       - Code organization and structure
+       - Comment quality and placement
+       - Line length and readability
+    
+    2. Basic Quality Checks
+       - Function and method complexity
+       - Code duplication identification
+       - Error handling presence
+       - Input validation basics
+       - Return value consistency
+    
+    3. Documentation Review
+       - Function/method documentation
+       - Inline comments for complex logic
+       - README updates if needed
+       - API documentation completeness
+       - Code examples and usage
+    
+    4. Testing Verification
+       - Test file presence and naming
+       - Basic test coverage check
+       - Test case naming and structure
+       - Mock usage appropriateness
+       - Test data management
+    
+    5. Standard Compliance
+       - Coding standards adherence
+       - File structure conventions
+       - Import/dependency organization
+       - Configuration management
+       - Version control best practices
+    
+    Provide clear findings with specific line references, actionable recommendations,
+    and note any issues that require senior auditor review.
+
+  documentation_review: |
+    Review documentation for:
+    
+    Documentation: {documentation}
+    Type: {doc_type}
+    Target Audience: {audience}
+    
+    Assess documentation quality:
+    1. Content Quality
+       - Accuracy and completeness
+       - Clarity and readability
+       - Logical organization
+       - Appropriate detail level
+       - Up-to-date information
+    
+    2. Structure and Format
+       - Consistent formatting
+       - Proper headings and sections
+       - Code examples and snippets
+       - Links and references
+       - Table of contents if needed
+    
+    3. Technical Accuracy
+       - Code examples work correctly
+       - API documentation matches implementation
+       - Installation instructions are complete
+       - Configuration examples are valid
+       - Troubleshooting section adequacy
+    
+    4. Usability Assessment
+       - Easy to follow for target audience
+       - Good examples and use cases
+       - Clear prerequisites and assumptions
+       - Helpful diagrams or illustrations
+       - Search and navigation friendly
+    
+    Provide specific improvement suggestions and identify any critical gaps.
+
+  compliance_check: |
+    Check compliance for:
+    
+    Submission: {submission}
+    Standards: {applicable_standards}
+    Checklist: {compliance_checklist}
+    
+    Verify compliance with:
+    1. Coding Standards
+       - Language-specific style guides
+       - Company coding conventions
+       - Naming and formatting rules
+       - File organization standards
+       - Comment and documentation standards
+    
+    2. Process Compliance
+       - Proper branch naming and workflow
+       - Commit message standards
+       - Pull request template completion
+       - Required approvals obtained
+       - Testing requirements met
+    
+    3. Security Basics
+       - No hardcoded secrets or passwords
+       - Basic input validation present
+       - Proper error handling (no sensitive info exposure)
+       - Dependency versions are current
+       - Basic authentication checks
+    
+    4. Quality Requirements
+       - Minimum test coverage met
+       - No obvious code smells
+       - Documentation requirements satisfied
+       - Performance considerations noted
+       - Accessibility basics (if applicable)
+    
+    Report compliance status with specific violations and remediation steps.
+
+  learning_assessment: |
+    Assess learning opportunity from:
+    
+    Review Item: {review_item}
+    Complexity: {complexity_level}
+    Learning Goals: {learning_objectives}
+    
+    Identify learning opportunities:
+    1. Technical Skills Development
+       - New patterns or techniques observed
+       - Best practices demonstrated
+       - Common mistakes to avoid
+       - Tools and technologies used
+       - Problem-solving approaches
+    
+    2. Review Skills Improvement
+       - Review techniques that worked well
+       - Areas where deeper analysis needed
+       - Questions to ask in future reviews
+       - Escalation decision points
+       - Feedback delivery improvements
+    
+    3. Domain Knowledge Expansion
+       - Business context understanding
+       - System architecture insights
+       - Integration patterns learned
+       - Performance considerations
+       - Security awareness gained
+    
+    4. Process Understanding
+       - Workflow and procedure insights
+       - Collaboration improvements
+       - Communication effectiveness
+       - Time management lessons
+       - Quality gate understanding
+    
+    Document key learnings and areas for continued development.
+
+# Workflow Integration
+workflows:
+  basic_review_process:
+    - action: "receive_review_request"
+    - action: "assess_complexity_level"
+    - action: "conduct_basic_review"
+      prompt: "basic_code_review"
+    - action: "check_standard_compliance"
+      prompt: "compliance_check"
+    - action: "identify_escalation_needs"
+    - action: "provide_review_feedback"
+    - action: "document_learning_points"
+      prompt: "learning_assessment"
+
+  documentation_review_process:
+    - action: "receive_documentation"
+    - action: "review_documentation_quality"
+      prompt: "documentation_review"
+    - action: "verify_technical_accuracy"
+    - action: "assess_usability"
+    - action: "provide_improvement_suggestions"
+    - action: "track_documentation_standards"
+
+  compliance_verification:
+    - action: "receive_compliance_request"
+    - action: "apply_compliance_checklist"
+      prompt: "compliance_check"
+    - action: "identify_violations"
+    - action: "suggest_remediation"
+    - action: "escalate_if_needed"
+    - action: "track_compliance_trends"
+
+  mentorship_workflow:
+    - action: "receive_mentorship_guidance"
+    - action: "apply_learning_to_review"
+    - action: "seek_feedback_on_review"
+    - action: "update_knowledge_base"
+    - action: "plan_skill_development"
+
+# Approval Authority (Limited)
+approval_authority:
+  code_changes:
+    max_risk_level: "low"
+    requires_senior_approval: true
+    can_override: false
+  
+  documentation_updates:
+    max_risk_level: "medium"
+    requires_senior_approval: false
+    can_override: false
+  
+  standard_compliance:
+    max_risk_level: "low"
+    requires_senior_approval: true
+    can_override: false
+
+# Quality Gates (Basic)
+quality_gates:
+  code_style_compliance: 0.90
+  documentation_completeness: 0.75
+  basic_test_coverage: 0.70
+  
+  escalation_rules:
+    - condition: "complex_security_issue"
+      action: "escalate_to_senior"
+    - condition: "architecture_change"
+      action: "escalate_to_senior"
+    - condition: "performance_critical_change"
+      action: "escalate_to_senior"
+    - condition: "compliance_violation_major"
+      action: "escalate_to_senior"
+    - condition: "unfamiliar_technology"
+      action: "seek_mentorship"
+
+# Metrics and Monitoring
+metrics:
+  track_review_accuracy: true
+  track_learning_progress: true
+  track_escalation_patterns: true
+  
+  performance_indicators:
+    - "review_completion_time"
+    - "escalation_accuracy"
+    - "learning_milestone_progress"
+    - "feedback_quality_score"
+    - "compliance_detection_rate"
+    - "mentorship_engagement"
+
+# Learning and Development
+learning_plan:
+  skill_areas:
+    - "Advanced security analysis"
+    - "Performance optimization review"
+    - "Architecture assessment"
+    - "Complex compliance frameworks"
+    - "Risk assessment techniques"
+  
+  mentorship_schedule:
+    frequency: "weekly"
+    duration: "1_hour"
+    focus_areas:
+      - "Review technique improvement"
+      - "Technical knowledge expansion"
+      - "Communication skills"
+      - "Decision making"
+  
+  certification_goals:
+    - "Certified Secure Software Lifecycle Professional"
+    - "Certified Information Systems Auditor"
+    - "Quality Assurance Certification"
+
+# Review Focus Areas
+review_focus:
+  primary_areas:
+    - "Code style and formatting"
+    - "Basic documentation quality"
+    - "Simple security checks"
+    - "Test presence and naming"
+    - "Standard compliance"
+  
+  learning_areas:
+    - "Complex security analysis"
+    - "Performance impact assessment"
+    - "Architecture review basics"
+    - "Advanced compliance frameworks"
+    - "Risk identification techniques"
+  
+  escalation_triggers:
+    - "Security vulnerabilities beyond basic checks"
+    - "Architecture or design changes"
+    - "Performance-critical modifications"
+    - "Complex compliance requirements"
+    - "High-risk business logic changes"
+
+# Integration with Justice System
+justice_integration:
+  policy_enforcement: true
+  violation_reporting: true
+  learning_from_violations: true
+  
+  violation_types:
+    - "style_violation"
+    - "documentation_violation"
+    - "basic_security_violation"
+    - "testing_violation"
+    - "process_violation"
+
+# Feedback and Improvement
+feedback_system:
+  collect_review_feedback: true
+  track_accuracy_metrics: true
+  identify_improvement_areas: true
+  
+  feedback_sources:
+    - "Senior auditor reviews"
+    - "Developer feedback"
+    - "Automated quality checks"
+    - "Peer junior auditor reviews"
+  
+  improvement_tracking:
+    - "Review quality trends"
+    - "Escalation accuracy"
+    - "Learning objective progress"
+    - "Skill development milestones"
