@@ -1,0 +1,64 @@
+title: CampfireValley
+description: A sophisticated multi-agent AI system for collaborative problem-solving through specialized AI campfires
+url: "https://mikehibbert.github.io"
+baseurl: "/pyCamperValley"
+
+# Theme
+theme: minima
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+
+# Navigation
+header_pages:
+  - README.md
+  - DEMO_GUIDE.md
+  - DEPLOYMENT.md
+  - TROUBLESHOOTING.md
+
+# Markdown settings
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Collections
+collections:
+  docs:
+    output: true
+    permalink: /:collection/:name/
+
+# Defaults
+defaults:
+  - scope:
+      path: ""
+      type: "pages"
+    values:
+      layout: "page"
+  - scope:
+      path: ""
+      type: "docs"
+    values:
+      layout: "page"
+
+# Exclude from processing
+exclude:
+  - .env
+  - .gitignore
+  - campfirevalley/
+  - config/
+  - data/
+  - dist/
+  - build/
+  - tests/
+  - examples/
+  - monitoring/
+  - "*.py"
+  - "*.pyc"
+  - requirements.txt
+  - setup.py
+  - Dockerfile
+  - docker-compose.yml
+  - "*.json"
+  - "*.html"
