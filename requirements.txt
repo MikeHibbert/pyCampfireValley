@@ -9,6 +9,15 @@ redis>=4.5.0
 cryptography>=41.0.0
 aiofiles>=23.0.0
 
+# Web interface dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+aiohttp>=3.8.0
+websockets>=12.0
+
+# Compression dependencies
+lz4>=4.3.0
+
 # Enterprise features dependencies
 prometheus-client>=0.17.0  # For metrics collection
 structlog>=23.0.0         # For structured logging
