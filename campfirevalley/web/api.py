@@ -91,7 +91,7 @@ campfire_error_rate = Gauge(
 
 
 # Initialize FastAPI app
-app = FastAPI(title="CampfireValley Visualization", version="1.0.0")
+app = FastAPI(title="CampfireValley Visualization", version="1.1.0")
 
 # Add CORS middleware
 app.add_middleware(

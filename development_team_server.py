@@ -53,7 +53,7 @@ class DevelopmentRequest(BaseModel):
 app = FastAPI(
     title="CampfireValley Development Team",
     description="Development team server for processing website ideas",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # Add CORS middleware
