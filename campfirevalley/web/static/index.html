@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CampfireValley Visualization</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <div class="sidebar">
+            <h2>🏔️ CampfireValley</h2>
+            
+            <div class="control-panel">
+                <div class="control-group">
+                    <label>View Mode</label>
+                    <select id="viewMode">
+                        <option value="overview">Valley Overview</option>
+                        <option value="campfires">Campfire Details</option>
+                        <option value="campers">Camper Details</option>
+                    </select>
+                </div>
+                
+                <div class="control-group">
+                    <label>Filter</label>
+                    <input type="text" id="filterInput" placeholder="Filter nodes...">
+                </div>
+                
+                <div class="zoom-controls">
+                    <button class="zoom-btn" id="zoomIn">Zoom In</button>
+                    <button class="zoom-btn" id="zoomOut">Zoom Out</button>
+                    <button class="zoom-btn" id="resetView">Reset</button>
+                </div>
+                
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="showConnections" checked> Show Connections
+                    </label>
+                </div>
+                
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="showTorchFlow" checked> Show Torch Flow
+                    </label>
+                </div>
+                
+                <div class="control-group">
+                    <label>
+                        <input type="checkbox" id="autoRefresh" checked> Auto Refresh
+                    </label>
+                </div>
+            </div>
+            
+            <div class="node-info" id="nodeInfo" style="display: none;">
+                <h3 id="nodeTitle">Node Details</h3>
+                <div id="nodeDetails"></div>
+            </div>
+            
+            <div class="node-info">
+                <h3>Legend</h3>
+                <div class="info-item">
+                    <span><span class="status-indicator status-active"></span>Active</span>
+                </div>
+                <div class="info-item">
+                    <span><span class="status-indicator status-busy"></span>Busy</span>
+                </div>
+                <div class="info-item">
+                    <span><span class="status-indicator status-error"></span>Error</span>
+                </div>
+                <div class="info-item">
+                    <span><span class="status-indicator status-offline"></span>Offline</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="canvas-container">
+            <div class="connection-status" id="connectionStatus">
+                <span id="connectionText">Connecting...</span>
+            </div>
+            
+            <div class="toolbar">
+                <button class="toolbar-btn" id="fullscreenBtn" title="Toggle Fullscreen">⛶</button>
+                <button class="toolbar-btn" id="exportBtn" title="Export View">📷</button>
+                <button class="toolbar-btn" id="settingsBtn" title="Settings">⚙️</button>
+            </div>
+            
+            <div class="visualization-canvas" id="canvas">
+                <div class="loading" id="loading">Loading valley visualization...</div>
+            </div>
+            
+            <div class="minimap" id="minimap">
+                <canvas width="200" height="150"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/visualization.js"></script>
+</body>
+</html>

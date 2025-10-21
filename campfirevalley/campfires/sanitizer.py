@@ -22,7 +22,7 @@ from ..interfaces import ICampfire, IMCPBroker, ISanitizerCampfire
 from ..models import Torch, CampfireConfig, ScanResult, SecurityLevel
 from ..campfire import Campfire, ICamper
 from ..vali import VALICoordinator, VALIServiceType
-from ..security_scanner import SecurityScanner, ThreatLevel, ScanEngine
+from ..security_scanner import EnhancedSecurityScanner, ThreatLevel, ScanEngine
 
 
 logger = logging.getLogger(__name__)
@@ -77,14 +77,10 @@ class ScannerCamper(ICamper):
         self.scan_engines = config.get('scan_engines', ['MALWARE_DETECTOR', 'XSS_DETECTOR'])
         self.threat_threshold = ThreatLevel(config.get('threat_threshold', 'MEDIUM'))
         self.vali_coordinator = None
-        self.security_scanner = SecurityScanner()
+        self.security_scanner = EnhancedSecurityScanner()
         self._running = False
         
-        # Initialize scan engines
-        for engine_name in self.scan_engines:
-            if hasattr(ScanEngine, engine_name):
-                engine = getattr(ScanEngine, engine_name)
-                self.security_scanner.add_engine(engine)
+        # EnhancedSecurityScanner has built-in engines, no need to add them manually
         
         logger.debug("ScannerCamper initialized")
     
@@ -128,7 +124,7 @@ class ScannerCamper(ICamper):
         
         try:
             # Perform security scan
-            scan_result = await self.security_scanner.scan_content(torch.payload)
+            scan_result = await self.security_scanner.comprehensive_scan(torch, SecurityLevel.STANDARD)
             
             # Additional VALI validation if available
             vali_result = None

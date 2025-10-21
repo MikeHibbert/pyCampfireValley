@@ -187,9 +187,9 @@ class Campfire(BaseCampfire, ICampfire):
     
     async def _subscribe_to_channels(self) -> None:
         """Subscribe to configured MCP channels"""
-        # Check if MCP broker is connected
-        if not self.mcp_broker.is_connected():
-            logger.warning(f"MCP broker not connected, skipping channel subscriptions for campfire '{self.config.name}'")
+        # Check if MCP broker exists and is connected
+        if not self.mcp_broker or not self.mcp_broker.is_connected():
+            logger.warning(f"MCP broker not available or not connected, skipping channel subscriptions for campfire '{self.config.name}'")
             return
         
         for channel in self.config.channels:

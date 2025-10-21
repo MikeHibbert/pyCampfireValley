@@ -15,7 +15,7 @@ from campfirevalley.monitoring import (
     IMetricsCollector, IAlertManager, ILogHandler,
     InMemoryMetricsCollector, ConsoleAlertManager, StructuredLogHandler,
     get_monitoring_system, log_info, log_warning, log_error,
-    record_metric, send_alert
+    record_counter, record_gauge, send_alert
 )
 
 

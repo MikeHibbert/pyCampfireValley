@@ -100,20 +100,23 @@ class Valley(IValley):
             # Continue with basic config
         
         try:
-            # Initialize MCP broker
-            if not self.mcp_broker:
+            # Initialize MCP broker only if URL is provided
+            if not self.mcp_broker and self.mcp_broker_url:
                 from .mcp import RedisMCPBroker  # Import here to avoid circular imports
                 self.mcp_broker = RedisMCPBroker(self.mcp_broker_url)
             
             # Try to connect to MCP broker, but continue if it fails (for demo purposes)
-            try:
-                broker_connected = await self.mcp_broker.connect()
-                if broker_connected:
-                    logger.info("MCP broker connected successfully")
-                else:
-                    logger.warning("MCP broker connection failed, continuing without it")
-            except Exception as e:
-                logger.warning(f"MCP broker connection failed: {e}, continuing without it")
+            if self.mcp_broker:
+                try:
+                    broker_connected = await self.mcp_broker.connect()
+                    if broker_connected:
+                        logger.info("MCP broker connected successfully")
+                    else:
+                        logger.warning("MCP broker connection failed, continuing without it")
+                except Exception as e:
+                    logger.warning(f"MCP broker connection failed: {e}, continuing without it")
+            else:
+                logger.info("No MCP broker configured, running in standalone mode")
             
             # Initialize Party Box if not provided
             if not self.party_box:
@@ -122,8 +125,8 @@ class Valley(IValley):
             
             # Initialize key manager
             from .key_manager import CampfireKeyManager
-            self.key_manager = CampfireKeyManager()
-            await self.key_manager.initialize()
+            self.key_manager = CampfireKeyManager(valley_name=self.name)
+            await self.key_manager.initialize_valley_keys()
             logger.info("Key manager initialized")
             
             # Initialize federation manager
@@ -150,7 +153,7 @@ class Valley(IValley):
                 logger.info("VALI coordinator started")
             
             # Create and start dock if auto_create_dock is enabled and MCP broker is connected
-            if self.config.env.get("auto_create_dock", True) and self.mcp_broker.is_connected():
+            if self.config.env.get("auto_create_dock", True) and self.mcp_broker and self.mcp_broker.is_connected():
                 from .dock import Dock  # Import here to avoid circular imports
                 self.dock = Dock(
                     valley_name=self.name,
@@ -272,9 +275,9 @@ class Valley(IValley):
         
         try:
             success = await self.federation_manager.join_federation(federation_id, discovery_endpoint)
-             if success:
-                 # Create federation membership record
-                 membership = FederationMembership(
+            if success:
+                # Create federation membership record
+                membership = FederationMembership(
                     federation_id=federation_id,
                     valley_name=self.name,
                     joined_at=datetime.now(),

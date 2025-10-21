@@ -3,7 +3,7 @@ Data models for CampfireValley using Pydantic for type validation.
 Extends the base pyCampfires models with CampfireValley-specific functionality.
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, List, Any, Union
 from datetime import datetime
 from enum import Enum
@@ -51,7 +51,8 @@ class Torch(BaseTorch):
     data: Dict[str, Any] = Field(default_factory=dict, description="Torch data payload")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Torch metadata")
     
-    @validator('target_address')
+    @field_validator('target_address')
+    @classmethod
     def validate_address_format(cls, v):
         """Validate hierarchical address format: valley:name/campfire/camper"""
         if not v or ':' not in v:
@@ -368,7 +369,8 @@ class ValleyConfig(BaseModel):
         "trusted_valleys": []
     })
     
-    @validator('env')
+    @field_validator('env')
+    @classmethod
     def validate_env_config(cls, v):
         """Validate environment configuration"""
         valid_dock_modes = ["public", "partial", "private"]
@@ -391,7 +393,8 @@ class CommunityMembership(BaseModel):
     joined_at: datetime = Field(default_factory=datetime.utcnow)
     trust_level: TrustLevel = Field(default=TrustLevel.BASIC)
     
-    @validator('community_name')
+    @field_validator('community_name')
+    @classmethod
     def validate_community_name(cls, v):
         """Validate community name format"""
         if not v or len(v) < 3:
@@ -399,40 +402,7 @@ class CommunityMembership(BaseModel):
         return v
 
 
-class CampfireConfig(BaseModel):
-    """Configuration for provisioned campfires following GitHub Actions job format"""
-    name: str = Field(..., description="Campfire name")
-    runs_on: str = Field(default="valley", description="Where the campfire runs")
-    
-    # Environment variables like GitHub Actions
-    env: Dict[str, str] = Field(default_factory=dict)
-    
-    # Strategy matrix for multiple configurations
-    strategy: Dict[str, Any] = Field(default_factory=lambda: {"matrix": {}})
-    
-    # Steps similar to GitHub Actions/Ansible tasks
-    steps: List[Dict[str, Any]] = Field(default_factory=list)
-    
-    # Needs/dependencies like GitHub Actions
-    needs: List[str] = Field(default_factory=list)
-    
-    # Conditional execution
-    if_condition: Optional[str] = Field(None, alias="if")
-    
-    # Outputs for other campfires to use
-    outputs: Dict[str, str] = Field(default_factory=dict)
-    
-    # Traditional campfire settings
-    rag_paths: List[str] = Field(default_factory=list)
-    auditor_enabled: bool = Field(default=True)
-    channels: List[str] = Field(default_factory=list)
-    
-    @validator('name')
-    def validate_campfire_name(cls, v):
-        """Validate campfire name format"""
-        if not v or len(v) < 2:
-            raise ValueError("Campfire name must be at least 2 characters")
-        return v
+
 
 
 class FederationMembership(BaseModel):
@@ -445,7 +415,8 @@ class FederationMembership(BaseModel):
     status: str = Field(default="active", description="Membership status: active, inactive, suspended")
     capabilities: List[str] = Field(default_factory=list, description="Services this valley provides")
     
-    @validator('status')
+    @field_validator('status')
+    @classmethod
     def validate_status(cls, v):
         """Validate membership status"""
         valid_statuses = ["active", "inactive", "suspended"]
@@ -463,7 +434,8 @@ class VALIServiceRequest(BaseModel):
     deadline: Optional[datetime] = Field(None, description="Service deadline")
     priority: str = Field(default="normal", description="Request priority: low, normal, high, urgent")
     
-    @validator('priority')
+    @field_validator('priority')
+    @classmethod
     def validate_priority(cls, v):
         """Validate request priority"""
         valid_priorities = ["low", "normal", "high", "urgent"]
@@ -480,7 +452,8 @@ class VALIServiceResponse(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     completed_at: Optional[datetime] = Field(None)
     
-    @validator('status')
+    @field_validator('status')
+    @classmethod
     def validate_status(cls, v):
         """Validate response status"""
         valid_statuses = ["completed", "in_progress", "failed", "cancelled"]

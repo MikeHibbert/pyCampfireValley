@@ -297,6 +297,9 @@ class DeduplicationManager:
     
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # Ensure the directory exists
+        db_parent = Path(self.db_path).parent
+        db_parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
     
     def _init_database(self):
@@ -315,70 +318,91 @@ class DeduplicationManager:
     
     async def check_duplicate(self, checksum: str) -> Optional[Tuple[str, str]]:
         """Check if data with this checksum already exists"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT object_id, storage_path FROM dedup_index WHERE checksum = ?",
-                (checksum,)
-            )
-            result = cursor.fetchone()
-            return result if result else None
+        import asyncio
+        
+        db_path = self.db_path  # Capture the db_path for the inner function
+        
+        def _check_duplicate():
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT object_id, storage_path FROM dedup_index WHERE checksum = ?",
+                    (checksum,)
+                )
+                result = cursor.fetchone()
+                return result if result else None
+        
+        return await asyncio.to_thread(_check_duplicate)
     
     async def add_reference(self, checksum: str, object_id: str, storage_path: str) -> bool:
         """Add a reference to existing data or create new entry"""
-        with sqlite3.connect(self.db_path) as conn:
-            # Check if checksum exists
-            cursor = conn.execute(
-                "SELECT ref_count FROM dedup_index WHERE checksum = ?",
-                (checksum,)
-            )
-            result = cursor.fetchone()
-            
-            if result:
-                # Increment reference count
-                conn.execute(
-                    "UPDATE dedup_index SET ref_count = ref_count + 1 WHERE checksum = ?",
+        import asyncio
+        
+        db_path = self.db_path  # Capture the db_path for the inner function
+        
+        def _add_reference():
+            with sqlite3.connect(db_path) as conn:
+                # Check if checksum exists
+                cursor = conn.execute(
+                    "SELECT ref_count FROM dedup_index WHERE checksum = ?",
                     (checksum,)
                 )
-                conn.commit()
-                return True  # Deduplicated
-            else:
-                # Create new entry
-                conn.execute(
-                    "INSERT INTO dedup_index (checksum, object_id, storage_path) VALUES (?, ?, ?)",
-                    (checksum, object_id, storage_path)
-                )
-                conn.commit()
-                return False  # Not deduplicated
+                result = cursor.fetchone()
+                
+                if result:
+                    # Increment reference count
+                    conn.execute(
+                        "UPDATE dedup_index SET ref_count = ref_count + 1 WHERE checksum = ?",
+                        (checksum,)
+                    )
+                    conn.commit()
+                    return True  # Deduplicated
+                else:
+                    # Create new entry
+                    conn.execute(
+                        "INSERT INTO dedup_index (checksum, object_id, storage_path) VALUES (?, ?, ?)",
+                        (checksum, object_id, storage_path)
+                    )
+                    conn.commit()
+                    return False  # Not deduplicated
+        
+        return await asyncio.to_thread(_add_reference)
     
     async def remove_reference(self, checksum: str) -> bool:
         """Remove a reference and return True if this was the last reference"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT ref_count FROM dedup_index WHERE checksum = ?",
-                (checksum,)
-            )
-            result = cursor.fetchone()
-            
-            if not result:
-                return True  # Already gone
-            
-            ref_count = result[0]
-            if ref_count <= 1:
-                # Remove entry
-                conn.execute(
-                    "DELETE FROM dedup_index WHERE checksum = ?",
+        import asyncio
+        
+        db_path = self.db_path  # Capture the db_path for the inner function
+        
+        def _remove_reference():
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT ref_count FROM dedup_index WHERE checksum = ?",
                     (checksum,)
                 )
-                conn.commit()
-                return True  # Last reference removed
-            else:
-                # Decrement reference count
-                conn.execute(
-                    "UPDATE dedup_index SET ref_count = ref_count - 1 WHERE checksum = ?",
-                    (checksum,)
-                )
-                conn.commit()
-                return False  # Still has references
+                result = cursor.fetchone()
+                
+                if not result:
+                    return True  # Already gone
+                
+                ref_count = result[0]
+                if ref_count <= 1:
+                    # Remove entry
+                    conn.execute(
+                        "DELETE FROM dedup_index WHERE checksum = ?",
+                        (checksum,)
+                    )
+                    conn.commit()
+                    return True  # Last reference removed
+                else:
+                    # Decrement reference count
+                    conn.execute(
+                        "UPDATE dedup_index SET ref_count = ref_count - 1 WHERE checksum = ?",
+                        (checksum,)
+                    )
+                    conn.commit()
+                    return False  # Still has references
+        
+        return await asyncio.to_thread(_remove_reference)
     
     async def get_stats(self) -> Dict[str, Any]:
         """Get deduplication statistics"""
@@ -520,6 +544,8 @@ class HierarchicalStorageManager:
         # Check for deduplication
         is_deduplicated = False
         storage_path = None
+        compressed_data = data
+        compression_type = CompressionType.NONE
         
         if policy.deduplication:
             existing = await self.dedup_manager.check_duplicate(checksum)
@@ -529,19 +555,18 @@ class HierarchicalStorageManager:
                 storage_path = existing[1]
                 await self.dedup_manager.add_reference(checksum, object_id, storage_path)
                 
-                # Get existing metadata for tier info
+                # Get existing metadata for compression and tier info
                 existing_metadata = await self._get_metadata(existing[0])
                 if existing_metadata:
                     tier = existing_metadata.tier
+                    compression_type = existing_metadata.compression_type
+                    compressed_data = await self.compression_manager.compress(data, compression_type)
         
         # Determine storage tier
         if tier is None:
             tier = self._determine_initial_tier(len(data), policy)
         
         # Compress data if not deduplicated
-        compressed_data = data
-        compression_type = CompressionType.NONE
-        
         if not is_deduplicated:
             compression_type = policy.compression
             compressed_data = await self.compression_manager.compress(data, compression_type)
@@ -1026,8 +1051,9 @@ class HierarchicalStorageManager:
 class HierarchicalPartyBox(IPartyBox):
     """Enhanced Party Box with hierarchical storage management"""
     
-    def __init__(self, base_path: str = "./hierarchical_party_box"):
+    def __init__(self, base_path: str = "./hierarchical_party_box", policy=None):
         self.base_path = Path(base_path)
+        self.policy = policy
         self.hsm = HierarchicalStorageManager(str(self.base_path / "hsm"))
         
         # Category mappings
@@ -1041,7 +1067,7 @@ class HierarchicalPartyBox(IPartyBox):
         logger.info(f"Hierarchical Party Box initialized at: {self.base_path}")
     
     async def store_attachment(self, attachment_id: str, content: bytes) -> str:
-        """Store an attachment using hierarchical storage"""
+        """Store an attachment using hierarchical storage (interface method)"""
         
         tags = self.category_tags["attachments"].copy()
         tags["attachment_id"] = attachment_id
@@ -1053,7 +1079,27 @@ class HierarchicalPartyBox(IPartyBox):
         )
         
         logger.debug(f"Stored attachment {attachment_id} in {metadata.tier.value} tier")
-        return f"hsm://{metadata.tier.value}/{attachment_id}"
+        return attachment_id
+    
+    async def store_attachment_with_torch(self, torch_id: str, filename: str, content: bytes) -> str:
+        """Store an attachment with torch_id and filename (for test compatibility)"""
+        
+        # Create a unique attachment ID combining torch_id and filename
+        attachment_id = f"{torch_id}_{filename}"
+        
+        tags = self.category_tags["attachments"].copy()
+        tags["attachment_id"] = attachment_id
+        tags["torch_id"] = torch_id
+        tags["filename"] = filename
+        
+        metadata = await self.hsm.store_object(
+            object_id=attachment_id,
+            data=content,
+            tags=tags
+        )
+        
+        logger.debug(f"Stored attachment {attachment_id} in {metadata.tier.value} tier")
+        return attachment_id
     
     async def retrieve_attachment(self, attachment_id: str) -> Optional[bytes]:
         """Retrieve an attachment from hierarchical storage"""
@@ -1066,25 +1112,68 @@ class HierarchicalPartyBox(IPartyBox):
         
         return content
     
-    async def delete_attachment(self, attachment_id: str) -> bool:
+    async def get_attachment(self, torch_id: str, attachment_id: str) -> Optional[bytes]:
+        """Get an attachment by torch_id and attachment_id (for test compatibility)"""
+        
+        # If attachment_id already includes torch_id, use it directly
+        if attachment_id.startswith(f"{torch_id}_"):
+            return await self.retrieve_attachment(attachment_id)
+        else:
+            # Otherwise, construct the full attachment ID
+            full_attachment_id = f"{torch_id}_{attachment_id}"
+            return await self.retrieve_attachment(full_attachment_id)
+    
+    async def delete_attachment(self, torch_id_or_attachment_id: str, attachment_id: str = None) -> bool:
         """Delete an attachment from hierarchical storage"""
         
-        result = await self.hsm.delete_object(attachment_id)
-        if result:
-            logger.debug(f"Deleted attachment {attachment_id}")
+        # Handle both single parameter (attachment_id) and dual parameter (torch_id, attachment_id) calls
+        if attachment_id is None:
+            # Single parameter call - torch_id_or_attachment_id is actually the attachment_id
+            target_attachment_id = torch_id_or_attachment_id
         else:
-            logger.warning(f"Failed to delete attachment {attachment_id}")
+            # Dual parameter call - construct full attachment_id from torch_id and attachment_id
+            if attachment_id.startswith(f"{torch_id_or_attachment_id}_"):
+                target_attachment_id = attachment_id
+            else:
+                target_attachment_id = f"{torch_id_or_attachment_id}_{attachment_id}"
+        
+        result = await self.hsm.delete_object(target_attachment_id)
+        if result:
+            logger.debug(f"Deleted attachment {target_attachment_id}")
+        else:
+            logger.warning(f"Failed to delete attachment {target_attachment_id}")
         
         return result
     
-    async def list_attachments(self, category: str = "all") -> List[str]:
-        """List attachments in a category"""
+    async def list_attachments(self, torch_id_or_category: str = "all") -> List[Dict[str, Any]]:
+        """List attachments for a torch_id or category"""
         
-        if category == "all":
-            return await self.hsm.list_objects()
+        if torch_id_or_category == "all":
+            object_ids = await self.hsm.list_objects()
+        elif torch_id_or_category in self.category_tags:
+            # It's a category
+            tags = self.category_tags[torch_id_or_category]
+            object_ids = await self.hsm.list_objects(tags=tags)
         else:
-            tags = self.category_tags.get(category, {"category": category})
-            return await self.hsm.list_objects(tags=tags)
+            # It's a torch_id, search for attachments with this torch_id
+            tags = {"torch_id": torch_id_or_category}
+            object_ids = await self.hsm.list_objects(tags=tags)
+        
+        # Convert object IDs to attachment info dictionaries
+        attachments = []
+        for object_id in object_ids:
+            metadata = await self.hsm.get_object_metadata(object_id)
+            if metadata and metadata.tags:
+                attachment_info = {
+                    "attachment_id": object_id,
+                    "filename": metadata.tags.get("filename", object_id),
+                    "size": metadata.original_size,
+                    "created_at": metadata.created_at.isoformat() if metadata.created_at else None,
+                    "tier": metadata.tier.value if metadata.tier else "unknown"
+                }
+                attachments.append(attachment_info)
+        
+        return attachments
     
     async def move_to_quarantine(self, attachment_id: str) -> bool:
         """Move an attachment to quarantine"""

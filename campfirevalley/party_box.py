@@ -303,7 +303,7 @@ class PartyBoxManager:
             name: Unique name for the Party Box
             box_type: Type of Party Box ("filesystem" or "hierarchical")
             base_path: Base path for storage
-            **kwargs: Additional configuration options
+            **kwargs: Additional configuration options (e.g., policy for hierarchical)
             
         Returns:
             IPartyBox: Party Box instance
@@ -314,7 +314,9 @@ class PartyBoxManager:
         if box_type == "filesystem":
             party_box = FileSystemPartyBox(base_path)
         elif box_type == "hierarchical":
-            party_box = await create_hierarchical_party_box(base_path)
+            # Extract policy from kwargs if provided
+            policy = kwargs.get('policy', None)
+            party_box = HierarchicalPartyBox(base_path, policy=policy)
         else:
             raise ValueError(f"Unsupported Party Box type: {box_type}")
         
@@ -442,6 +444,33 @@ class PartyBoxManager:
         
         return optimization_results
     
+    async def get_statistics(self) -> Dict[str, Any]:
+        """Get manager statistics."""
+        
+        stats = {
+            "total_party_boxes": len(self.party_boxes),
+            "party_boxes_by_type": {},
+            "total_storage_size": 0,
+            "total_attachments": 0
+        }
+        
+        # Count by type
+        for party_box in self.party_boxes.values():
+            box_type = type(party_box).__name__
+            stats["party_boxes_by_type"][box_type] = stats["party_boxes_by_type"].get(box_type, 0) + 1
+            
+            # Try to get storage stats if available
+            try:
+                if hasattr(party_box, 'get_storage_stats'):
+                    storage_stats = await party_box.get_storage_stats()
+                    if isinstance(storage_stats, dict):
+                        stats["total_storage_size"] += storage_stats.get("total_size_bytes", 0)
+                        stats["total_attachments"] += storage_stats.get("total_objects", 0)
+            except Exception as e:
+                logger.debug(f"Could not get storage stats for {box_type}: {e}")
+        
+        return stats
+
     def list_party_boxes(self) -> List[Dict[str, str]]:
         """List all registered Party Boxes."""
         
