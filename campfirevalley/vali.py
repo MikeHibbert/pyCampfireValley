@@ -1,9 +1,10 @@
 """
-VALI (Validation and Inspection) Service Framework
+VALI (Valley Application Layer Interface) Service Framework
 
-This module provides the core framework for validation and inspection services
-in CampfireValley. VALI services are responsible for scanning, validating,
-and ensuring the security and compliance of torches and their payloads.
+This module provides the core framework for validation, inspection, and 
+inter-valley service communication in CampfireValley. VALI services are 
+responsible for scanning, validating, ensuring security and compliance of 
+torches, and facilitating service discovery across the federation.
 """
 
 import asyncio
@@ -12,22 +13,33 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional, Set, Callable
 from datetime import datetime, timedelta
 from enum import Enum
+from uuid import uuid4
 
 from .models import (
     Torch, VALIServiceRequest, VALIServiceResponse, ScanResult,
-    Violation, SecurityLevel
+    Violation, SecurityLevel, FederationMembership
 )
-from .interfaces import IMCPBroker
+from .interfaces import IMCPBroker, IFederationManager
 
 
 class VALIServiceType(str, Enum):
     """Types of VALI services available"""
+    # Validation and Security Services
     SECURITY_SCAN = "security_scan"
     CONTENT_VALIDATION = "content_validation"
     PAYLOAD_INSPECTION = "payload_inspection"
     SIGNATURE_VERIFICATION = "signature_verification"
     COMPLIANCE_CHECK = "compliance_check"
     MALWARE_DETECTION = "malware_detection"
+    
+    # Federation Services
+    SERVICE_DISCOVERY = "service_discovery"
+    AI_INFERENCE = "ai_inference"
+    DATA_PROCESSING = "data_processing"
+    COMPUTE_SERVICE = "compute_service"
+    STORAGE_SERVICE = "storage_service"
+    ANALYTICS_SERVICE = "analytics_service"
+    CUSTOM_SERVICE = "custom_service"
 
 
 class VALIServiceStatus(str, Enum):
@@ -84,36 +96,81 @@ class VALIServiceRegistry:
         """Get a registered service by type"""
         return self._services.get(service_type)
     
+    def get_service_capabilities(self, service_type: VALIServiceType) -> Optional[Dict[str, Any]]:
+        """Get capabilities metadata for a service"""
+        service = self._services.get(service_type)
+        if service:
+            try:
+                return service.get_capabilities()
+            except Exception:
+                return {}
+        return None
+    
     def list_services(self) -> List[VALIServiceType]:
         """List all registered service types"""
         return list(self._services.keys())
     
-    def get_service_capabilities(self, service_type: VALIServiceType) -> Optional[Dict[str, Any]]:
-        """Get capabilities for a specific service"""
-        return self._service_metadata.get(service_type)
+    def get_all_service_info(self) -> Dict[str, Dict[str, Any]]:
+        """Get information about all registered services"""
+        info = {}
+        for service_type, service in self._services.items():
+            try:
+                info[service_type.value] = {
+                    "type": service_type.value,
+                    "capabilities": service.get_capabilities() if hasattr(service, 'get_capabilities') else {},
+                    "status": "active"
+                }
+            except Exception as e:
+                info[service_type.value] = {
+                    "type": service_type.value,
+                    "capabilities": {},
+                    "status": "error",
+                    "error": str(e)
+                }
+        return info
 
 
 class VALICoordinator:
     """
     Coordinates VALI service requests and manages service orchestration
+    Supports both local validation services and federation service discovery
     """
     
-    def __init__(self, mcp_broker: IMCPBroker, registry: VALIServiceRegistry):
+    def __init__(self, mcp_broker: IMCPBroker, registry: VALIServiceRegistry, 
+                 federation_manager: Optional[IFederationManager] = None, valley_name: str = ""):
         self.mcp_broker = mcp_broker
         self.registry = registry
+        self.federation_manager = federation_manager
+        self.valley_name = valley_name
         self.logger = logging.getLogger(__name__)
         self._active_requests: Dict[str, VALIServiceRequest] = {}
         self._request_callbacks: Dict[str, Callable] = {}
         self._default_timeout = timedelta(minutes=5)
+        
+        # Federation service discovery
+        self._federation_services: Dict[str, List[Dict[str, Any]]] = {}
+        self._service_cache_ttl = timedelta(minutes=5)
+        self._last_discovery: Dict[str, datetime] = {}
+        self._pending_federation_requests: Dict[str, asyncio.Future] = {}
     
     async def start(self) -> None:
         """Start the VALI coordinator"""
         await self.mcp_broker.subscribe("vali.requests", self._handle_service_request)
+        await self.mcp_broker.subscribe("vali.discovery", self._handle_discovery_message)
+        await self.mcp_broker.subscribe(f"vali.valley.{self.valley_name}", self._handle_federation_message)
         self.logger.info("VALI Coordinator started")
     
     async def stop(self) -> None:
         """Stop the VALI coordinator"""
         await self.mcp_broker.unsubscribe("vali.requests")
+        await self.mcp_broker.unsubscribe("vali.discovery")
+        await self.mcp_broker.unsubscribe(f"vali.valley.{self.valley_name}")
+        
+        # Cancel pending federation requests
+        for future in self._pending_federation_requests.values():
+            if not future.done():
+                future.cancel()
+        
         self.logger.info("VALI Coordinator stopped")
     
     async def request_service(
@@ -299,6 +356,283 @@ class VALICoordinator:
             
         except Exception as e:
             self.logger.error(f"Error handling VALI service request: {e}")
+    
+    async def discover_federation_services(self, service_type: VALIServiceType, 
+                                         force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """
+        Discover services across the federation
+        
+        Args:
+            service_type: Type of service to discover
+            force_refresh: Force refresh of service cache
+            
+        Returns:
+            List of available service providers
+        """
+        if not self.federation_manager:
+            self.logger.warning("Federation manager not available for service discovery")
+            return []
+        
+        service_key = service_type.value
+        
+        # Check cache first
+        if not force_refresh and service_key in self._federation_services:
+            last_discovery = self._last_discovery.get(service_key, datetime.min)
+            if datetime.utcnow() - last_discovery < self._service_cache_ttl:
+                return self._federation_services[service_key]
+        
+        try:
+            # Send discovery request
+            discovery_request = {
+                "type": "service_discovery",
+                "service_type": service_key,
+                "requester": self.valley_name,
+                "request_id": str(uuid4()),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            await self.mcp_broker.publish("vali.discovery", discovery_request)
+            
+            # Wait for responses
+            await asyncio.sleep(2)  # Give time for responses
+            
+            # Return cached results
+            return self._federation_services.get(service_key, [])
+            
+        except Exception as e:
+            self.logger.error(f"Failed to discover federation services for {service_type}: {e}")
+            return []
+    
+    async def call_federation_service(self, target_valley: str, service_type: VALIServiceType,
+                                    parameters: Dict[str, Any], timeout: Optional[int] = None) -> Optional[VALIServiceResponse]:
+        """
+        Call a service on another valley in the federation
+        
+        Args:
+            target_valley: Name of the target valley
+            service_type: Type of service to call
+            parameters: Service parameters
+            timeout: Request timeout in seconds
+            
+        Returns:
+            Service response or None if failed
+        """
+        if not self.federation_manager:
+            self.logger.warning("Federation manager not available for inter-valley calls")
+            return None
+        
+        try:
+            request_id = str(uuid4())
+            request_timeout = timeout or 30
+            
+            # Create service request
+            request = VALIServiceRequest(
+                request_id=request_id,
+                service_type=service_type.value,
+                requester_valley=self.valley_name,
+                target_valley=target_valley,
+                parameters=parameters
+            )
+            
+            # Create future for response
+            response_future = asyncio.Future()
+            self._pending_federation_requests[request_id] = response_future
+            
+            # Send request via federation manager
+            torch = Torch(
+                sender_valley=self.valley_name,
+                target_address=f"{target_valley}:vali",
+                data={"vali_request": request.dict()},
+                signature="",  # Will be signed by federation manager
+                source="vali_service",
+                destination=f"{target_valley}:vali"
+            )
+            
+            success = await self.federation_manager.send_torch_to_valley(target_valley, torch)
+            if not success:
+                self._pending_federation_requests.pop(request_id, None)
+                return None
+            
+            # Wait for response
+            try:
+                response = await asyncio.wait_for(response_future, timeout=request_timeout)
+                return response
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Federation service call timeout: {service_type} on {target_valley}")
+                return None
+            finally:
+                self._pending_federation_requests.pop(request_id, None)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to call federation service {service_type} on {target_valley}: {e}")
+            return None
+    
+    async def register_federation_service(self, service_type: VALIServiceType, 
+                                        metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Register this valley's service with the federation
+        
+        Args:
+            service_type: Type of service to register
+            metadata: Optional service metadata
+            
+        Returns:
+            True if registered successfully
+        """
+        try:
+            service_info = {
+                "service_type": service_type.value,
+                "valley_id": self.valley_name,
+                "metadata": metadata or {},
+                "registered_at": datetime.utcnow().isoformat(),
+                "endpoint": f"vali.valley.{self.valley_name}"
+            }
+            
+            # Announce service to federation
+            announcement = {
+                "type": "service_announcement",
+                "service": service_info,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            await self.mcp_broker.publish("vali.discovery", announcement)
+            
+            # Add to local registry if not already present
+            if not self.registry.get_service(service_type):
+                self.logger.info(f"Registered federation service: {service_type}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to register federation service {service_type}: {e}")
+            return False
+    
+    async def _handle_discovery_message(self, message: Dict[str, Any]) -> None:
+        """Handle service discovery messages"""
+        try:
+            msg_type = message.get("type")
+            
+            if msg_type == "service_discovery":
+                # Respond if we have the requested service
+                service_type = message.get("service_type")
+                requester = message.get("requester")
+                
+                if requester != self.valley_name:
+                    # Check if we have this service locally
+                    vali_service_type = VALIServiceType(service_type)
+                    if self.registry.get_service(vali_service_type):
+                        response = {
+                            "type": "service_response",
+                            "request_id": message.get("request_id"),
+                            "service": {
+                                "service_type": service_type,
+                                "valley_id": self.valley_name,
+                                "metadata": self.registry.get_service_capabilities(vali_service_type) or {},
+                                "endpoint": f"vali.valley.{self.valley_name}"
+                            },
+                            "responder": self.valley_name,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                        
+                        await self.mcp_broker.publish("vali.discovery", response)
+            
+            elif msg_type == "service_response":
+                # Cache discovered service
+                service = message.get("service")
+                if service:
+                    service_type = service.get("service_type")
+                    if service_type:
+                        if service_type not in self._federation_services:
+                            self._federation_services[service_type] = []
+                        
+                        # Update or add service
+                        existing = None
+                        for i, cached_service in enumerate(self._federation_services[service_type]):
+                            if cached_service.get("valley_id") == service.get("valley_id"):
+                                existing = i
+                                break
+                        
+                        if existing is not None:
+                            self._federation_services[service_type][existing] = service
+                        else:
+                            self._federation_services[service_type].append(service)
+                        
+                        self._last_discovery[service_type] = datetime.utcnow()
+            
+            elif msg_type == "service_announcement":
+                # Cache announced service
+                service = message.get("service")
+                if service:
+                    service_type = service.get("service_type")
+                    if service_type:
+                        if service_type not in self._federation_services:
+                            self._federation_services[service_type] = []
+                        
+                        self._federation_services[service_type].append(service)
+                        self._last_discovery[service_type] = datetime.utcnow()
+            
+        except Exception as e:
+            self.logger.error(f"Error handling discovery message: {e}")
+    
+    async def _handle_federation_message(self, message: Dict[str, Any]) -> None:
+        """Handle federation service messages"""
+        try:
+            if message.get("type") == "vali_request":
+                request_data = message.get("request")
+                if request_data:
+                    request = VALIServiceRequest(**request_data)
+                    await self._process_federation_request(request)
+            
+            elif message.get("type") == "vali_response":
+                response_data = message.get("response")
+                if response_data:
+                    response = VALIServiceResponse(**response_data)
+                    await self._process_federation_response(response)
+            
+        except Exception as e:
+            self.logger.error(f"Error handling federation message: {e}")
+    
+    async def _process_federation_request(self, request: VALIServiceRequest) -> None:
+        """Process incoming federation service request"""
+        try:
+            service_type = VALIServiceType(request.service_type)
+            service = self.registry.get_service(service_type)
+            
+            if service:
+                # Process the request locally
+                response = await service.process_request(request)
+            else:
+                # Service not available
+                response = VALIServiceResponse(
+                    request_id=request.request_id,
+                    status=VALIServiceStatus.FAILED.value,
+                    deliverables={},
+                    metadata={"error": f"Service not available: {service_type}"}
+                )
+            
+            # Send response back
+            response_message = {
+                "type": "vali_response",
+                "response": response.dict(),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            await self.mcp_broker.publish(f"vali.valley.{request.requester_valley}", response_message)
+            
+        except Exception as e:
+            self.logger.error(f"Error processing federation request: {e}")
+    
+    async def _process_federation_response(self, response: VALIServiceResponse) -> None:
+        """Process incoming federation service response"""
+        try:
+            # Find pending request
+            if response.request_id in self._pending_federation_requests:
+                future = self._pending_federation_requests[response.request_id]
+                if not future.done():
+                    future.set_result(response)
+            
+        except Exception as e:
+            self.logger.error(f"Error processing federation response: {e}")
 
 
 class BaseVALIService(IVALIService):

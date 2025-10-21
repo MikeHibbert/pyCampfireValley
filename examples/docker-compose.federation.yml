@@ -1,0 +1,201 @@
+version: '3.8'
+
+services:
+  # Redis for MCP broker communication
+  redis:
+    image: redis:7-alpine
+    container_name: campfire_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - campfire_federation
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # TechValley - Software development and engineering
+  tech_valley:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: tech_valley
+    environment:
+      - VALLEY_NAME=TechValley
+      - VALLEY_DESCRIPTION=Software development and engineering valley
+      - VALLEY_PORT=8001
+      - REDIS_URL=redis://redis:6379
+      - FEDERATION_NAME=InnovationFederation
+      - LOG_LEVEL=INFO
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./config/federation:/app/config/federation
+      - tech_valley_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - campfire_federation
+    command: python -m campfirevalley.cli start-valley --config config/federation/techvalley.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # CreativeValley - Design and marketing
+  creative_valley:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: creative_valley
+    environment:
+      - VALLEY_NAME=CreativeValley
+      - VALLEY_DESCRIPTION=Design and marketing valley
+      - VALLEY_PORT=8002
+      - REDIS_URL=redis://redis:6379
+      - FEDERATION_NAME=InnovationFederation
+      - LOG_LEVEL=INFO
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./config/federation:/app/config/federation
+      - creative_valley_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - campfire_federation
+    command: python -m campfirevalley.cli start-valley --config config/federation/creativevalley.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # BusinessValley - Strategy and operations
+  business_valley:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: business_valley
+    environment:
+      - VALLEY_NAME=BusinessValley
+      - VALLEY_DESCRIPTION=Strategy and operations valley
+      - VALLEY_PORT=8003
+      - REDIS_URL=redis://redis:6379
+      - FEDERATION_NAME=InnovationFederation
+      - LOG_LEVEL=INFO
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./config/federation:/app/config/federation
+      - business_valley_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - campfire_federation
+    command: python -m campfirevalley.cli start-valley --config config/federation/businessvalley.yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Federation Demo Runner
+  federation_demo:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: federation_demo
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./:/app/examples
+    depends_on:
+      - tech_valley
+      - creative_valley
+      - business_valley
+    networks:
+      - campfire_federation
+    command: python examples/federation_demo.py
+    profiles:
+      - demo
+
+  # Monitoring and observability
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: campfire_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - campfire_federation
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: campfire_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    networks:
+      - campfire_federation
+    profiles:
+      - monitoring
+
+  # Redis Commander for Redis management
+  redis_commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis_commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - campfire_federation
+    profiles:
+      - tools
+
+networks:
+  campfire_federation:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis_data:
+    driver: local
+  tech_valley_data:
+    driver: local
+  creative_valley_data:
+    driver: local
+  business_valley_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

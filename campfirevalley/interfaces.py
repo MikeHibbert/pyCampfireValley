@@ -252,3 +252,123 @@ class IJustice(ABC):
     async def manage_community_access(self, valley_id: str, action: str) -> bool:
         """Manage access for a valley in the community"""
         pass
+
+
+class IFederationManager(ABC):
+    """Interface for managing federation membership and operations"""
+    
+    @abstractmethod
+    async def join_federation(self, federation_name: str, invitation_key: str) -> bool:
+        """Join a federation with an invitation key"""
+        pass
+    
+    @abstractmethod
+    async def leave_federation(self, federation_name: str) -> bool:
+        """Leave a federation"""
+        pass
+    
+    @abstractmethod
+    async def discover_valleys(self, federation_name: str) -> List['FederationMembership']:
+        """Discover other valleys in the federation"""
+        pass
+    
+    @abstractmethod
+    async def announce_capabilities(self, capabilities: List[str]) -> bool:
+        """Announce this valley's capabilities to the federation"""
+        pass
+    
+    @abstractmethod
+    async def get_federation_status(self, federation_name: str) -> Optional['FederationMembership']:
+        """Get this valley's status in a federation"""
+        pass
+    
+    @abstractmethod
+    async def heartbeat(self, federation_name: str) -> bool:
+        """Send heartbeat to maintain federation membership"""
+        pass
+
+
+class IVALIService(ABC):
+    """Interface for VALI (Valley Application Layer Interface) services"""
+    
+    @abstractmethod
+    async def handle_service_request(self, request: 'VALIServiceRequest') -> 'VALIServiceResponse':
+        """Handle an incoming VALI service request"""
+        pass
+    
+    @abstractmethod
+    async def send_service_request(self, target_valley: str, request: 'VALIServiceRequest') -> 'VALIServiceResponse':
+        """Send a service request to another valley"""
+        pass
+    
+    @abstractmethod
+    async def get_available_services(self) -> List[str]:
+        """Get list of services this valley provides"""
+        pass
+    
+    @abstractmethod
+    async def register_service_handler(self, service_type: str, handler) -> bool:
+        """Register a handler for a specific service type"""
+        pass
+    
+    @abstractmethod
+    async def unregister_service_handler(self, service_type: str) -> bool:
+        """Unregister a service handler"""
+        pass
+
+
+class IDockmasterCampfire(ABC):
+    """Interface for Dockmaster campfire operations"""
+    
+    @abstractmethod
+    async def unpack_torch(self, torch: Torch) -> Dict[str, Any]:
+        """Unpack incoming torch payloads"""
+        pass
+    
+    @abstractmethod
+    async def route_torch(self, torch: Torch, routing_rules: Dict[str, Any]) -> str:
+        """Route torches to appropriate campfires"""
+        pass
+    
+    @abstractmethod
+    async def pack_response(self, response: Dict[str, Any], attachments: List[str]) -> Torch:
+        """Package outbound responses with Party Box attachments"""
+        pass
+
+
+class ISanitizerCampfire(ABC):
+    """Interface for Sanitizer campfire operations"""
+    
+    @abstractmethod
+    async def scan_content(self, content: Dict[str, Any]) -> 'ScanResult':
+        """Content security scanning (text, code, images)"""
+        pass
+    
+    @abstractmethod
+    async def filter_unsafe_content(self, content: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter and remove unsafe content"""
+        pass
+    
+    @abstractmethod
+    async def quarantine_flagged_content(self, content: Dict[str, Any]) -> None:
+        """Move flagged content to quarantine"""
+        pass
+
+
+class IJusticeCampfire(ABC):
+    """Interface for Justice campfire operations"""
+    
+    @abstractmethod
+    async def manage_keys(self, operation: str, valley_id: str) -> bool:
+        """Access control and key management"""
+        pass
+    
+    @abstractmethod
+    async def handle_violation(self, violation: 'Violation') -> 'Action':
+        """Policy enforcement and violation handling"""
+        pass
+    
+    @abstractmethod
+    async def review_quarantine(self, item_id: str) -> 'Decision':
+        """Community membership management"""
+        pass

@@ -1,16 +1,63 @@
 """
-Default Campfires for CampfireValley
+Campfires module - Contains specialized campfire implementations.
 
-This module provides the default campfire implementations that come with CampfireValley.
-These campfires handle common torch processing patterns and can be used as-is or
-extended for custom functionality.
+This module provides various campfire implementations for different
+valley operations and services.
 """
 
-from .dockmaster import DockmasterCampfire, LoaderCamper, RouterCamper, PackerCamper
+from .dockmaster import (
+    DockmasterCampfire,
+    LoaderCamper,
+    RouterCamper,
+    PackerCamper
+)
+
+from .sanitizer import (
+    SanitizerCampfire,
+    ScannerCamper,
+    FilterCamper,
+    QuarantineCamper,
+    SanitizationLevel,
+    SanitizationRule,
+    QuarantineItem
+)
+
+from .justice import (
+    JusticeCampfire,
+    DetectorCamper,
+    EnforcerCamper,
+    GovernorCamper,
+    ViolationType,
+    SanctionType,
+    PolicyRule,
+    Violation,
+    Sanction
+)
 
 __all__ = [
+    # Dockmaster components
     'DockmasterCampfire',
-    'LoaderCamper', 
+    'LoaderCamper',
     'RouterCamper',
-    'PackerCamper'
+    'PackerCamper',
+    
+    # Sanitizer components
+    'SanitizerCampfire',
+    'ScannerCamper',
+    'FilterCamper',
+    'QuarantineCamper',
+    'SanitizationLevel',
+    'SanitizationRule',
+    'QuarantineItem',
+    
+    # Justice components
+    'JusticeCampfire',
+    'DetectorCamper',
+    'EnforcerCamper',
+    'GovernorCamper',
+    'ViolationType',
+    'SanctionType',
+    'PolicyRule',
+    'Violation',
+    'Sanction'
 ]

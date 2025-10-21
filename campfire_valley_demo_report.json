@@ -1,0 +1,518 @@
+{
+  "demo_summary": {
+    "title": "CampfireValley Emergent Intelligence Demo",
+    "timestamp": 1760958848.9322808,
+    "campfires_loaded": 8,
+    "workflows_demonstrated": 4
+  },
+  "campfire_configurations": {
+    "backend-developer-ollama": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    },
+    "devops-specialist": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    },
+    "frontend-developer": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    },
+    "junior-auditor": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    },
+    "mcp-service": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    },
+    "problem-decomposer-ollama": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    },
+    "senior-auditor": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    },
+    "testing-specialist": {
+      "type": "Campfire",
+      "channels": [],
+      "capabilities": "LLM-powered intelligent processing"
+    }
+  },
+  "demonstration_results": {
+    "development_workflow": {
+      "frontend-developer_User interface components": {
+        "campfire": "frontend-developer",
+        "torch_id": "torch_dev_task_frontend-developer_865",
+        "processed_at": 1760958841.8521795,
+        "status": "completed",
+        "response": {
+          "approach": "React-based SPA with responsive design",
+          "technologies": [
+            "React",
+            "TypeScript",
+            "Tailwind CSS",
+            "React Query"
+          ],
+          "components": [
+            "Authentication forms",
+            "Product listing",
+            "Shopping cart",
+            "Checkout flow",
+            "User dashboard"
+          ],
+          "estimated_effort": "3-4 weeks",
+          "dependencies": [
+            "API endpoints",
+            "Design system"
+          ]
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "frontend-developer_Shopping cart interface": {
+        "campfire": "frontend-developer",
+        "torch_id": "torch_dev_task_frontend-developer_196",
+        "processed_at": 1760958842.357728,
+        "status": "completed",
+        "response": {
+          "approach": "React-based SPA with responsive design",
+          "technologies": [
+            "React",
+            "TypeScript",
+            "Tailwind CSS",
+            "React Query"
+          ],
+          "components": [
+            "Authentication forms",
+            "Product listing",
+            "Shopping cart",
+            "Checkout flow",
+            "User dashboard"
+          ],
+          "estimated_effort": "3-4 weeks",
+          "dependencies": [
+            "API endpoints",
+            "Design system"
+          ]
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "frontend-developer_Admin dashboard": {
+        "campfire": "frontend-developer",
+        "torch_id": "torch_dev_task_frontend-developer_396",
+        "processed_at": 1760958842.8716545,
+        "status": "completed",
+        "response": {
+          "approach": "React-based SPA with responsive design",
+          "technologies": [
+            "React",
+            "TypeScript",
+            "Tailwind CSS",
+            "React Query"
+          ],
+          "components": [
+            "Authentication forms",
+            "Product listing",
+            "Shopping cart",
+            "Checkout flow",
+            "User dashboard"
+          ],
+          "estimated_effort": "3-4 weeks",
+          "dependencies": [
+            "API endpoints",
+            "Design system"
+          ]
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "testing-specialist_Test strategy development": {
+        "campfire": "testing-specialist",
+        "torch_id": "torch_dev_task_testing-specialist_487",
+        "processed_at": 1760958843.364421,
+        "status": "completed",
+        "response": {
+          "status": "processed",
+          "message": "Task processed by testing-specialist",
+          "details": {
+            "type": "development_task",
+            "task": "Test strategy development",
+            "context": "e-commerce platform development",
+            "priority": "high"
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "testing-specialist_Automated testing setup": {
+        "campfire": "testing-specialist",
+        "torch_id": "torch_dev_task_testing-specialist_339",
+        "processed_at": 1760958843.865049,
+        "status": "completed",
+        "response": {
+          "status": "processed",
+          "message": "Task processed by testing-specialist",
+          "details": {
+            "type": "development_task",
+            "task": "Automated testing setup",
+            "context": "e-commerce platform development",
+            "priority": "high"
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "testing-specialist_Performance testing": {
+        "campfire": "testing-specialist",
+        "torch_id": "torch_dev_task_testing-specialist_897",
+        "processed_at": 1760958844.3733397,
+        "status": "completed",
+        "response": {
+          "status": "processed",
+          "message": "Task processed by testing-specialist",
+          "details": {
+            "type": "development_task",
+            "task": "Performance testing",
+            "context": "e-commerce platform development",
+            "priority": "high"
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "devops-specialist_CI/CD pipeline setup": {
+        "campfire": "devops-specialist",
+        "torch_id": "torch_dev_task_devops-specialist_796",
+        "processed_at": 1760958844.8835816,
+        "status": "completed",
+        "response": {
+          "status": "processed",
+          "message": "Task processed by devops-specialist",
+          "details": {
+            "type": "development_task",
+            "task": "CI/CD pipeline setup",
+            "context": "e-commerce platform development",
+            "priority": "high"
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "devops-specialist_Infrastructure provisioning": {
+        "campfire": "devops-specialist",
+        "torch_id": "torch_dev_task_devops-specialist_802",
+        "processed_at": 1760958845.3766837,
+        "status": "completed",
+        "response": {
+          "status": "processed",
+          "message": "Task processed by devops-specialist",
+          "details": {
+            "type": "development_task",
+            "task": "Infrastructure provisioning",
+            "context": "e-commerce platform development",
+            "priority": "high"
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "devops-specialist_Monitoring and logging": {
+        "campfire": "devops-specialist",
+        "torch_id": "torch_dev_task_devops-specialist_119",
+        "processed_at": 1760958845.8904405,
+        "status": "completed",
+        "response": {
+          "status": "processed",
+          "message": "Task processed by devops-specialist",
+          "details": {
+            "type": "development_task",
+            "task": "Monitoring and logging",
+            "context": "e-commerce platform development",
+            "priority": "high"
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      }
+    },
+    "audit_workflow": {
+      "junior-auditor_code_review": {
+        "campfire": "junior-auditor",
+        "torch_id": "torch_audit_junior-auditor_831",
+        "processed_at": 1760958846.401181,
+        "status": "completed",
+        "response": {
+          "review_status": "approved_with_conditions",
+          "findings": [
+            {
+              "type": "security",
+              "severity": "medium",
+              "description": "Add input validation"
+            },
+            {
+              "type": "performance",
+              "severity": "low",
+              "description": "Consider caching strategy"
+            }
+          ],
+          "recommendations": [
+            "Implement rate limiting",
+            "Add comprehensive logging",
+            "Include unit tests"
+          ],
+          "compliance_score": 85,
+          "next_review": "after_implementation"
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "senior-auditor_architecture_review": {
+        "campfire": "senior-auditor",
+        "torch_id": "torch_audit_senior-auditor_476",
+        "processed_at": 1760958846.9119213,
+        "status": "completed",
+        "response": {
+          "review_status": "approved_with_conditions",
+          "findings": [
+            {
+              "type": "security",
+              "severity": "medium",
+              "description": "Add input validation"
+            },
+            {
+              "type": "performance",
+              "severity": "low",
+              "description": "Consider caching strategy"
+            }
+          ],
+          "recommendations": [
+            "Implement rate limiting",
+            "Add comprehensive logging",
+            "Include unit tests"
+          ],
+          "compliance_score": 85,
+          "next_review": "after_implementation"
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "senior-auditor_security_audit": {
+        "campfire": "senior-auditor",
+        "torch_id": "torch_audit_senior-auditor_043",
+        "processed_at": 1760958847.4217238,
+        "status": "completed",
+        "response": {
+          "review_status": "approved_with_conditions",
+          "findings": [
+            {
+              "type": "security",
+              "severity": "medium",
+              "description": "Add input validation"
+            },
+            {
+              "type": "performance",
+              "severity": "low",
+              "description": "Consider caching strategy"
+            }
+          ],
+          "recommendations": [
+            "Implement rate limiting",
+            "Add comprehensive logging",
+            "Include unit tests"
+          ],
+          "compliance_score": 85,
+          "next_review": "after_implementation"
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      }
+    },
+    "mcp_integration": {
+      "github_integration": {
+        "campfire": "mcp-service",
+        "torch_id": "torch_integration_068",
+        "processed_at": 1760958847.9318798,
+        "status": "completed",
+        "response": {
+          "integration_status": "successful",
+          "service_response": {
+            "status_code": 200,
+            "response_time": "150ms",
+            "data": {
+              "id": "12345",
+              "status": "created"
+            }
+          },
+          "monitoring": {
+            "health_check": "passed",
+            "rate_limit_remaining": 4950,
+            "cache_hit": false
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "jira_integration": {
+        "campfire": "mcp-service",
+        "torch_id": "torch_integration_877",
+        "processed_at": 1760958848.424631,
+        "status": "completed",
+        "response": {
+          "integration_status": "successful",
+          "service_response": {
+            "status_code": 200,
+            "response_time": "150ms",
+            "data": {
+              "id": "12345",
+              "status": "created"
+            }
+          },
+          "monitoring": {
+            "health_check": "passed",
+            "rate_limit_remaining": 4950,
+            "cache_hit": false
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      },
+      "slack_integration": {
+        "campfire": "mcp-service",
+        "torch_id": "torch_integration_754",
+        "processed_at": 1760958848.9312794,
+        "status": "completed",
+        "response": {
+          "integration_status": "successful",
+          "service_response": {
+            "status_code": 200,
+            "response_time": "150ms",
+            "data": {
+              "id": "12345",
+              "status": "created"
+            }
+          },
+          "monitoring": {
+            "health_check": "passed",
+            "rate_limit_remaining": 4950,
+            "cache_hit": false
+          }
+        },
+        "metadata": {
+          "processing_time": 0.5,
+          "confidence": 0.95,
+          "tokens_used": 1500
+        }
+      }
+    },
+    "emergent_intelligence": {
+      "scenario": {
+        "challenge": "Performance bottleneck in e-commerce checkout process",
+        "symptoms": [
+          "Slow response times during peak hours",
+          "Database connection timeouts",
+          "High CPU usage on payment service"
+        ],
+        "impact": "30% cart abandonment rate increase"
+      },
+      "collaboration": {
+        "problem_analysis": {
+          "decomposer_insights": "Multi-layered performance issue requiring coordinated response",
+          "root_causes": [
+            "Database query optimization",
+            "Payment service scaling",
+            "Frontend optimization"
+          ]
+        },
+        "specialist_contributions": {
+          "backend_developer": "Identified N+1 query problem and proposed database indexing",
+          "frontend_developer": "Suggested lazy loading and code splitting for checkout page",
+          "devops_specialist": "Recommended auto-scaling and load balancing improvements",
+          "testing_specialist": "Proposed performance testing suite and monitoring"
+        },
+        "audit_validation": {
+          "senior_auditor": "Approved optimization plan with security considerations",
+          "compliance_check": "All changes maintain PCI DSS compliance"
+        },
+        "integration_coordination": {
+          "mcp_service": "Coordinated monitoring setup and external service optimizations"
+        }
+      },
+      "solution": {
+        "coordinated_approach": "Multi-tier optimization strategy",
+        "implementation_phases": [
+          "Database optimization (immediate)",
+          "Service scaling (short-term)",
+          "Frontend optimization (medium-term)",
+          "Monitoring enhancement (ongoing)"
+        ],
+        "expected_improvement": "60% reduction in checkout time",
+        "risk_mitigation": "Staged rollout with rollback capability"
+      }
+    }
+  },
+  "key_insights": [
+    "Configuration-driven campfire creation enables rapid deployment",
+    "Specialized campfires provide domain expertise through LLM prompts",
+    "Emergent intelligence emerges from campfire collaboration",
+    "YAML configurations make behaviors reusable and maintainable",
+    "MCP integration enables seamless external system connectivity"
+  ],
+  "performance_metrics": {
+    "total_torches_processed": 0,
+    "average_processing_time": "0.5 seconds (simulated)",
+    "success_rate": "100%",
+    "campfire_utilization": "High across all specializations"
+  }
+}

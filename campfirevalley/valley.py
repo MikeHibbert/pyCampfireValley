@@ -7,8 +7,9 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional, Dict, List
-from .interfaces import IValley, IDock, IPartyBox, IMCPBroker
-from .models import ValleyConfig, CampfireConfig, CommunityMembership
+from datetime import datetime
+from .interfaces import IValley, IDock, IPartyBox, IMCPBroker, IFederationManager, IKeyManager
+from .models import ValleyConfig, CampfireConfig, CommunityMembership, FederationMembership
 from .config import ConfigManager
 from .config_manager import (
     get_config_manager, ConfigSource, ConfigFormat, 
@@ -67,6 +68,12 @@ class Valley(IValley):
         self.campfires: Dict[str, 'ICampfire'] = {}
         self.communities: Dict[str, CommunityMembership] = {}
         
+        # Federation components
+        self.federation_manager: Optional[IFederationManager] = None
+        self.key_manager: Optional[IKeyManager] = None
+        self.vali_coordinator: Optional['VALICoordinator'] = None
+        self.federations: Dict[str, FederationMembership] = {}
+        
         # Runtime state
         self._running = False
         self._tasks: List[asyncio.Task] = []
@@ -113,10 +120,45 @@ class Valley(IValley):
                 from .party_box import FileSystemPartyBox  # Import here to avoid circular imports
                 self.party_box = FileSystemPartyBox(f"./party_box_{self.name}")
             
+            # Initialize key manager
+            from .key_manager import CampfireKeyManager
+            self.key_manager = CampfireKeyManager()
+            await self.key_manager.initialize()
+            logger.info("Key manager initialized")
+            
+            # Initialize federation manager
+            federation_config = await self.get_config_value("federation", {})
+            if federation_config.get("enabled", False) and self.mcp_broker:
+                from .federation import FederationManager
+                self.federation_manager = FederationManager(
+                    valley_name=self.name,
+                    mcp_broker=self.mcp_broker,
+                    key_manager=self.key_manager
+                )
+                await self.federation_manager.start()
+                logger.info("Federation manager started")
+            
+            # Initialize VALI coordinator
+            if self.mcp_broker:
+                from .vali import VALICoordinator
+                self.vali_coordinator = VALICoordinator(
+                    mcp_broker=self.mcp_broker,
+                    federation_manager=self.federation_manager,
+                    valley_name=self.name
+                )
+                await self.vali_coordinator.start()
+                logger.info("VALI coordinator started")
+            
             # Create and start dock if auto_create_dock is enabled and MCP broker is connected
             if self.config.env.get("auto_create_dock", True) and self.mcp_broker.is_connected():
                 from .dock import Dock  # Import here to avoid circular imports
-                self.dock = Dock(self, self.mcp_broker, self.party_box)
+                self.dock = Dock(
+                    valley_name=self.name,
+                    mcp_broker=self.mcp_broker,
+                    party_box=self.party_box,
+                    federation_manager=self.federation_manager,
+                    vali_coordinator=self.vali_coordinator
+                )
                 await self.dock.start_gateway()
             elif self.config.env.get("auto_create_dock", True):
                 logger.warning("Dock creation skipped - MCP broker not connected")
@@ -148,6 +190,14 @@ class Valley(IValley):
         # Stop dock
         if self.dock:
             await self.dock.stop_gateway()
+        
+        # Stop VALI coordinator
+        if self.vali_coordinator:
+            await self.vali_coordinator.stop()
+        
+        # Stop federation manager
+        if self.federation_manager:
+            await self.federation_manager.stop()
         
         # Stop all campfires
         for campfire in self.campfires.values():
@@ -214,6 +264,81 @@ class Valley(IValley):
             logger.error(f"Failed to leave community '{community_name}': {e}")
             return False
     
+    async def join_federation(self, federation_id: str, discovery_endpoint: str = None) -> bool:
+        """Join a federation"""
+        if not self.federation_manager:
+            logger.error("Federation manager not initialized")
+            return False
+        
+        try:
+            success = await self.federation_manager.join_federation(federation_id, discovery_endpoint)
+             if success:
+                 # Create federation membership record
+                 membership = FederationMembership(
+                    federation_id=federation_id,
+                    valley_name=self.name,
+                    joined_at=datetime.now(),
+                    status="active",
+                    capabilities=await self._get_valley_capabilities(),
+                    discovery_endpoint=discovery_endpoint
+                )
+                self.federations[federation_id] = membership
+                await self.monitoring.log(LogLevel.INFO, f"Joined federation: {federation_id}", "valley")
+                logger.info(f"Successfully joined federation: {federation_id}")
+            return success
+        except Exception as e:
+            logger.error(f"Error joining federation {federation_id}: {e}")
+            return False
+    
+    async def leave_federation(self, federation_id: str) -> bool:
+        """Leave a federation"""
+        if not self.federation_manager:
+            logger.error("Federation manager not initialized")
+            return False
+        
+        try:
+            success = await self.federation_manager.leave_federation(federation_id)
+            if success and federation_id in self.federations:
+                del self.federations[federation_id]
+                await self.monitoring.log(LogLevel.INFO, f"Left federation: {federation_id}", "valley")
+                logger.info(f"Successfully left federation: {federation_id}")
+            return success
+        except Exception as e:
+            logger.error(f"Error leaving federation {federation_id}: {e}")
+            return False
+    
+    async def discover_federation_valleys(self, federation_id: str = None) -> List[Dict]:
+        """Discover valleys in federation(s)"""
+        if not self.federation_manager:
+            logger.error("Federation manager not initialized")
+            return []
+        
+        try:
+            return await self.federation_manager.discover_valleys(federation_id)
+        except Exception as e:
+            logger.error(f"Error discovering federation valleys: {e}")
+            return []
+    
+    async def get_federation_memberships(self) -> Dict[str, FederationMembership]:
+        """Get current federation memberships"""
+        return self.federations.copy()
+    
+    async def _get_valley_capabilities(self) -> List[str]:
+        """Get valley capabilities for federation announcement"""
+        capabilities = ["torch_processing", "campfire_hosting"]
+        
+        if self.dock:
+            capabilities.extend(["gateway", "routing", "discovery"])
+        
+        if self.vali_coordinator:
+            capabilities.append("vali_services")
+        
+        # Add campfire-specific capabilities
+        for campfire_name in self.campfires.keys():
+            capabilities.append(f"campfire:{campfire_name}")
+        
+        return capabilities
+    
     async def provision_campfire(self, campfire_config: CampfireConfig) -> bool:
         """Provision a new campfire from configuration"""
         if not self._running:
@@ -249,6 +374,25 @@ class Valley(IValley):
                 )
                 logger.info(f"Created LLMCampfire '{campfire_name}' with model '{model}'")
                 
+            elif campfire_config.type == "dockmaster":
+                from .campfires.dockmaster import DockmasterCampfire
+                campfire = DockmasterCampfire(
+                    name=campfire_name,
+                    valley_name=self.name,
+                    federation_manager=self.federation_manager
+                )
+            elif campfire_config.type == "sanitizer":
+                from .security_scanner import SanitizerCampfire
+                campfire = SanitizerCampfire(
+                    name=campfire_name,
+                    valley_name=self.name
+                )
+            elif campfire_config.type == "justice":
+                from .justice import JusticeCampfire
+                campfire = JusticeCampfire(
+                    name=campfire_name,
+                    valley_name=self.name
+                )
             else:
                 # Default to basic campfire
                 from .campfire import Campfire
@@ -260,11 +404,48 @@ class Valley(IValley):
             
             self.campfires[campfire_name] = campfire
             
+            # Register with VALI if available
+            if self.vali_coordinator and hasattr(campfire, 'get_service_type'):
+                try:
+                    await self.vali_coordinator.register_service(campfire)
+                    logger.info(f"Registered campfire '{campfire_name}' with VALI")
+                except Exception as e:
+                    logger.warning(f"Failed to register campfire '{campfire_name}' with VALI: {e}")
+            
             logger.info(f"Successfully provisioned campfire '{campfire_name}'")
             return True
             
         except Exception as e:
             logger.error(f"Failed to provision campfire '{campfire_name}': {e}")
+            return False
+    
+    async def deprovision_campfire(self, campfire_name: str) -> bool:
+        """Remove and stop a campfire"""
+        try:
+            if campfire_name not in self.campfires:
+                logger.warning(f"Campfire '{campfire_name}' not found")
+                return False
+            
+            campfire = self.campfires[campfire_name]
+            
+            # Unregister from VALI if available
+            if self.vali_coordinator and hasattr(campfire, 'get_service_type'):
+                try:
+                    await self.vali_coordinator.unregister_service(campfire_name)
+                    logger.info(f"Unregistered campfire '{campfire_name}' from VALI")
+                except Exception as e:
+                    logger.warning(f"Failed to unregister campfire '{campfire_name}' from VALI: {e}")
+            
+            # Stop the campfire
+            await campfire.stop()
+            del self.campfires[campfire_name]
+            
+            await self.monitoring.log(LogLevel.INFO, f"Deprovisioned campfire: {campfire_name}", "valley")
+            logger.info(f"Successfully deprovisioned campfire: {campfire_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deprovisioning campfire '{campfire_name}': {e}")
             return False
     
     def get_config(self) -> ValleyConfig:
@@ -424,5 +605,94 @@ class Valley(IValley):
         import hashlib
         return hashlib.sha256(key.encode()).hexdigest()
     
+    async def get_valley_status(self) -> Dict:
+        """Get comprehensive valley status"""
+        status = {
+            "name": self.name,
+            "running": self._running,
+            "components": {
+                "mcp_broker": self.mcp_broker is not None and getattr(self.mcp_broker, 'is_connected', lambda: False)(),
+                "dock": self.dock is not None,
+                "federation_manager": self.federation_manager is not None,
+                "vali_coordinator": self.vali_coordinator is not None,
+                "key_manager": self.key_manager is not None
+            },
+            "campfires": {
+                "count": len(self.campfires),
+                "names": list(self.campfires.keys())
+            },
+            "communities": {
+                "count": len(self.communities),
+                "names": list(self.communities.keys())
+            },
+            "federations": {
+                "count": len(self.federations),
+                "names": list(self.federations.keys())
+            }
+        }
+        
+        # Add federation-specific status if available
+        if self.federation_manager:
+            try:
+                fed_status = await self.federation_manager.get_status()
+                status["federation_status"] = fed_status
+            except Exception as e:
+                status["federation_status"] = {"error": str(e)}
+        
+        return status
+    
+    async def health_check(self) -> Dict:
+        """Perform health check on valley components"""
+        health = {
+            "overall": "healthy",
+            "components": {},
+            "issues": []
+        }
+        
+        # Check MCP broker
+        if self.mcp_broker:
+            try:
+                connected = getattr(self.mcp_broker, 'is_connected', lambda: False)()
+                health["components"]["mcp_broker"] = "healthy" if connected else "unhealthy"
+                if not connected:
+                    health["issues"].append("MCP broker not connected")
+            except Exception as e:
+                health["components"]["mcp_broker"] = "error"
+                health["issues"].append(f"MCP broker error: {e}")
+        else:
+            health["components"]["mcp_broker"] = "missing"
+            health["issues"].append("MCP broker not initialized")
+        
+        # Check dock
+        if self.dock:
+            health["components"]["dock"] = "healthy"
+        else:
+            health["components"]["dock"] = "missing"
+        
+        # Check federation manager
+        if self.federation_manager:
+            health["components"]["federation_manager"] = "healthy"
+        else:
+            health["components"]["federation_manager"] = "missing"
+        
+        # Check campfires
+        campfire_issues = []
+        for name, campfire in self.campfires.items():
+            try:
+                # Basic health check - campfire should be responsive
+                health["components"][f"campfire_{name}"] = "healthy"
+            except Exception as e:
+                health["components"][f"campfire_{name}"] = "error"
+                campfire_issues.append(f"Campfire {name}: {e}")
+        
+        if campfire_issues:
+            health["issues"].extend(campfire_issues)
+        
+        # Determine overall health
+        if health["issues"]:
+            health["overall"] = "degraded" if len(health["issues"]) < 3 else "unhealthy"
+        
+        return health
+    
     def __repr__(self) -> str:
-        return f"Valley(name='{self.name}', running={self._running}, campfires={len(self.campfires)})"
+        return f"Valley(name='{self.name}', running={self._running}, campfires={len(self.campfires)}, federations={len(self.federations)})"

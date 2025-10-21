@@ -335,3 +335,155 @@ class Decision(BaseModel):
     reasoning: str = Field(..., description="Reasoning for the decision")
     reviewer: str = Field(..., description="Who made the decision")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+# Federation-aware data models following the design specifications
+
+class ValleyConfig(BaseModel):
+    """Valley configuration from manifest.yaml following GitHub Actions/Ansible format"""
+    name: str = Field(..., description="Valley name")
+    version: str = Field(default="1.0", description="Configuration version")
+    
+    # Environment and runtime configuration
+    env: Dict[str, Any] = Field(default_factory=lambda: {
+        "dock_mode": "private",  # public, partial, private
+        "security_level": "standard",  # basic, standard, high
+        "auto_create_dock": True
+    })
+    
+    # Campfire definitions similar to GitHub Actions jobs
+    campfires: Dict[str, List[str]] = Field(default_factory=lambda: {
+        "visible": [],
+        "hidden": []
+    })
+    
+    # Step-based dock configuration like Ansible tasks
+    dock: Dict[str, List[Dict[str, Any]]] = Field(default_factory=lambda: {
+        "steps": []  # Sequential dock setup steps
+    })
+    
+    # Community and networking
+    community: Dict[str, Any] = Field(default_factory=lambda: {
+        "discovery": False,
+        "trusted_valleys": []
+    })
+    
+    @validator('env')
+    def validate_env_config(cls, v):
+        """Validate environment configuration"""
+        valid_dock_modes = ["public", "partial", "private"]
+        valid_security_levels = ["basic", "standard", "high"]
+        
+        if v.get("dock_mode") not in valid_dock_modes:
+            raise ValueError(f"dock_mode must be one of: {valid_dock_modes}")
+        
+        if v.get("security_level") not in valid_security_levels:
+            raise ValueError(f"security_level must be one of: {valid_security_levels}")
+        
+        return v
+
+
+class CommunityMembership(BaseModel):
+    """Community membership information for federation"""
+    community_name: str = Field(..., description="Name of the community")
+    alias: str = Field(..., description="Valley's alias in the community")
+    key_hash: str = Field(..., description="Hash of the community key")
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+    trust_level: TrustLevel = Field(default=TrustLevel.BASIC)
+    
+    @validator('community_name')
+    def validate_community_name(cls, v):
+        """Validate community name format"""
+        if not v or len(v) < 3:
+            raise ValueError("Community name must be at least 3 characters")
+        return v
+
+
+class CampfireConfig(BaseModel):
+    """Configuration for provisioned campfires following GitHub Actions job format"""
+    name: str = Field(..., description="Campfire name")
+    runs_on: str = Field(default="valley", description="Where the campfire runs")
+    
+    # Environment variables like GitHub Actions
+    env: Dict[str, str] = Field(default_factory=dict)
+    
+    # Strategy matrix for multiple configurations
+    strategy: Dict[str, Any] = Field(default_factory=lambda: {"matrix": {}})
+    
+    # Steps similar to GitHub Actions/Ansible tasks
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
+    
+    # Needs/dependencies like GitHub Actions
+    needs: List[str] = Field(default_factory=list)
+    
+    # Conditional execution
+    if_condition: Optional[str] = Field(None, alias="if")
+    
+    # Outputs for other campfires to use
+    outputs: Dict[str, str] = Field(default_factory=dict)
+    
+    # Traditional campfire settings
+    rag_paths: List[str] = Field(default_factory=list)
+    auditor_enabled: bool = Field(default=True)
+    channels: List[str] = Field(default_factory=list)
+    
+    @validator('name')
+    def validate_campfire_name(cls, v):
+        """Validate campfire name format"""
+        if not v or len(v) < 2:
+            raise ValueError("Campfire name must be at least 2 characters")
+        return v
+
+
+class FederationMembership(BaseModel):
+    """Federation membership tracking for valleys"""
+    valley_id: str = Field(..., description="Unique valley identifier")
+    federation_name: str = Field(..., description="Name of the federation")
+    public_key: str = Field(..., description="Valley's public key for the federation")
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+    last_seen: datetime = Field(default_factory=datetime.utcnow)
+    status: str = Field(default="active", description="Membership status: active, inactive, suspended")
+    capabilities: List[str] = Field(default_factory=list, description="Services this valley provides")
+    
+    @validator('status')
+    def validate_status(cls, v):
+        """Validate membership status"""
+        valid_statuses = ["active", "inactive", "suspended"]
+        if v not in valid_statuses:
+            raise ValueError(f"Status must be one of: {valid_statuses}")
+        return v
+
+
+class VALIServiceRequest(BaseModel):
+    """VALI (Valley Application Layer Interface) service request"""
+    service_type: str = Field(..., description="Type of service requested")
+    request_id: str = Field(..., description="Unique request identifier")
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    requirements: Dict[str, Any] = Field(default_factory=dict)
+    deadline: Optional[datetime] = Field(None, description="Service deadline")
+    priority: str = Field(default="normal", description="Request priority: low, normal, high, urgent")
+    
+    @validator('priority')
+    def validate_priority(cls, v):
+        """Validate request priority"""
+        valid_priorities = ["low", "normal", "high", "urgent"]
+        if v not in valid_priorities:
+            raise ValueError(f"Priority must be one of: {valid_priorities}")
+        return v
+
+
+class VALIServiceResponse(BaseModel):
+    """VALI service response"""
+    request_id: str = Field(..., description="Original request identifier")
+    status: str = Field(..., description="Response status")
+    deliverables: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    completed_at: Optional[datetime] = Field(None)
+    
+    @validator('status')
+    def validate_status(cls, v):
+        """Validate response status"""
+        valid_statuses = ["completed", "in_progress", "failed", "cancelled"]
+        if v not in valid_statuses:
+            raise ValueError(f"Status must be one of: {valid_statuses}")
+        return v

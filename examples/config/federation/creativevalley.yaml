@@ -1,0 +1,149 @@
+# CreativeValley Configuration for Federation Demo
+valley:
+  name: "CreativeValley"
+  description: "Design and marketing valley"
+  version: "1.0.0"
+  
+  # Valley specialties and capabilities
+  specialties:
+    - "ui_ux_design"
+    - "graphic_design"
+    - "marketing"
+    - "content_creation"
+    - "branding"
+    - "user_research"
+
+  # Federation settings
+  federation:
+    enabled: true
+    auto_discovery: true
+    federations:
+      - name: "InnovationFederation"
+        role: "member"
+        capabilities:
+          - "design_systems"
+          - "user_experience"
+          - "marketing_strategy"
+          - "content_strategy"
+
+# Dock configuration
+dock:
+  enabled: true
+  port: 8002
+  host: "0.0.0.0"
+  
+  # Gateway settings
+  gateway:
+    max_connections: 1000
+    timeout: 30
+    retry_attempts: 3
+    
+  # MCP Broker settings
+  mcp_broker:
+    type: "redis"
+    connection_string: "${REDIS_URL:-redis://localhost:6379}"
+    heartbeat_interval: 30
+    
+# Campfires configuration
+campfires:
+  # Default dock campfires
+  - name: "dockmaster"
+    type: "dockmaster"
+    enabled: true
+    config:
+      max_concurrent_requests: 50
+      
+  - name: "sanitizer"
+    type: "sanitizer"
+    enabled: true
+    config:
+      scan_level: "moderate"
+      
+  - name: "justice"
+    type: "justice"
+    enabled: true
+    config:
+      enforcement_level: "moderate"
+
+  # Creative campfires
+  - name: "creative_director"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "creative_direction"
+      tools:
+        - "concept_development"
+        - "brand_strategy"
+        - "creative_brief"
+        - "design_review"
+        
+  - name: "ux_researcher"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "user_research"
+      tools:
+        - "user_interviews"
+        - "usability_testing"
+        - "persona_development"
+        - "journey_mapping"
+        
+  - name: "marketing_strategist"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "marketing_strategy"
+      tools:
+        - "campaign_planning"
+        - "market_analysis"
+        - "content_strategy"
+        - "social_media"
+        
+  - name: "ui_designer"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "ui_design"
+      tools:
+        - "interface_design"
+        - "design_systems"
+        - "prototyping"
+        - "visual_design"
+
+# Security settings
+security:
+  encryption:
+    enabled: true
+    algorithm: "AES-256"
+    
+  authentication:
+    enabled: true
+    method: "rsa_signature"
+    
+  authorization:
+    enabled: true
+    default_policy: "deny"
+
+# Monitoring and logging
+monitoring:
+  enabled: true
+  metrics:
+    - "torch_processing_time"
+    - "campfire_utilization"
+    - "federation_messages"
+    - "creative_output_quality"
+    
+logging:
+  level: "${LOG_LEVEL:-INFO}"
+  format: "structured"
+  outputs:
+    - "console"
+    - "file"

@@ -1,0 +1,149 @@
+# TechValley Configuration for Federation Demo
+valley:
+  name: "TechValley"
+  description: "Software development and engineering valley"
+  version: "1.0.0"
+  
+  # Valley specialties and capabilities
+  specialties:
+    - "backend_development"
+    - "frontend_development" 
+    - "devops"
+    - "testing"
+    - "architecture"
+    - "security"
+
+  # Federation settings
+  federation:
+    enabled: true
+    auto_discovery: true
+    federations:
+      - name: "InnovationFederation"
+        role: "member"
+        capabilities:
+          - "software_development"
+          - "technical_architecture"
+          - "code_review"
+          - "testing_automation"
+
+# Dock configuration
+dock:
+  enabled: true
+  port: 8001
+  host: "0.0.0.0"
+  
+  # Gateway settings
+  gateway:
+    max_connections: 1000
+    timeout: 30
+    retry_attempts: 3
+    
+  # MCP Broker settings
+  mcp_broker:
+    type: "redis"
+    connection_string: "${REDIS_URL:-redis://localhost:6379}"
+    heartbeat_interval: 30
+    
+# Campfires configuration
+campfires:
+  # Default dock campfires
+  - name: "dockmaster"
+    type: "dockmaster"
+    enabled: true
+    config:
+      max_concurrent_requests: 50
+      
+  - name: "sanitizer"
+    type: "sanitizer"
+    enabled: true
+    config:
+      scan_level: "strict"
+      
+  - name: "justice"
+    type: "justice"
+    enabled: true
+    config:
+      enforcement_level: "moderate"
+
+  # Technical campfires
+  - name: "backend_developer"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "backend_development"
+      tools:
+        - "code_generation"
+        - "api_design"
+        - "database_design"
+        - "testing"
+        
+  - name: "frontend_developer"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "frontend_development"
+      tools:
+        - "ui_development"
+        - "component_design"
+        - "responsive_design"
+        - "accessibility"
+        
+  - name: "devops_specialist"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "devops"
+      tools:
+        - "infrastructure"
+        - "deployment"
+        - "monitoring"
+        - "automation"
+        
+  - name: "testing_specialist"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "testing"
+      tools:
+        - "test_automation"
+        - "performance_testing"
+        - "security_testing"
+        - "quality_assurance"
+
+# Security settings
+security:
+  encryption:
+    enabled: true
+    algorithm: "AES-256"
+    
+  authentication:
+    enabled: true
+    method: "rsa_signature"
+    
+  authorization:
+    enabled: true
+    default_policy: "deny"
+
+# Monitoring and logging
+monitoring:
+  enabled: true
+  metrics:
+    - "torch_processing_time"
+    - "campfire_utilization"
+    - "federation_messages"
+    - "error_rates"
+    
+logging:
+  level: "${LOG_LEVEL:-INFO}"
+  format: "structured"
+  outputs:
+    - "console"
+    - "file"

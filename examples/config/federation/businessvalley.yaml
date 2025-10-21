@@ -1,0 +1,150 @@
+# BusinessValley Configuration for Federation Demo
+valley:
+  name: "BusinessValley"
+  description: "Strategy and operations valley"
+  version: "1.0.0"
+  
+  # Valley specialties and capabilities
+  specialties:
+    - "business_strategy"
+    - "operations"
+    - "finance"
+    - "legal"
+    - "project_management"
+    - "risk_management"
+
+  # Federation settings
+  federation:
+    enabled: true
+    auto_discovery: true
+    federations:
+      - name: "InnovationFederation"
+        role: "coordinator"  # BusinessValley coordinates the federation
+        capabilities:
+          - "strategic_planning"
+          - "project_coordination"
+          - "resource_allocation"
+          - "risk_assessment"
+
+# Dock configuration
+dock:
+  enabled: true
+  port: 8003
+  host: "0.0.0.0"
+  
+  # Gateway settings
+  gateway:
+    max_connections: 1000
+    timeout: 30
+    retry_attempts: 3
+    
+  # MCP Broker settings
+  mcp_broker:
+    type: "redis"
+    connection_string: "${REDIS_URL:-redis://localhost:6379}"
+    heartbeat_interval: 30
+    
+# Campfires configuration
+campfires:
+  # Default dock campfires
+  - name: "dockmaster"
+    type: "dockmaster"
+    enabled: true
+    config:
+      max_concurrent_requests: 50
+      
+  - name: "sanitizer"
+    type: "sanitizer"
+    enabled: true
+    config:
+      scan_level: "strict"  # Business valley has strict security
+      
+  - name: "justice"
+    type: "justice"
+    enabled: true
+    config:
+      enforcement_level: "strict"
+
+  # Business campfires
+  - name: "strategy_consultant"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "business_strategy"
+      tools:
+        - "strategic_planning"
+        - "market_analysis"
+        - "competitive_analysis"
+        - "business_modeling"
+        
+  - name: "project_manager"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "project_management"
+      tools:
+        - "project_planning"
+        - "resource_allocation"
+        - "timeline_management"
+        - "stakeholder_communication"
+        
+  - name: "financial_analyst"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "financial_analysis"
+      tools:
+        - "budget_planning"
+        - "cost_analysis"
+        - "roi_calculation"
+        - "financial_modeling"
+        
+  - name: "operations_manager"
+    type: "specialist"
+    enabled: true
+    config:
+      llm_provider: "openai"
+      model: "gpt-4"
+      specialization: "operations"
+      tools:
+        - "process_optimization"
+        - "workflow_design"
+        - "quality_management"
+        - "performance_metrics"
+
+# Security settings
+security:
+  encryption:
+    enabled: true
+    algorithm: "AES-256"
+    
+  authentication:
+    enabled: true
+    method: "rsa_signature"
+    
+  authorization:
+    enabled: true
+    default_policy: "deny"
+
+# Monitoring and logging
+monitoring:
+  enabled: true
+  metrics:
+    - "torch_processing_time"
+    - "campfire_utilization"
+    - "federation_messages"
+    - "project_success_rate"
+    - "resource_utilization"
+    
+logging:
+  level: "${LOG_LEVEL:-INFO}"
+  format: "structured"
+  outputs:
+    - "console"
+    - "file"
