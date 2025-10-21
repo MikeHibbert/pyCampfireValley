@@ -151,11 +151,7 @@ async def campfire_action(campfire_id: str, action: Dict):
         raise HTTPException(status_code=404, detail="No valley available")
     
     # Find the campfire
-    campfire = None
-    for cf in current_valley.campfires:
-        if cf.id == campfire_id:
-            campfire = cf
-            break
+    campfire = current_valley.campfires.get(campfire_id)
     
     if not campfire:
         raise HTTPException(status_code=404, detail=f"Campfire {campfire_id} not found")
@@ -182,11 +178,11 @@ async def get_campfires():
         return []
     
     campfires = []
-    for cf in current_valley.campfires:
+    for campfire_name, cf in current_valley.campfires.items():
         campfires.append({
-            "id": cf.id,
+            "id": campfire_name,
             "type": cf.__class__.__name__,
-            "running": cf._running,
+            "running": getattr(cf, '_running', False),
             "camper_count": len(getattr(cf, 'campers', []))
         })
     
@@ -203,15 +199,167 @@ async def update_loop():
                 global current_state
                 current_state = state
                 
+                # Add current task info to the state
+                global current_task
+                state_data = state.dict()
+                if current_task:
+                    state_data["current_task"] = current_task
+                
                 message = WebSocketMessage(
                     type="state_update",
-                    data=state.dict()
+                    data=state_data
                 )
                 await manager.broadcast(message.json())
+                
+                # Also send task-specific updates if there's an active task
+                if current_task:
+                    task_message = WebSocketMessage(
+                        type="task_update",
+                        data=current_task
+                    )
+                    await manager.broadcast(task_message.json())
+                    
         except Exception as e:
             print(f"Error in update loop: {e}")
         
         await asyncio.sleep(2)  # Update every 2 seconds
+
+
+# Task Processing Endpoints
+@app.post("/api/tasks/start")
+async def start_task(request: dict):
+    """Start a new task for processing by campfires"""
+    try:
+        task_description = request.get("task", "")
+        timestamp = request.get("timestamp", "")
+        
+        if not task_description:
+            raise HTTPException(status_code=400, detail="Task description is required")
+        
+        # Generate a unique task ID
+        import uuid
+        task_id = str(uuid.uuid4())[:8]
+        
+        # Store task info globally for tracking
+        global current_task
+        current_task = {
+            "id": task_id,
+            "description": task_description,
+            "timestamp": timestamp,
+            "status": "processing"
+        }
+        
+        # If we have a valley, we can simulate task processing
+        if current_valley:
+            # Simulate distributing the task to campfires
+            campfires = list(current_valley.campfires.values())
+            
+            # For demo purposes, we'll simulate activity by updating campfire states
+            import asyncio
+            asyncio.create_task(simulate_task_processing(task_id, task_description, campfires))
+        
+        return {
+            "status": "success",
+            "task_id": task_id,
+            "message": f"Task '{task_description}' started",
+            "campfires_assigned": len(current_valley.campfires) if current_valley else 0
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error starting task: {str(e)}")
+
+
+@app.post("/api/tasks/stop")
+async def stop_task():
+    """Stop the current task processing"""
+    try:
+        global current_task
+        if current_task:
+            current_task["status"] = "stopped"
+            task_id = current_task["id"]
+            current_task = None
+            
+            return {
+                "status": "success",
+                "message": f"Task {task_id} stopped",
+                "task_id": task_id
+            }
+        else:
+            return {
+                "status": "success",
+                "message": "No active task to stop"
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error stopping task: {str(e)}")
+
+
+@app.get("/api/tasks/current")
+async def get_current_task():
+    """Get information about the current task"""
+    global current_task
+    if current_task:
+        return current_task
+    else:
+        return {"status": "no_active_task"}
+
+
+# Task simulation function
+async def simulate_task_processing(task_id: str, task_description: str, campfires: list):
+    """Simulate task processing across campfires for demo purposes"""
+    try:
+        import random
+        import asyncio
+        
+        # Simulate processing stages
+        stages = [
+            "Analyzing task",
+            "Distributing to campfires", 
+            "Processing in parallel",
+            "Gathering results",
+            "Finalizing output"
+        ]
+        
+        for i, stage in enumerate(stages):
+            # Check if task was stopped
+            global current_task
+            if not current_task or current_task.get("status") == "stopped":
+                break
+                
+            # Update task status
+            if current_task:
+                current_task["current_stage"] = stage
+                current_task["progress"] = (i + 1) / len(stages) * 100
+            
+            # Simulate some campfire activity
+            if campfires and len(campfires) > 0:
+                active_campfire = random.choice(campfires)
+                # In a real implementation, we would actually send tasks to campfires
+                # For now, we just simulate activity
+                
+            # Wait between stages
+            await asyncio.sleep(2)
+        
+        # Mark task as completed
+        if current_task and current_task.get("status") != "stopped":
+            current_task["status"] = "completed"
+            current_task["current_stage"] = "Task completed"
+            current_task["progress"] = 100
+            
+            # Auto-clear completed task after a delay
+            await asyncio.sleep(5)
+            if current_task and current_task.get("status") == "completed":
+                current_task = None
+                
+    except Exception as e:
+        print(f"Error in task simulation: {e}")
+        if current_task:
+            current_task["status"] = "error"
+            current_task["error"] = str(e)
+
+
+# Global task tracking
+current_task = None
 
 
 @app.on_event("startup")

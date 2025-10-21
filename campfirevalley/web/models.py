@@ -80,6 +80,17 @@ class CampfireNode(NodeData):
     torch_queue_size: int = 0
     processing_time_avg: float = 0.0
     last_activity: Optional[datetime] = None
+    
+    # Enhanced details
+    current_jobs: List[Dict[str, Any]] = []  # Current tasks being processed
+    party_box_data: Dict[str, Any] = {}  # Party box contents
+    input_queue: List[Dict[str, Any]] = []  # Input data queue
+    output_queue: List[Dict[str, Any]] = []  # Output data queue
+    active_camper_details: List[Dict[str, Any]] = []  # Detailed camper information
+    torch_processing_status: Dict[str, Any] = {}  # Current torch processing status
+    performance_metrics: Dict[str, float] = {}  # Performance metrics
+    error_count: int = 0  # Recent error count
+    success_rate: float = 1.0  # Success rate percentage
 
 
 class CamperNode(NodeData):

@@ -54,5 +54,5 @@ RUN useradd -m -u 1000 campfire && \
     chown -R campfire:campfire /app
 USER campfire
 
-# Start the development team MCP server
-CMD ["python", "development_team_server.py"]
+# Start the valley with web monitoring server
+CMD ["python", "valley_with_web_server.py"]

@@ -92,6 +92,132 @@ body {
     cursor: pointer;
 }
 
+/* Task Section Styles */
+.task-section {
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.task-section h3 {
+    color: #ff6b35;
+    margin-bottom: 15px;
+    font-size: 16px;
+}
+
+#taskInput {
+    width: 100%;
+    background: #2a2a2a;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 10px;
+    color: #fff;
+    font-family: inherit;
+    font-size: 14px;
+    resize: vertical;
+    min-height: 60px;
+}
+
+#taskInput:focus {
+    outline: none;
+    border-color: #ff6b35;
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.2);
+}
+
+.start-task-btn {
+    background: linear-gradient(135deg, #4CAF50, #45a049);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    margin-right: 10px;
+}
+
+.start-task-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #45a049, #3d8b40);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(76, 175, 80, 0.3);
+}
+
+.start-task-btn:disabled {
+    background: #666;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.stop-task-btn {
+    background: linear-gradient(135deg, #f44336, #d32f2f);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.stop-task-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #d32f2f, #b71c1c);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(244, 67, 54, 0.3);
+}
+
+.stop-task-btn:disabled {
+    background: #666;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.task-status {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: #2a2a2a;
+    border-radius: 4px;
+    border-left: 4px solid #4CAF50;
+}
+
+.task-status.processing {
+    border-left-color: #ff9800;
+    animation: pulse 2s infinite;
+}
+
+.task-status.error {
+    border-left-color: #f44336;
+}
+
+.task-status .status-text {
+    font-size: 12px;
+    color: #ccc;
+}
+
+.task-status.processing .status-text {
+    color: #ffa500;
+    font-weight: bold;
+}
+
+.task-status.completed .status-text {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.task-status.error .status-text {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+
 .control-item button {
     background: #ff6b35;
     color: white;
@@ -120,10 +246,12 @@ body {
 }
 
 .canvas-container {
-    width: 100%;
-    height: 100%;
+    flex: 1;
     position: relative;
+    background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
     overflow: hidden;
+    border-radius: 8px;
+    box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.3);
     cursor: grab;
 }
 
@@ -131,10 +259,70 @@ body {
     cursor: grabbing;
 }
 
-#visualization-canvas {
+.main-canvas {
     width: 100%;
     height: 100%;
-    background: radial-gradient(circle at 50% 50%, #2a2a2a 0%, #1a1a1a 100%);
+    display: block;
+    cursor: grab;
+    background: transparent;
+}
+
+.main-canvas:active {
+    cursor: grabbing;
+}
+
+.main-canvas.loading {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* Canvas UI overlays */
+.canvas-overlay {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 100;
+}
+
+.canvas-controls {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    gap: 8px;
+    z-index: 100;
+}
+
+.canvas-controls button {
+    background: rgba(0, 0, 0, 0.8);
+    border: 1px solid #444;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.canvas-controls button:hover {
+    background: rgba(255, 107, 53, 0.8);
+    border-color: #FF6B35;
+}
+
+.loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ccc;
+    font-size: 18px;
+    z-index: 10;
 }
 
 /* Toolbar */
@@ -440,4 +628,253 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: #666;
+}
+
+/* LiteGraph Container Styles */
+.litegraph-container {
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: #1a1a1a;
+    overflow: hidden;
+}
+
+.litegraph-header {
+    background: #2a2a2a;
+    padding: 10px 20px;
+    border-bottom: 1px solid #444;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 60px;
+}
+
+.litegraph-header h2 {
+    color: #fff;
+    margin: 0;
+    font-size: 1.5em;
+    font-weight: bold;
+}
+
+.litegraph-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.litegraph-controls .btn {
+    padding: 8px 16px;
+    background: #333;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.litegraph-controls .btn:hover {
+    background: #444;
+    border-color: #666;
+}
+
+.litegraph-canvas {
+    flex: 1;
+    width: 100%;
+    background: #1a1a1a;
+    border: none;
+    outline: none;
+}
+
+/* LiteGraph Overrides */
+.litegraph {
+    background: #1a1a1a !important;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
+}
+
+.litegraph .lgraphnode {
+    background: #2a2a2a !important;
+    border: 1px solid #444 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+    min-width: 160px !important;
+}
+
+.litegraph .lgraphnode.selected {
+    border-color: #4a9eff !important;
+    box-shadow: 0 0 15px rgba(74, 158, 255, 0.6) !important;
+}
+
+.litegraph .lgraphnode .title {
+    background: #333 !important;
+    color: #fff !important;
+    font-weight: bold !important;
+    padding: 6px 12px !important;
+    border-radius: 8px 8px 0 0 !important;
+    font-size: 13px !important;
+    text-align: center !important;
+}
+
+.litegraph .lgraphnode .content {
+    padding: 8px 12px !important;
+    color: #ccc !important;
+    font-size: 12px !important;
+}
+
+.litegraph .connection {
+    stroke: #4a9eff !important;
+    stroke-width: 3px !important;
+    opacity: 0.8 !important;
+}
+
+.litegraph .connection.highlighted {
+    stroke: #ffaa00 !important;
+    stroke-width: 4px !important;
+    opacity: 1 !important;
+}
+
+/* Custom node type colors */
+.litegraph .lgraphnode[data-type="campfire/valley"] .title {
+    background: linear-gradient(135deg, #2d5a2d, #4a8f4a) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/dock"] .title {
+    background: linear-gradient(135deg, #1e3a8a, #3b82f6) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/dockmaster_campfire"] .title {
+    background: linear-gradient(135deg, #7c2d12, #ea580c) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/sanitizer_campfire"] .title {
+    background: linear-gradient(135deg, #7f1d1d, #ef4444) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/justice_campfire"] .title {
+    background: linear-gradient(135deg, #581c87, #8b5cf6) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/campfire"] .title {
+    background: linear-gradient(135deg, #8b4513, #cd853f) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/loader_camper"] .title,
+.litegraph .lgraphnode[data-type="campfire/router_camper"] .title,
+.litegraph .lgraphnode[data-type="campfire/packer_camper"] .title {
+    background: linear-gradient(135deg, #064e3b, #10b981) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/scanner_camper"] .title,
+.litegraph .lgraphnode[data-type="campfire/filter_camper"] .title,
+.litegraph .lgraphnode[data-type="campfire/quarantine_camper"] .title {
+    background: linear-gradient(135deg, #7f1d1d, #f87171) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/detector_camper"] .title,
+.litegraph .lgraphnode[data-type="campfire/enforcer_camper"] .title,
+.litegraph .lgraphnode[data-type="campfire/governor_camper"] .title {
+    background: linear-gradient(135deg, #4c1d95, #a78bfa) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/camper"] .title {
+    background: linear-gradient(135deg, #4682b4, #87ceeb) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/task_input"] .title {
+    background: linear-gradient(135deg, #6a5acd, #9370db) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/view_mode"] .title {
+    background: linear-gradient(135deg, #20b2aa, #48d1cc) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/filter"] .title {
+    background: linear-gradient(135deg, #ff8c00, #ffa500) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/zoom_control"] .title {
+    background: linear-gradient(135deg, #32cd32, #90ee90) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/display_options"] .title {
+    background: linear-gradient(135deg, #da70d6, #dda0dd) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/node_details"] .title {
+    background: linear-gradient(135deg, #ffd700, #ffff00) !important;
+    color: #333 !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/status_legend"] .title {
+    background: linear-gradient(135deg, #dc143c, #ff6347) !important;
+}
+
+.litegraph .lgraphnode[data-type="campfire/websocket_data"] .title {
+    background: linear-gradient(135deg, #ff6347, #ff7f50) !important;
+}
+
+/* Node input/output slots */
+.litegraph .slot {
+    background: #555 !important;
+    border: 1px solid #777 !important;
+}
+
+.litegraph .slot.input {
+    background: #4a9eff !important;
+}
+
+.litegraph .slot.output {
+    background: #ff6b6b !important;
+}
+
+/* Context menu styling */
+.litegraph .litecontextmenu {
+    background: #2a2a2a !important;
+    border: 1px solid #555 !important;
+    border-radius: 6px !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important;
+}
+
+.litegraph .litecontextmenu .item {
+    color: #ccc !important;
+    padding: 8px 16px !important;
+}
+
+.litegraph .litecontextmenu .item:hover {
+    background: #444 !important;
+    color: #fff !important;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .litegraph-header {
+        flex-direction: column;
+        gap: 10px;
+        padding: 15px;
+        min-height: auto;
+    }
+    
+    .litegraph-controls {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+    
+    .litegraph-controls .btn {
+        font-size: 12px;
+        padding: 6px 12px;
+    }
+    
+    .litegraph .lgraphnode {
+        min-width: 140px !important;
+    }
+    
+    .litegraph .lgraphnode .title {
+        font-size: 11px !important;
+        padding: 4px 8px !important;
+    }
+    
+    .litegraph .lgraphnode .content {
+        font-size: 10px !important;
+        padding: 6px 8px !important;
+    }
 }
