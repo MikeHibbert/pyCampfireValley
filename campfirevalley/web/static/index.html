@@ -6,12 +6,49 @@
     <title>CampfireValley Visualization</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="/static/js/litegraph.js"></script>
+    <script src="/static/js/gamification.js"></script>
     <script src="/static/js/campfire-nodes.js"></script>
     <script src="/static/js/litegraph-integration.js"></script>
+    <script src="/static/js/metrics.js"></script>
     <script src="/static/js/main.js"></script>
 </head>
 <body>
     <div class="container">
+        <div class="metrics-panel" id="metricsPanel">
+            <div class="metrics-header">
+                <h3>📊 System Metrics</h3>
+                <button id="toggleMetrics" class="btn-small">Hide</button>
+            </div>
+            <div class="metrics-content">
+                <div class="metric-group">
+                    <h4>🔥 Campfire Performance</h4>
+                    <div id="campfireMetrics" class="metrics-grid">
+                        <div class="metric-item">
+                            <span class="metric-label">Total Requests:</span>
+                            <span class="metric-value" id="totalRequests">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Active Connections:</span>
+                            <span class="metric-value" id="activeConnections">0</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Avg Processing Time:</span>
+                            <span class="metric-value" id="avgProcessingTime">0ms</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Error Rate:</span>
+                            <span class="metric-value" id="errorRate">0%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="metric-group">
+                    <h4>⚡ Node Status</h4>
+                    <div id="nodeMetrics" class="metrics-list">
+                        <!-- Dynamic node metrics will be populated here -->
+                    </div>
+                </div>
+            </div>
+        </div>
         <div class="litegraph-container">
             <div class="litegraph-header">
                 <h2>🏕️ CampfireValley - Node Editor</h2>

@@ -173,6 +173,49 @@ window.CampfireValley = {
     // Get reference to the LiteGraph instance
     getLiteGraph: function() {
         return window.campfireValleyLiteGraph;
+    },
+    
+    // Start a task
+    startTask: function(taskDescription) {
+        console.log("Starting task:", taskDescription);
+        
+        // Send task to WebSocket if connected
+        if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.websocket && 
+            window.campfireValleyLiteGraph.websocket.readyState === WebSocket.OPEN) {
+            window.campfireValleyLiteGraph.websocket.send(JSON.stringify({
+                type: 'start_task',
+                task: taskDescription,
+                timestamp: new Date().toISOString()
+            }));
+        }
+        
+        // Update task status in nodes
+        if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.nodes.taskInput) {
+            window.campfireValleyLiteGraph.nodes.taskInput.properties.status = "running";
+        }
+        
+        return true;
+    },
+    
+    // Stop the current task
+    stopTask: function() {
+        console.log("Stopping current task");
+        
+        // Send stop signal to WebSocket if connected
+        if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.websocket && 
+            window.campfireValleyLiteGraph.websocket.readyState === WebSocket.OPEN) {
+            window.campfireValleyLiteGraph.websocket.send(JSON.stringify({
+                type: 'stop_task',
+                timestamp: new Date().toISOString()
+            }));
+        }
+        
+        // Update task status in nodes
+        if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.nodes.taskInput) {
+            window.campfireValleyLiteGraph.nodes.taskInput.properties.status = "ready";
+        }
+        
+        return true;
     }
 };
 

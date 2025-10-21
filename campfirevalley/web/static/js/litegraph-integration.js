@@ -9,6 +9,12 @@ class CampfireValleyLiteGraph {
         this.websocket = null;
         this.isInitialized = false;
         
+        // Initialize gamification engine
+        if (typeof CampfireGameEngine !== 'undefined') {
+            window.CampfireGameEngine = new CampfireGameEngine();
+            console.log("Gamification engine initialized");
+        }
+        
         // Bind methods
         this.init = this.init.bind(this);
         this.createDefaultNodes = this.createDefaultNodes.bind(this);
@@ -32,6 +38,12 @@ class CampfireValleyLiteGraph {
             this.canvas.render_connections_border = false;
             this.canvas.highquality_render = true;
             this.canvas.use_gradients = true;
+            
+            // Enable multi-selection and group movement
+            this.canvas.allow_multi_selection = true;
+            this.canvas.multi_select_key = "ctrl"; // Use Ctrl key for multi-selection
+            this.canvas.allow_dragcanvas = true;
+            this.canvas.allow_dragnodes = true;
             
             // Set canvas size
             this.canvas.resize();
@@ -58,211 +70,450 @@ class CampfireValleyLiteGraph {
         this.graph.clear();
         this.nodes = {};
         
-        // Create control nodes in top area
-        const wsNode = LiteGraph.createNode("campfire/websocket_data");
-        wsNode.pos = [50, 50];
-        this.graph.add(wsNode);
-        this.nodes.websocket = wsNode;
+        // Layout configuration for DAG system and vertical UI panel
+        const LAYOUT_CONFIG = {
+            // DAG Layout area (main graph) - positioned to the right of UI panel
+            DAG_START_X: 400,      // Start DAG to the right of UI panel
+            DAG_START_Y: 100,      // Start DAG higher up
+            RANK_SEP: 350,         // Horizontal separation between ranks
+            NODE_SEP: 180,         // Vertical separation between nodes in same rank
+            NODE_WIDTH: 200,
+            NODE_HEIGHT: 100,
+            
+            // Vertical UI Control Panel (left side) - compact stacked layout
+            UI_PANEL_X: 20,        // Left edge of screen
+            UI_PANEL_Y: 20,        // Start near top
+            UI_PANEL_WIDTH: 320,   // Fixed width for all UI nodes
+            UI_PANEL_HEIGHT: 80,   // Compact height for each UI node
+            UI_PANEL_SPACING: 10,  // Small gap between UI nodes
+            UI_PANEL_MARGIN: 90,   // Total height per UI node (height + spacing)
+            
+            // Disconnected nodes area (far right)
+            DISCONNECTED_X: 1200,  // Far right side
+            DISCONNECTED_Y: 50,    
+            DISCONNECTED_SPACING: 180,
+            
+            // Legacy values for compatibility
+            START_X: 400,          // Point to new DAG area
+            START_Y: 100,          // Point to new DAG Y position
+            UI_AREA_HEIGHT: 0      // No longer needed
+        };
+
+        // Track placed UI nodes for collision detection
+        const placedUINodes = [];
         
-        const taskNode = LiteGraph.createNode("campfire/task_input");
-        taskNode.pos = [300, 50];
-        this.graph.add(taskNode);
-        this.nodes.taskInput = taskNode;
+        // Helper functions for different positioning systems
+        const getUIControlPos = (index, nodeSize = [LAYOUT_CONFIG.UI_PANEL_WIDTH, LAYOUT_CONFIG.UI_PANEL_HEIGHT]) => {
+            // Vertical stacking layout - ignore col/row, use index for vertical position
+            const basePos = [
+                LAYOUT_CONFIG.UI_PANEL_X,
+                LAYOUT_CONFIG.UI_PANEL_Y + (index * LAYOUT_CONFIG.UI_PANEL_MARGIN)
+            ];
+            
+            // Use collision detection if available
+            if (typeof CollisionDetection !== 'undefined' && placedUINodes.length > 0) {
+                const tempNode = { pos: basePos, size: nodeSize };
+                const finalPos = CollisionDetection.findNonCollidingPosition(tempNode, placedUINodes, 10);
+                placedUINodes.push({ pos: finalPos, size: nodeSize });
+                return finalPos;
+            } else {
+                placedUINodes.push({ pos: basePos, size: nodeSize });
+                return basePos;
+            }
+        };
+
+        const getDisconnectedNodePos = (index, nodeSize = [200, 100]) => {
+            const basePos = [
+                LAYOUT_CONFIG.DISCONNECTED_X,
+                LAYOUT_CONFIG.DISCONNECTED_Y + (index * LAYOUT_CONFIG.DISCONNECTED_SPACING)
+            ];
+            
+            // Use collision detection if available
+            if (typeof CollisionDetection !== 'undefined' && placedUINodes.length > 0) {
+                const tempNode = { pos: basePos, size: nodeSize };
+                return CollisionDetection.findNonCollidingPosition(tempNode, placedUINodes, 20);
+            }
+            return basePos;
+        };
+
+        // Legacy function for backward compatibility
+        const getUIGridPos = (index, nodeSize) => getUIControlPos(index, nodeSize);
+
+        // DAG Layout System - assigns ranks and positions based on dependencies
+        class DAGLayout {
+            constructor(config) {
+                this.config = config;
+                this.nodes = new Map();
+                this.edges = [];
+                this.ranks = new Map(); // node -> rank (level)
+                this.rankNodes = new Map(); // rank -> [nodes]
+            }
+
+            addNode(id, type, properties = {}) {
+                this.nodes.set(id, { id, type, properties, inEdges: [], outEdges: [] });
+            }
+
+            addEdge(from, to) {
+                this.edges.push({ from, to });
+                if (this.nodes.has(from) && this.nodes.has(to)) {
+                    this.nodes.get(from).outEdges.push(to);
+                    this.nodes.get(to).inEdges.push(from);
+                }
+            }
+
+            // Assign ranks using topological sort (Kahn's algorithm)
+            assignRanks() {
+                const inDegree = new Map();
+                const queue = [];
+                
+                // Initialize in-degrees
+                for (const [id, node] of this.nodes) {
+                    inDegree.set(id, node.inEdges.length);
+                    if (node.inEdges.length === 0) {
+                        queue.push(id);
+                        this.ranks.set(id, 0);
+                    }
+                }
+
+                // Process nodes level by level
+                while (queue.length > 0) {
+                    const current = queue.shift();
+                    const currentRank = this.ranks.get(current);
+                    
+                    // Add to rank group
+                    if (!this.rankNodes.has(currentRank)) {
+                        this.rankNodes.set(currentRank, []);
+                    }
+                    this.rankNodes.get(currentRank).push(current);
+
+                    // Process outgoing edges
+                    for (const neighbor of this.nodes.get(current).outEdges) {
+                        inDegree.set(neighbor, inDegree.get(neighbor) - 1);
+                        
+                        if (inDegree.get(neighbor) === 0) {
+                            this.ranks.set(neighbor, currentRank + 1);
+                            queue.push(neighbor);
+                        }
+                    }
+                }
+            }
+
+            // Calculate positions for all nodes with collision detection
+            calculatePositions() {
+                this.assignRanks();
+                const positions = new Map();
+                const placedNodes = [];
+
+                for (const [rank, nodeIds] of this.rankNodes) {
+                    const nodesInRank = nodeIds.length;
+                    const startY = this.config.DAG_START_Y;
+                    
+                    nodeIds.forEach((nodeId, index) => {
+                        const x = this.config.DAG_START_X + (rank * this.config.RANK_SEP);
+                        const y = startY + (index * this.config.NODE_SEP);
+                        
+                        // Create a temporary node object for collision detection
+                        const tempNode = {
+                            pos: [x, y],
+                            size: [this.config.NODE_WIDTH, this.config.NODE_HEIGHT]
+                        };
+                        
+                        // Use collision detection to find a non-overlapping position
+                        let finalPos = [x, y];
+                        if (placedNodes.length > 0 && typeof CollisionDetection !== 'undefined') {
+                            finalPos = CollisionDetection.findNonCollidingPosition(tempNode, placedNodes, 30);
+                        }
+                        
+                        // Add to placed nodes for future collision checks
+                        placedNodes.push({
+                            pos: finalPos,
+                            size: [this.config.NODE_WIDTH, this.config.NODE_HEIGHT]
+                        });
+                        
+                        positions.set(nodeId, finalPos);
+                    });
+                }
+
+                return positions;
+            }
+        }
+
+        // Initialize DAG layout
+        const dagLayout = new DAGLayout(LAYOUT_CONFIG);
         
-        const viewNode = LiteGraph.createNode("campfire/view_mode");
-        viewNode.pos = [550, 50];
-        this.graph.add(viewNode);
-        this.nodes.viewMode = viewNode;
+        // Create single UI control panel containing all UI controls
+        const uiControlPanel = LiteGraph.createNode("campfire/ui_control_panel");
+        uiControlPanel.pos = [20, 20]; // Position the panel on the left side
+        this.graph.add(uiControlPanel);
+        this.nodes.uiControlPanel = uiControlPanel;
         
-        const filterNode = LiteGraph.createNode("campfire/filter");
-        filterNode.pos = [800, 50];
-        this.graph.add(filterNode);
-        this.nodes.filter = filterNode;
+        // Store references to the panel for backward compatibility
+        this.nodes.websocket = uiControlPanel;
+        this.nodes.taskInput = uiControlPanel;
+        this.nodes.viewMode = uiControlPanel;
+        this.nodes.filter = uiControlPanel;
+        this.nodes.zoomControl = uiControlPanel;
+        this.nodes.displayOptions = uiControlPanel;
+        this.nodes.nodeDetails = uiControlPanel;
+        this.nodes.statusLegend = uiControlPanel;
         
-        const zoomNode = LiteGraph.createNode("campfire/zoom_control");
-        zoomNode.pos = [1050, 50];
-        this.graph.add(zoomNode);
-        this.nodes.zoomControl = zoomNode;
+        // Define DAG structure - nodes and their dependencies
+        // Add all nodes to the DAG layout system first
+        dagLayout.addNode('valley', 'campfire/valley', {
+            name: "Main Valley",
+            total_campfires: 4,
+            total_campers: 9
+        });
         
-        const displayNode = LiteGraph.createNode("campfire/display_options");
-        displayNode.pos = [50, 200];
-        this.graph.add(displayNode);
-        this.nodes.displayOptions = displayNode;
+        dagLayout.addNode('dock', 'campfire/dock', {
+            name: "Valley Gateway", 
+            torch_throughput: 150
+        });
         
-        const detailsNode = LiteGraph.createNode("campfire/node_details");
-        detailsNode.pos = [300, 200];
-        this.graph.add(detailsNode);
-        this.nodes.nodeDetails = detailsNode;
+        dagLayout.addNode('regularCampfire', 'campfire/campfire', {
+            name: "Processing Campfire",
+            type: "processing",
+            camper_count: 3,
+            torch_queue: 8,
+            config_source: "processing.yaml"
+        });
         
-        const legendNode = LiteGraph.createNode("campfire/status_legend");
-        legendNode.pos = [550, 200];
-        this.graph.add(legendNode);
-        this.nodes.statusLegend = legendNode;
+        dagLayout.addNode('dockmaster', 'campfire/dockmaster_campfire', {
+            name: "Dockmaster",
+            torch_queue: 25,
+            routing_efficiency: 95
+        });
         
-        // Create hierarchical structure starting with Valley at top
+        dagLayout.addNode('sanitizer', 'campfire/sanitizer_campfire', {
+            name: "Sanitizer", 
+            threats_detected: 3,
+            quarantine_count: 1
+        });
+        
+        dagLayout.addNode('justice', 'campfire/justice_campfire', {
+            name: "Justice",
+            violations_detected: 2,
+            sanctions_applied: 1
+        });
+
+        // Add camper nodes to DAG
+        // Dockmaster campers
+        dagLayout.addNode('loader', 'campfire/loader_camper', {
+            torches_loaded: 45,
+            validation_rate: 100
+        });
+        dagLayout.addNode('router', 'campfire/router_camper', {
+            routes_processed: 38,
+            routing_accuracy: 98
+        });
+        dagLayout.addNode('packer', 'campfire/packer_camper', {
+            torches_packed: 42,
+            compression_ratio: 75
+        });
+
+        // Sanitizer campers
+        dagLayout.addNode('scanner', 'campfire/scanner_camper', {
+            scans_completed: 67,
+            threats_found: 3
+        });
+        dagLayout.addNode('filterCamper', 'campfire/filter_camper', {
+            content_filtered: 12,
+            filter_accuracy: 99
+        });
+        dagLayout.addNode('quarantine', 'campfire/quarantine_camper', {
+            quarantine_capacity: 100,
+            items_quarantined: 1
+        });
+
+        // Justice campers
+        dagLayout.addNode('detector', 'campfire/detector_camper', {
+            violations_detected: 2,
+            detection_accuracy: 97
+        });
+        dagLayout.addNode('enforcer', 'campfire/enforcer_camper', {
+            sanctions_applied: 1,
+            enforcement_rate: 100
+        });
+        dagLayout.addNode('governor', 'campfire/governor_camper', {
+            policies_managed: 15,
+            compliance_rate: 95
+        });
+
+        // Regular campfire campers
+        dagLayout.addNode('camper1', 'campfire/camper', {
+            type: "processor",
+            current_task: "analyzing",
+            tasks_completed: 23
+        });
+        dagLayout.addNode('camper2', 'campfire/camper', {
+            type: "processor", 
+            current_task: "processing",
+            tasks_completed: 19
+        });
+        dagLayout.addNode('camper3', 'campfire/camper', {
+            type: "processor",
+            current_task: "idle", 
+            tasks_completed: 31
+        });
+
+        // Define dependencies (edges) - this determines the layout
+        dagLayout.addEdge('valley', 'dock');
+        dagLayout.addEdge('valley', 'regularCampfire');
+        dagLayout.addEdge('dock', 'dockmaster');
+        dagLayout.addEdge('dock', 'sanitizer');
+        dagLayout.addEdge('dock', 'justice');
+
+        // Camper dependencies
+        dagLayout.addEdge('dockmaster', 'loader');
+        dagLayout.addEdge('dockmaster', 'router');
+        dagLayout.addEdge('dockmaster', 'packer');
+        
+        dagLayout.addEdge('sanitizer', 'scanner');
+        dagLayout.addEdge('sanitizer', 'filterCamper');
+        dagLayout.addEdge('sanitizer', 'quarantine');
+        
+        dagLayout.addEdge('justice', 'detector');
+        dagLayout.addEdge('justice', 'enforcer');
+        dagLayout.addEdge('justice', 'governor');
+        
+        dagLayout.addEdge('regularCampfire', 'camper1');
+        dagLayout.addEdge('regularCampfire', 'camper2');
+        dagLayout.addEdge('regularCampfire', 'camper3');
+
+        // Calculate optimal positions using DAG layout
+        const positions = dagLayout.calculatePositions();
+
+        // Create actual LiteGraph nodes with calculated positions
         const valleyNode = LiteGraph.createNode("campfire/valley");
-        valleyNode.pos = [600, 400]; // Center top of hierarchy
+        valleyNode.pos = positions.get('valley');
         valleyNode.properties = valleyNode.properties || {};
-        valleyNode.properties.name = "Main Valley";
-        valleyNode.properties.total_campfires = 4; // 3 dock + 1 regular
-        valleyNode.properties.total_campers = 9; // 3 per dock campfire
+        Object.assign(valleyNode.properties, dagLayout.nodes.get('valley').properties);
         this.graph.add(valleyNode);
         this.nodes.valley = valleyNode;
         
-        // Create Dock node below Valley
         const dockNode = LiteGraph.createNode("campfire/dock");
-        dockNode.pos = [600, 580];
+        dockNode.pos = positions.get('dock');
         dockNode.properties = dockNode.properties || {};
-        dockNode.properties.name = "Valley Gateway";
-        dockNode.properties.torch_throughput = 150;
+        Object.assign(dockNode.properties, dagLayout.nodes.get('dock').properties);
         this.graph.add(dockNode);
         this.nodes.dock = dockNode;
         
-        // Create the three specialized dock campfires
+        const regularCampfireNode = LiteGraph.createNode("campfire/campfire");
+        regularCampfireNode.pos = positions.get('regularCampfire');
+        regularCampfireNode.properties = regularCampfireNode.properties || {};
+        Object.assign(regularCampfireNode.properties, dagLayout.nodes.get('regularCampfire').properties);
+        this.graph.add(regularCampfireNode);
+        this.nodes.regularCampfire = regularCampfireNode;
+        
         const dockmasterNode = LiteGraph.createNode("campfire/dockmaster_campfire");
-        dockmasterNode.pos = [200, 760];
+        dockmasterNode.pos = positions.get('dockmaster');
         dockmasterNode.properties = dockmasterNode.properties || {};
-        dockmasterNode.properties.name = "Dockmaster";
-        dockmasterNode.properties.torch_queue = 25;
-        dockmasterNode.properties.routing_efficiency = 95;
+        Object.assign(dockmasterNode.properties, dagLayout.nodes.get('dockmaster').properties);
         this.graph.add(dockmasterNode);
         this.nodes.dockmaster = dockmasterNode;
         
         const sanitizerNode = LiteGraph.createNode("campfire/sanitizer_campfire");
-        sanitizerNode.pos = [600, 760];
+        sanitizerNode.pos = positions.get('sanitizer');
         sanitizerNode.properties = sanitizerNode.properties || {};
-        sanitizerNode.properties.name = "Sanitizer";
-        sanitizerNode.properties.threats_detected = 3;
-        sanitizerNode.properties.quarantine_count = 1;
+        Object.assign(sanitizerNode.properties, dagLayout.nodes.get('sanitizer').properties);
         this.graph.add(sanitizerNode);
         this.nodes.sanitizer = sanitizerNode;
         
         const justiceNode = LiteGraph.createNode("campfire/justice_campfire");
-        justiceNode.pos = [1000, 760];
+        justiceNode.pos = positions.get('justice');
         justiceNode.properties = justiceNode.properties || {};
-        justiceNode.properties.name = "Justice";
-        justiceNode.properties.violations_detected = 2;
-        justiceNode.properties.sanctions_applied = 1;
+        Object.assign(justiceNode.properties, dagLayout.nodes.get('justice').properties);
         this.graph.add(justiceNode);
         this.nodes.justice = justiceNode;
         
-        // Create specialized campers for Dockmaster
+        // Level 3: Specialized campers using DAG layout positions
+        // Dockmaster campers
         const loaderNode = LiteGraph.createNode("campfire/loader_camper");
-        loaderNode.pos = [50, 940];
+        loaderNode.pos = positions.get('loader');
         loaderNode.properties = loaderNode.properties || {};
-        loaderNode.properties.torches_loaded = 45;
-        loaderNode.properties.validation_rate = 100;
+        Object.assign(loaderNode.properties, dagLayout.nodes.get('loader').properties);
         this.graph.add(loaderNode);
         this.nodes.loader = loaderNode;
         
         const routerNode = LiteGraph.createNode("campfire/router_camper");
-        routerNode.pos = [250, 940];
+        routerNode.pos = positions.get('router');
         routerNode.properties = routerNode.properties || {};
-        routerNode.properties.routes_processed = 38;
-        routerNode.properties.routing_accuracy = 98;
+        Object.assign(routerNode.properties, dagLayout.nodes.get('router').properties);
         this.graph.add(routerNode);
         this.nodes.router = routerNode;
         
         const packerNode = LiteGraph.createNode("campfire/packer_camper");
-        packerNode.pos = [450, 940];
+        packerNode.pos = positions.get('packer');
         packerNode.properties = packerNode.properties || {};
-        packerNode.properties.torches_packed = 42;
-        packerNode.properties.compression_ratio = 75;
+        Object.assign(packerNode.properties, dagLayout.nodes.get('packer').properties);
         this.graph.add(packerNode);
         this.nodes.packer = packerNode;
         
-        // Create specialized campers for Sanitizer
+        // Sanitizer campers
         const scannerNode = LiteGraph.createNode("campfire/scanner_camper");
-        scannerNode.pos = [450, 940];
+        scannerNode.pos = positions.get('scanner');
         scannerNode.properties = scannerNode.properties || {};
-        scannerNode.properties.scans_completed = 67;
-        scannerNode.properties.threats_found = 3;
+        Object.assign(scannerNode.properties, dagLayout.nodes.get('scanner').properties);
         this.graph.add(scannerNode);
         this.nodes.scanner = scannerNode;
         
         const filterCamperNode = LiteGraph.createNode("campfire/filter_camper");
-        filterCamperNode.pos = [650, 940];
+        filterCamperNode.pos = positions.get('filterCamper');
         filterCamperNode.properties = filterCamperNode.properties || {};
-        filterCamperNode.properties.content_filtered = 12;
-        filterCamperNode.properties.filter_accuracy = 99;
+        Object.assign(filterCamperNode.properties, dagLayout.nodes.get('filterCamper').properties);
         this.graph.add(filterCamperNode);
         this.nodes.filterCamper = filterCamperNode;
         
         const quarantineNode = LiteGraph.createNode("campfire/quarantine_camper");
-        quarantineNode.pos = [850, 940];
+        quarantineNode.pos = positions.get('quarantine');
         quarantineNode.properties = quarantineNode.properties || {};
-        quarantineNode.properties.items_quarantined = 1;
-        quarantineNode.properties.quarantine_capacity = 100;
+        Object.assign(quarantineNode.properties, dagLayout.nodes.get('quarantine').properties);
         this.graph.add(quarantineNode);
         this.nodes.quarantine = quarantineNode;
         
-        // Create specialized campers for Justice
+        // Justice campers
         const detectorNode = LiteGraph.createNode("campfire/detector_camper");
-        detectorNode.pos = [850, 940];
+        detectorNode.pos = positions.get('detector');
         detectorNode.properties = detectorNode.properties || {};
-        detectorNode.properties.violations_detected = 2;
-        detectorNode.properties.detection_accuracy = 97;
+        Object.assign(detectorNode.properties, dagLayout.nodes.get('detector').properties);
         this.graph.add(detectorNode);
         this.nodes.detector = detectorNode;
         
         const enforcerNode = LiteGraph.createNode("campfire/enforcer_camper");
-        enforcerNode.pos = [1050, 940];
+        enforcerNode.pos = positions.get('enforcer');
         enforcerNode.properties = enforcerNode.properties || {};
-        enforcerNode.properties.sanctions_applied = 1;
-        enforcerNode.properties.enforcement_rate = 100;
+        Object.assign(enforcerNode.properties, dagLayout.nodes.get('enforcer').properties);
         this.graph.add(enforcerNode);
         this.nodes.enforcer = enforcerNode;
         
         const governorNode = LiteGraph.createNode("campfire/governor_camper");
-        governorNode.pos = [1250, 940];
+        governorNode.pos = positions.get('governor');
         governorNode.properties = governorNode.properties || {};
-        governorNode.properties.policies_managed = 15;
-        governorNode.properties.compliance_rate = 95;
+        Object.assign(governorNode.properties, dagLayout.nodes.get('governor').properties);
         this.graph.add(governorNode);
         this.nodes.governor = governorNode;
         
-        // Create a regular campfire from config
-        const regularCampfireNode = LiteGraph.createNode("campfire/campfire");
-        regularCampfireNode.pos = [1200, 580];
-        regularCampfireNode.properties = regularCampfireNode.properties || {};
-        regularCampfireNode.properties.name = "Processing Campfire";
-        regularCampfireNode.properties.type = "processing";
-        regularCampfireNode.properties.camper_count = 3;
-        regularCampfireNode.properties.torch_queue = 8;
-        regularCampfireNode.properties.config_source = "processing.yaml";
-        this.graph.add(regularCampfireNode);
-        this.nodes.regularCampfire = regularCampfireNode;
+        // Regular campfire campers using DAG layout
+        const camperNode1 = LiteGraph.createNode("campfire/camper");
+        camperNode1.pos = positions.get('camper1');
+        camperNode1.properties = camperNode1.properties || {};
+        Object.assign(camperNode1.properties, dagLayout.nodes.get('camper1').properties);
+        this.graph.add(camperNode1);
+        this.nodes.camper1 = camperNode1;
         
-        // Create regular campers for the processing campfire
-        const camper1Node = LiteGraph.createNode("campfire/camper");
-        camper1Node.pos = [1050, 760];
-        camper1Node.properties = camper1Node.properties || {};
-        camper1Node.properties.name = "Worker 1";
-        camper1Node.properties.type = "processor";
-        camper1Node.properties.current_task = "analyzing";
-        camper1Node.properties.tasks_completed = 23;
-        this.graph.add(camper1Node);
-        this.nodes.camper1 = camper1Node;
+        const camperNode2 = LiteGraph.createNode("campfire/camper");
+        camperNode2.pos = positions.get('camper2');
+        camperNode2.properties = camperNode2.properties || {};
+        Object.assign(camperNode2.properties, dagLayout.nodes.get('camper2').properties);
+        this.graph.add(camperNode2);
+        this.nodes.camper2 = camperNode2;
         
-        const camper2Node = LiteGraph.createNode("campfire/camper");
-        camper2Node.pos = [1250, 760];
-        camper2Node.properties = camper2Node.properties || {};
-        camper2Node.properties.name = "Worker 2";
-        camper2Node.properties.type = "processor";
-        camper2Node.properties.current_task = "processing";
-        camper2Node.properties.tasks_completed = 19;
-        this.graph.add(camper2Node);
-        this.nodes.camper2 = camper2Node;
-        
-        const camper3Node = LiteGraph.createNode("campfire/camper");
-        camper3Node.pos = [1450, 760];
-        camper3Node.properties = camper3Node.properties || {};
-        camper3Node.properties.name = "Worker 3";
-        camper3Node.properties.type = "processor";
-        camper3Node.properties.current_task = "idle";
-        camper3Node.properties.tasks_completed = 31;
-        this.graph.add(camper3Node);
-        this.nodes.camper3 = camper3Node;
+        const camperNode3 = LiteGraph.createNode("campfire/camper");
+        camperNode3.pos = positions.get('camper3');
+        camperNode3.properties = camperNode3.properties || {};
+        Object.assign(camperNode3.properties, dagLayout.nodes.get('camper3').properties);
+        this.graph.add(camperNode3);
+        this.nodes.camper3 = camperNode3;
         
         // Connect nodes logically
         this.connectNodes();
@@ -571,6 +822,40 @@ class CampfireValleyLiteGraph {
         this.graph.add(camper);
         this.nodes[`camper_${id}`] = camper;
         return camper;
+    }
+    
+    // Add a node with collision detection
+    addNodeWithCollisionDetection(nodeType, targetPosition, nodeId = null) {
+        const newNode = LiteGraph.createNode(nodeType);
+        
+        // Get all existing nodes for collision detection
+        const existingNodes = this.graph._nodes.map(node => ({
+            pos: [...node.pos],
+            size: [...node.size]
+        }));
+        
+        // Set initial position
+        newNode.pos = targetPosition ? [...targetPosition] : [100, 100];
+        
+        // Use collision detection to find a safe position
+        if (typeof CollisionDetection !== 'undefined' && existingNodes.length > 0) {
+            const tempNode = {
+                pos: [...newNode.pos],
+                size: [...newNode.size]
+            };
+            const safePosition = CollisionDetection.findNonCollidingPosition(tempNode, existingNodes, 20);
+            newNode.pos = safePosition;
+        }
+        
+        // Add to graph
+        this.graph.add(newNode);
+        
+        // Store reference if ID provided
+        if (nodeId) {
+            this.nodes[nodeId] = newNode;
+        }
+        
+        return newNode;
     }
     
     removeCampfire(id) {

@@ -71,6 +71,228 @@ CampfireValley is now **~95% complete** with comprehensive enterprise-grade feat
   - Data deduplication and compression
   - Intelligent lifecycle management
 
+## 🚀 Getting Started
+
+### Quick Start with Docker
+
+1. **Clone and setup**:
+   ```bash
+   git clone https://github.com/MikeHibbert/pyCampfireValley.git
+   cd pyCampfireValley
+   cp .env.example .env
+   # Edit .env with your API keys
+   ```
+
+2. **Start the server**:
+   ```bash
+   docker-compose up --build
+   ```
+
+3. **Access the web interface**:
+   - Open your browser to: http://localhost:8000
+   - View the LiteGraph canvas with campfire nodes
+   - Monitor real-time campfire processes
+
+### Server Components
+
+The CampfireValley server includes:
+
+- **Web Interface**: LiteGraph-based visual campfire management at http://localhost:8000
+- **Valley Management**: Core campfire orchestration and routing
+- **Redis**: Inter-campfire communication and caching
+- **Monitoring**: Real-time metrics and health monitoring
+
+## 📋 Valley Configuration with Manifests
+
+CampfireValley uses GitHub Actions-style YAML manifests to configure valleys and their campfires. You can easily change your valley's behavior by supplying different manifest files.
+
+### Basic Manifest Structure
+
+Create a `manifest.yaml` file in your project root:
+
+```yaml
+# Valley Configuration Manifest
+name: "MyValley"
+version: "1.0"
+
+# Environment settings
+env:
+  dock_mode: "public"          # public, partial, private
+  security_level: "standard"   # basic, standard, high
+  auto_create_dock: true
+
+# Define visible and hidden campfires
+campfires:
+  visible: ["welcome", "helper", "analyzer"]
+  hidden: ["internal-audit", "security-scanner"]
+
+# Dock gateway configuration
+dock:
+  steps:
+    - name: "Initialize gateway"
+      uses: "dock/gateway@v1"
+      with:
+        port: 6379
+        encryption: true
+    - name: "Setup discovery"
+      uses: "dock/discovery@v1"
+      if: "${{ env.dock_mode == 'public' }}"
+      with:
+        broadcast_interval: 30
+
+# Community and networking
+community:
+  discovery: true
+  trusted_valleys: ["FriendlyValley", "HelperValley"]
+```
+
+### Changing Valley Tasks with Different Manifests
+
+You can completely change your valley's purpose by using different manifest configurations:
+
+#### 1. **Development Valley** (`manifest-dev.yaml`)
+```yaml
+name: "DevValley"
+version: "1.0"
+env:
+  dock_mode: "private"
+  security_level: "basic"
+  auto_create_dock: true
+campfires:
+  visible: ["code-reviewer", "test-runner", "documentation"]
+  hidden: ["debug-logger"]
+community:
+  discovery: false
+  trusted_valleys: []
+```
+
+#### 2. **Marketing Valley** (`manifest-marketing.yaml`)
+```yaml
+name: "MarketingValley"
+version: "1.0"
+env:
+  dock_mode: "public"
+  security_level: "standard"
+  auto_create_dock: true
+campfires:
+  visible: ["content-creator", "social-media", "analytics"]
+  hidden: ["competitor-analysis"]
+community:
+  discovery: true
+  trusted_valleys: ["ContentValley", "AnalyticsValley"]
+```
+
+#### 3. **Security Valley** (`manifest-security.yaml`)
+```yaml
+name: "SecurityValley"
+version: "1.0"
+env:
+  dock_mode: "private"
+  security_level: "high"
+  auto_create_dock: false
+campfires:
+  visible: ["threat-detector", "vulnerability-scanner"]
+  hidden: ["forensics", "incident-response", "audit-logger"]
+community:
+  discovery: false
+  trusted_valleys: []
+```
+
+### Using Different Manifests
+
+To switch between different valley configurations:
+
+1. **Method 1: Replace the default manifest**
+   ```bash
+   cp manifest-marketing.yaml manifest.yaml
+   docker-compose restart
+   ```
+
+2. **Method 2: Specify manifest path in code**
+   ```python
+   from campfirevalley import Valley
+   
+   # Load specific manifest
+   valley = Valley("MyValley", manifest_path="./manifest-security.yaml")
+   await valley.start()
+   ```
+
+3. **Method 3: Environment variable**
+   ```bash
+   export CAMPFIRE_MANIFEST_PATH="./manifest-dev.yaml"
+   docker-compose up --build
+   ```
+
+### Advanced Configuration
+
+For more complex setups, you can use the full configuration system:
+
+```yaml
+# Advanced manifest with specialist campfires
+name: "EnterpriseValley"
+version: "2.0"
+
+env:
+  dock_mode: "partial"
+  security_level: "high"
+  auto_create_dock: true
+  enable_monitoring: true
+  enable_justice: true
+
+# Specialist campfire configurations
+campfires:
+  visible: ["sanitizer", "validator", "router"]
+  hidden: ["justice-enforcer", "metrics-collector"]
+
+# Advanced dock configuration
+dock:
+  steps:
+    - name: "Initialize secure gateway"
+      uses: "dock/gateway@v2"
+      with:
+        port: 6379
+        encryption: true
+        auth_required: true
+    - name: "Setup load balancer"
+      uses: "dock/loadbalancer@v1"
+      with:
+        strategy: "round_robin"
+        health_check: true
+    - name: "Enable monitoring"
+      uses: "dock/monitoring@v1"
+      with:
+        metrics_endpoint: "/metrics"
+        alerts_enabled: true
+
+# Justice system policies
+justice:
+  policies:
+    - name: "rate_limiting"
+      max_requests_per_minute: 100
+    - name: "content_filtering"
+      blocked_patterns: ["spam", "malware"]
+
+community:
+  discovery: true
+  trusted_valleys: ["SecurityValley", "MonitoringValley"]
+  federation_enabled: true
+```
+
+### Configuration Validation
+
+CampfireValley automatically validates your manifest files:
+
+```python
+from campfirevalley.config import ConfigManager
+
+# Validate manifest before using
+try:
+    config = ConfigManager.load_valley_config("./my-manifest.yaml")
+    print("✅ Manifest is valid!")
+except ValueError as e:
+    print(f"❌ Invalid manifest: {e}")
+```
+
 ## 🎯 Demos & Examples
 
 CampfireValley includes comprehensive demos showcasing real-world AI agent collaboration workflows. These demos demonstrate the complete system capabilities from idea generation to technical implementation.

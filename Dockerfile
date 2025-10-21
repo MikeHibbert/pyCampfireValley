@@ -54,5 +54,5 @@ RUN useradd -m -u 1000 campfire && \
     chown -R campfire:campfire /app
 USER campfire
 
-# Start the valley with web monitoring server
-CMD ["python", "valley_with_web_server.py"]
+# Start the web visualization server
+CMD ["python", "-m", "campfirevalley.web.server", "--demo", "--host", "0.0.0.0", "--port", "8000"]

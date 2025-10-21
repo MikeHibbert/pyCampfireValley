@@ -22,8 +22,9 @@ This guide explains how to run CampfireValley with web monitoring using Docker.
    ```
 
 4. **Access the web interface**:
-   - Open your browser to: http://localhost:8080
-   - The web interface provides real-time monitoring of campfire processes
+   - Open your browser to: http://localhost:8000
+   - The web interface provides a LiteGraph canvas for visual campfire management
+   - Monitor real-time campfire processes and node interactions
 
 ## What's Included
 
@@ -48,6 +49,55 @@ If you're running Ollama locally on your host machine:
 
 1. Make sure Ollama is running: `ollama serve`
 2. The default configuration should work: `OLLAMA_HOST=http://host.docker.internal:11434`
+
+## Valley Configuration with Manifests
+
+CampfireValley uses `manifest.yaml` files to configure valley behavior. You can easily change your valley's purpose by using different manifest configurations.
+
+### Quick Manifest Switch
+
+To change your valley configuration:
+
+1. **Create or copy a manifest file**:
+   ```bash
+   # Use a development-focused valley
+   cp examples/manifest-dev.yaml manifest.yaml
+   
+   # Or use a marketing-focused valley
+   cp examples/manifest-marketing.yaml manifest.yaml
+   ```
+
+2. **Restart the containers**:
+   ```bash
+   docker-compose restart
+   ```
+
+### Example Manifest Types
+
+- **Development Valley**: Code review, testing, documentation campfires
+- **Marketing Valley**: Content creation, social media, analytics campfires  
+- **Security Valley**: Threat detection, vulnerability scanning campfires
+- **Enterprise Valley**: Full-featured with monitoring, justice system, and specialist campfires
+
+### Custom Manifest
+
+Create your own `manifest.yaml`:
+
+```yaml
+name: "MyCustomValley"
+version: "1.0"
+env:
+  dock_mode: "public"
+  security_level: "standard"
+campfires:
+  visible: ["my-campfire-1", "my-campfire-2"]
+  hidden: ["internal-processor"]
+community:
+  discovery: true
+  trusted_valleys: []
+```
+
+For detailed manifest configuration options, see the main README.md file.
 
 ### Using Cloud LLMs
 

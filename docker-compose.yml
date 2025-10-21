@@ -7,11 +7,11 @@ services:
       dockerfile: Dockerfile
     container_name: campfire-valley-web
     ports:
-      - "8081:8080"  # Web interface and API
+      - "8000:8000"  # Web visualization interface
     environment:
       - CAMPFIRE_VALLEY_ENV=docker
       - CAMPFIRE_VALLEY_HOST=0.0.0.0
-      - CAMPFIRE_VALLEY_PORT=8080
+      - CAMPFIRE_VALLEY_PORT=8000
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
@@ -28,7 +28,7 @@ services:
       - redis
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s
       timeout: 10s
       retries: 3

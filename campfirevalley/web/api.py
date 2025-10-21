@@ -7,9 +7,12 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+
+# Prometheus metrics
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 from .models import VisualizationState, WebSocketMessage, NodeUpdate, ConnectionUpdate
 from .visualization import ValleyVisualizer
@@ -25,10 +28,12 @@ class WebSocketManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        campfire_active_connections.set(len(self.active_connections))
     
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+        campfire_active_connections.set(len(self.active_connections))
     
     async def send_personal_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
@@ -40,6 +45,49 @@ class WebSocketManager:
             except:
                 # Remove dead connections
                 self.active_connections.remove(connection)
+
+
+# Prometheus metrics definitions
+campfire_requests_total = Counter(
+    'campfire_requests_total',
+    'Total number of requests to campfires',
+    ['campfire_id', 'action']
+)
+
+campfire_active_connections = Gauge(
+    'campfire_active_connections',
+    'Number of active WebSocket connections'
+)
+
+campfire_torch_queue_size = Gauge(
+    'campfire_torch_queue_size',
+    'Current torch queue size for campfires',
+    ['campfire_id', 'campfire_type']
+)
+
+campfire_camper_count = Gauge(
+    'campfire_camper_count',
+    'Number of active campers per campfire',
+    ['campfire_id', 'campfire_type']
+)
+
+campfire_processing_time = Histogram(
+    'campfire_processing_time_seconds',
+    'Time spent processing tasks',
+    ['campfire_id', 'task_type']
+)
+
+campfire_throughput = Gauge(
+    'campfire_throughput_rate',
+    'Current throughput rate for campfires',
+    ['campfire_id', 'campfire_type']
+)
+
+campfire_error_rate = Gauge(
+    'campfire_error_rate',
+    'Current error rate for campfires',
+    ['campfire_id', 'campfire_type']
+)
 
 
 # Initialize FastAPI app
@@ -85,6 +133,51 @@ async def get_main_page():
             content="<h1>CampfireValley Web Interface</h1><p>Static files not found. Please ensure the web interface is properly installed.</p>",
             status_code=404
         )
+
+@app.get("/metrics")
+async def get_metrics():
+    """Prometheus metrics endpoint"""
+    # Update metrics with current state
+    if current_valley and visualizer:
+        try:
+            # Update campfire metrics
+            campfires = current_valley.get_campfires()
+            for campfire_id, campfire in campfires.items():
+                campfire_type = getattr(campfire, 'type', 'unknown')
+                
+                # Update torch queue size
+                torch_queue = getattr(campfire, 'torch_queue', 0)
+                campfire_torch_queue_size.labels(
+                    campfire_id=campfire_id, 
+                    campfire_type=campfire_type
+                ).set(torch_queue)
+                
+                # Update camper count
+                camper_count = getattr(campfire, 'camper_count', 0)
+                campfire_camper_count.labels(
+                    campfire_id=campfire_id, 
+                    campfire_type=campfire_type
+                ).set(camper_count)
+                
+                # Update throughput (mock data for demo)
+                throughput = getattr(campfire, 'throughput', 0) or (torch_queue * 2.5)
+                campfire_throughput.labels(
+                    campfire_id=campfire_id, 
+                    campfire_type=campfire_type
+                ).set(throughput)
+                
+                # Update error rate (mock data for demo)
+                error_rate = getattr(campfire, 'error_rate', 0) or 0.02
+                campfire_error_rate.labels(
+                    campfire_id=campfire_id, 
+                    campfire_type=campfire_type
+                ).set(error_rate)
+                
+        except Exception as e:
+            # Log error but don't fail metrics endpoint
+            print(f"Error updating metrics: {e}")
+    
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
     
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -147,6 +240,11 @@ async def get_visualization_state():
 @app.post("/api/campfire/{campfire_id}/action")
 async def campfire_action(campfire_id: str, action: Dict):
     """Perform action on a campfire"""
+    action_type = action.get("type", "unknown")
+    
+    # Track the request in metrics
+    campfire_requests_total.labels(campfire_id=campfire_id, action=action_type).inc()
+    
     if not current_valley:
         raise HTTPException(status_code=404, detail="No valley available")
     
@@ -157,7 +255,6 @@ async def campfire_action(campfire_id: str, action: Dict):
         raise HTTPException(status_code=404, detail=f"Campfire {campfire_id} not found")
     
     # Perform the action
-    action_type = action.get("type")
     if action_type == "start":
         await campfire.start()
     elif action_type == "stop":
