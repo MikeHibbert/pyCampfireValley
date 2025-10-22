@@ -27,7 +27,7 @@ def build_docker_images():
     
     # Docker image name and tag
     image_name = "campfirevalley"
-    version = "1.1.2-dev"
+    version = "1.2.0"
     
     print("🐳 Building CampfireValley Docker Images")
     print("=" * 50)
