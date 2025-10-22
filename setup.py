@@ -17,7 +17,7 @@ if (this_directory / "requirements.txt").exists():
 
 setup(
     name="campfirevalley",
-    version="1.1.1",
+    version="1.1.2.dev0",
     author="Mike Hibbert",
     author_email="mike@hibbertitsolutions.co.uk",
     description="A sophisticated multi-agent AI system for collaborative problem-solving through specialized AI campfires",
