@@ -59,14 +59,14 @@ pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://
 
 ```bash
 # Upload to production PyPI
-twine upload dist/campfirevalley-1.1.0*
+twine upload dist/campfirevalley-1.1.1*
 ```
 
 ### Step 4: Verify Installation
 
 ```bash
 # Install from PyPI
-pip install campfirevalley==1.1.0
+pip install campfirevalley==1.1.1
 
 # Test the installation
 python -c "import campfirevalley; print(campfirevalley.__version__)"
@@ -76,7 +76,7 @@ campfirevalley --help
 ## Package Information
 
 - **Package Name**: `campfirevalley`
-- **Version**: `1.1.0`
+- **Version**: `1.1.1`
 - **Description**: A distributed AI agent orchestration platform with visual LiteGraph interface
 - **Author**: Mike Hibbert
 - **License**: MIT
