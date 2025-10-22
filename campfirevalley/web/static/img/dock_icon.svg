@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" fill="none"/>
+  <!-- Pier -->
+  <rect x="10" y="80" width="80" height="12" fill="#8b5cf6"/>
+  <rect x="20" y="68" width="8" height="24" fill="#6b46c1"/>
+  <rect x="40" y="68" width="8" height="24" fill="#6b46c1"/>
+  <rect x="60" y="68" width="8" height="24" fill="#6b46c1"/>
+  <rect x="80" y="68" width="8" height="24" fill="#6b46c1"/>
+  <!-- Anchor -->
+  <circle cx="96" cy="40" r="8" fill="#3b82f6"/>
+  <path d="M96 48 L96 80 M80 68 Q96 88 112 68" stroke="#3b82f6" stroke-width="6" fill="none"/>
+</svg>

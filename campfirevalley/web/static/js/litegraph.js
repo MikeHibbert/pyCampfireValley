@@ -9069,38 +9069,41 @@ LGraphNode.prototype.executeAction = function(action)
         //full node shape
         //if(node.flags.collapsed)
         {
-            ctx.beginPath();
-            if (shape == LiteGraph.BOX_SHAPE || low_quality) {
-                ctx.fillRect(area[0], area[1], area[2], area[3]);
-            } else if (
-                shape == LiteGraph.ROUND_SHAPE ||
-                shape == LiteGraph.CARD_SHAPE
-            ) {
-                ctx.roundRect(
-                    area[0],
-                    area[1],
-                    area[2],
-                    area[3],
-                    shape == LiteGraph.CARD_SHAPE ? [this.round_radius,this.round_radius,0,0] : [this.round_radius] 
-                );
-            } else if (shape == LiteGraph.CIRCLE_SHAPE) {
-                ctx.arc(
-                    size[0] * 0.5,
-                    size[1] * 0.5,
-                    size[0] * 0.5,
-                    0,
-                    Math.PI * 2
-                );
-            }
-            ctx.fill();
+            var skip_panel = node.flags && node.flags.no_panel;
+            if (!skip_panel) {
+                ctx.beginPath();
+                if (shape == LiteGraph.BOX_SHAPE || low_quality) {
+                    ctx.fillRect(area[0], area[1], area[2], area[3]);
+                } else if (
+                    shape == LiteGraph.ROUND_SHAPE ||
+                    shape == LiteGraph.CARD_SHAPE
+                ) {
+                    ctx.roundRect(
+                        area[0],
+                        area[1],
+                        area[2],
+                        area[3],
+                        shape == LiteGraph.CARD_SHAPE ? [this.round_radius,this.round_radius,0,0] : [this.round_radius] 
+                    );
+                } else if (shape == LiteGraph.CIRCLE_SHAPE) {
+                    ctx.arc(
+                        size[0] * 0.5,
+                        size[1] * 0.5,
+                        size[0] * 0.5,
+                        0,
+                        Math.PI * 2
+                    );
+                }
+                ctx.fill();
 
-			//separator
-			if(!node.flags.collapsed && render_title)
-			{
-				ctx.shadowColor = "transparent";
-				ctx.fillStyle = "rgba(0,0,0,0.2)";
-				ctx.fillRect(0, -1, area[2], 2);
-			}
+                //separator
+                if(!node.flags.collapsed && render_title)
+                {
+                    ctx.shadowColor = "transparent";
+                    ctx.fillStyle = "rgba(0,0,0,0.2)";
+                    ctx.fillRect(0, -1, area[2], 2);
+                }
+            }
         }
         ctx.shadowColor = "transparent";
 
@@ -9109,7 +9112,7 @@ LGraphNode.prototype.executeAction = function(action)
         }
 
         //title bg (remember, it is rendered ABOVE the node)
-        if (render_title || title_mode == LiteGraph.TRANSPARENT_TITLE) {
+        if ((render_title || title_mode == LiteGraph.TRANSPARENT_TITLE) && !(node.flags && node.flags.no_panel)) {
             //title bar
             if (node.onDrawTitleBar) {
                 node.onDrawTitleBar( ctx, title_height, size, this.ds.scale, fgcolor );
@@ -9300,48 +9303,54 @@ LGraphNode.prototype.executeAction = function(action)
                 area[1] -= title_height;
                 area[3] += title_height;
             }
-            ctx.lineWidth = 1;
-            ctx.globalAlpha = 0.8;
-            ctx.beginPath();
-            if (shape == LiteGraph.BOX_SHAPE) {
-                ctx.rect(
-                    -6 + area[0],
-                    -6 + area[1],
-                    12 + area[2],
-                    12 + area[3]
-                );
-            } else if (
-                shape == LiteGraph.ROUND_SHAPE ||
-                (shape == LiteGraph.CARD_SHAPE && node.flags.collapsed)
-            ) {
-                ctx.roundRect(
-                    -6 + area[0],
-                    -6 + area[1],
-                    12 + area[2],
-                    12 + area[3],
-                    [this.round_radius * 2]
-                );
-            } else if (shape == LiteGraph.CARD_SHAPE) {
-                ctx.roundRect(
-                    -6 + area[0],
-                    -6 + area[1],
-                    12 + area[2],
-                    12 + area[3],
-                    [this.round_radius * 2,2,this.round_radius * 2,2]
-                );
-            } else if (shape == LiteGraph.CIRCLE_SHAPE) {
-                ctx.arc(
-                    size[0] * 0.5,
-                    size[1] * 0.5,
-                    size[0] * 0.5 + 6,
-                    0,
-                    Math.PI * 2
-                );
+
+            // For hex-style nodes that opt-out of the panel, skip default rectangular selection.
+            if (node.flags && node.flags.no_panel) {
+                ctx.globalAlpha = 1;
+            } else {
+                ctx.lineWidth = 1;
+                ctx.globalAlpha = 0.8;
+                ctx.beginPath();
+                if (shape == LiteGraph.BOX_SHAPE) {
+                    ctx.rect(
+                        -6 + area[0],
+                        -6 + area[1],
+                        12 + area[2],
+                        12 + area[3]
+                    );
+                } else if (
+                    shape == LiteGraph.ROUND_SHAPE ||
+                    (shape == LiteGraph.CARD_SHAPE && node.flags.collapsed)
+                ) {
+                    ctx.roundRect(
+                        -6 + area[0],
+                        -6 + area[1],
+                        12 + area[2],
+                        12 + area[3],
+                        [this.round_radius * 2]
+                    );
+                } else if (shape == LiteGraph.CARD_SHAPE) {
+                    ctx.roundRect(
+                        -6 + area[0],
+                        -6 + area[1],
+                        12 + area[2],
+                        12 + area[3],
+                        [this.round_radius * 2,2,this.round_radius * 2,2]
+                    );
+                } else if (shape == LiteGraph.CIRCLE_SHAPE) {
+                    ctx.arc(
+                        size[0] * 0.5,
+                        size[1] * 0.5,
+                        size[0] * 0.5 + 6,
+                        0,
+                        Math.PI * 2
+                    );
+                }
+                ctx.strokeStyle = LiteGraph.NODE_BOX_OUTLINE_COLOR;
+                ctx.stroke();
+                ctx.strokeStyle = fgcolor;
+                ctx.globalAlpha = 1;
             }
-            ctx.strokeStyle = LiteGraph.NODE_BOX_OUTLINE_COLOR;
-            ctx.stroke();
-            ctx.strokeStyle = fgcolor;
-            ctx.globalAlpha = 1;
         }
         
         // these counter helps in conditioning drawing based on if the node has been executed or an action occurred

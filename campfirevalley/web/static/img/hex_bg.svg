@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <!-- Transparent background; we rely on canvas clipping -->
+  <!-- Sky gradient -->
+  <defs>
+    <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#b8e4ff"/>
+      <stop offset="100%" stop-color="#e6f6ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="400" height="400" fill="url(#skyGrad)"/>
+
+  <!-- Cloud -->
+  <g fill="#ffffff">
+    <circle cx="230" cy="110" r="34"/>
+    <circle cx="270" cy="120" r="26"/>
+    <circle cx="200" cy="120" r="26"/>
+    <rect x="200" y="110" width="70" height="40" rx="20" ry="20"/>
+  </g>
+
+  <!-- Hills -->
+  <path d="M0 260 C 120 220, 220 280, 400 240 L 400 400 L 0 400 Z" fill="#cfe6a7"/>
+  <path d="M0 290 C 140 340, 220 260, 400 320 L 400 400 L 0 400 Z" fill="#7fa027"/>
+</svg>

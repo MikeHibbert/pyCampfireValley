@@ -4,8 +4,6 @@
 
 // Text measurement utility to calculate required dimensions
 class TextMeasurement {
-    static canvas = null;
-    static ctx = null;
     
     static getContext() {
         if (!this.canvas) {
@@ -15,7 +13,9 @@ class TextMeasurement {
         return this.ctx;
     }
     
-    static measureText(text, font = '12px Arial', maxWidth = null) {
+    static measureText(text, font, maxWidth) {
+        if (font === undefined) font = '12px Arial';
+        if (maxWidth === undefined) maxWidth = null;
         const ctx = this.getContext();
         ctx.font = font;
         
@@ -63,6 +63,9 @@ class TextMeasurement {
         return lines;
     }
 }
+
+TextMeasurement.canvas = null;
+TextMeasurement.ctx = null;
 
 // Collision detection and layout utilities
 class CollisionDetection {
@@ -2702,3 +2705,974 @@ LiteGraph.registerNodeType("campfire/enforcer_camper", EnforcerCamperNode);
 LiteGraph.registerNodeType("campfire/governor_camper", GovernorCamperNode);
 LiteGraph.registerNodeType("campfire/camper", CamperNode);
 LiteGraph.registerNodeType("campfire/websocket_data", WebSocketDataNode);
+
+// ===== HEXAGONAL VALLEY NODE =====
+
+function HexagonalValleyNode() {
+    // Call ValleyNode constructor to inherit all its functionality
+    ValleyNode.call(this);
+    
+    // Override visual properties for hexagonal display
+    this.title = "Hexagonal Valley";
+    this.size = [480, 416]; // 4x larger hexagon dimensions (doubled again)
+    
+    // Add hexagon-specific properties
+    this.properties.valley_type = "mountain"; // mountain, forest, plains, water, desert
+    
+    // Define hexagon geometry - 4x larger
+    this.hexRadius = 200; // 4x original size (was 50, then 100, now 200)
+    this.hexHeight = this.hexRadius * Math.sqrt(3);
+    this.hexWidth = this.hexRadius * 2;
+    
+    // Add standard inputs for compatibility with other nodes
+    this.addInput("dock_connection", "dock");
+    this.addInput("campfire_connection", "campfire");
+    
+    // Add multiple directional input/output slots for better connectivity
+    this.addInput("North", "valley_connection");
+    this.addInput("Northeast", "valley_connection");
+    this.addInput("Southeast", "valley_connection");
+    this.addOutput("South", "valley_connection");
+    this.addOutput("Southwest", "valley_connection");
+    this.addOutput("Northwest", "valley_connection");
+    
+    // Enable proper LiteGraph functionality
+    this.shape = LiteGraph.BOX_SHAPE; // Use box shape for proper connection handling
+    this.resizable = false; // Fixed size hexagon
+    this.horizontal = false;
+    this.movable = true; // Explicitly enable dragging
+    this.removable = true;
+    this.clonable = true;
+    
+    // Selection and interaction state
+    this.selected = false;
+    this.is_selected = false;
+    this.mouseOver = false;
+    
+    // Override default node behavior for hexagonal shape
+    this.flags = this.flags || {};
+    this.flags.collapsed = false; // Never collapse hexagonal nodes
+    this.flags.no_panel = true; // Skip default rectangular panel/title rendering
+}
+
+HexagonalValleyNode.title = "Hexagonal Valley";
+HexagonalValleyNode.desc = "A hexagonal valley node representing a territory in the CampfireValley system";
+
+// Apply dynamic sizing mixin to Hexagonal Valley node
+Object.assign(HexagonalValleyNode.prototype, DynamicSizingMixin);
+
+// Override the default drawing to completely replace rectangular widget
+HexagonalValleyNode.prototype.onDrawBackground = function(ctx) {
+    // COMPLETELY override default drawing - don't call parent method
+    // This prevents the rectangular widget from drawing behind our hexagon
+    
+    if (this.flags.collapsed) return;
+    
+    // Clear the entire node area first to prevent any default drawing
+    ctx.clearRect(0, 0, this.size[0], this.size[1]);
+    
+    const centerX = this.size[0] / 2;
+    const centerY = this.size[1] / 2;
+    const radius = Math.min(this.size[0], this.size[1]) * 0.4; // Adjusted for larger size
+    
+    // Draw outer glow for selection or hover
+    if (this.selected || this.flags.selected || this.mouseOver) {
+        const glowRadius = radius + 8;
+        const gradient = ctx.createRadialGradient(centerX, centerY, radius, centerX, centerY, glowRadius);
+        
+        if (this.selected || this.flags.selected) {
+            gradient.addColorStop(0, "rgba(255, 255, 255, 0.3)");
+            gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+        } else if (this.mouseOver) {
+            gradient.addColorStop(0, "rgba(100, 200, 255, 0.2)");
+            gradient.addColorStop(1, "rgba(100, 200, 255, 0)");
+        }
+        
+        ctx.fillStyle = gradient;
+        this.drawHexagon(ctx, centerX, centerY, glowRadius, gradient);
+    }
+    
+    // Draw hexagon background
+    this.drawHexagon(ctx, centerX, centerY, radius, this.getValleyColor());
+    
+    // Draw selection highlighting with bright border if selected
+    if (this.selected || this.flags.selected) {
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 6;
+        ctx.shadowColor = "#FFFFFF";
+        ctx.shadowBlur = 10;
+        this.drawHexagonStroke(ctx, centerX, centerY, radius + 3);
+        ctx.shadowBlur = 0; // Reset shadow
+    }
+    
+    // Draw hexagon border
+    ctx.strokeStyle = this.getValleyBorderColor();
+    ctx.lineWidth = 3;
+    this.drawHexagonStroke(ctx, centerX, centerY, radius);
+};
+
+// Override the default node rendering completely
+HexagonalValleyNode.prototype.onDrawNode = function(ctx, graphcanvas) {
+    // Completely override default node drawing to prevent rectangular widget
+    // This is the main drawing method that LiteGraph calls
+    
+    // Call our custom background drawing
+    this.onDrawBackground(ctx);
+    
+    // Call our custom foreground drawing
+    this.onDrawForeground(ctx);
+    
+    // Draw connection slots manually since we're overriding default drawing
+    this.drawConnectionSlots(ctx, graphcanvas);
+    
+    // Don't call the parent onDrawNode method to prevent rectangular drawing
+};
+
+// Custom connection slot rendering for hexagonal nodes
+HexagonalValleyNode.prototype.drawConnectionSlots = function(ctx, graphcanvas) {
+    const centerX = this.size[0] / 2;
+    const centerY = this.size[1] / 2;
+    const radius = Math.min(this.size[0], this.size[1]) * 0.4;
+    
+    // Draw input slots
+    if (this.inputs) {
+        for (let i = 0; i < this.inputs.length; i++) {
+            const input = this.inputs[i];
+            const pos = this.getConnectionPos(true, i);
+            
+            // Draw input slot circle
+            ctx.fillStyle = input.link ? "#4CAF50" : "#2196F3"; // Green if connected, blue if not
+            ctx.beginPath();
+            ctx.arc(pos[0], pos[1], 6, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw slot border
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+    }
+    
+    // Draw output slots
+    if (this.outputs) {
+        for (let i = 0; i < this.outputs.length; i++) {
+            const output = this.outputs[i];
+            const pos = this.getConnectionPos(false, i);
+            
+            // Draw output slot circle
+            ctx.fillStyle = output.links && output.links.length > 0 ? "#FF9800" : "#2196F3"; // Orange if connected, blue if not
+            ctx.beginPath();
+            ctx.arc(pos[0], pos[1], 6, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw slot border
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+    }
+};
+
+HexagonalValleyNode.prototype.onDrawForeground = function(ctx) {
+    if (this.flags.collapsed) return;
+    
+    const centerX = this.size[0] / 2;
+    const centerY = this.size[1] / 2;
+    const radius = Math.min(this.size[0], this.size[1]) * 0.4; // Adjusted for larger size
+    
+    // Draw valley type icon (much larger)
+    this.drawValleyIcon(ctx, centerX, centerY - 40, radius * 0.5);
+    
+    // Draw valley name (much larger font)
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 32px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(this.properties.valley_name, centerX, centerY + 20);
+    
+    // Draw valley type
+    ctx.font = "24px Arial";
+    ctx.fillText(this.properties.valley_type.charAt(0).toUpperCase() + this.properties.valley_type.slice(1), centerX, centerY + 50);
+    
+    // Draw prosperity and status info
+    ctx.font = "20px Arial";
+    ctx.fillText(`Prosperity: ${this.properties.prosperity}%`, centerX, centerY + 80);
+    ctx.fillText(`Status: ${this.properties.status}`, centerX, centerY + 104);
+    
+    // Draw campfire and camper counts if available
+    if (this.properties.total_campfires > 0 || this.properties.total_campers > 0) {
+        ctx.font = "18px Arial";
+        ctx.fillText(`🔥 ${this.properties.total_campfires} | 👥 ${this.properties.total_campers}`, centerX, centerY + 128);
+    }
+    
+    // Draw status indicators around the hexagon
+    this.drawStatusIndicators(ctx, centerX, centerY, radius);
+    
+    // Draw connection points at hexagon vertices (blue circles like in user's image)
+    this.drawConnectionPoints(ctx, centerX, centerY, radius);
+};
+
+HexagonalValleyNode.prototype.drawHexagon = function(ctx, centerX, centerY, radius, fillColor) {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 3) * i;
+        const x = centerX + radius * Math.cos(angle);
+        const y = centerY + radius * Math.sin(angle);
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    }
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+};
+
+HexagonalValleyNode.prototype.drawHexagonStroke = function(ctx, centerX, centerY, radius) {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 3) * i;
+        const x = centerX + radius * Math.cos(angle);
+        const y = centerY + radius * Math.sin(angle);
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    }
+    ctx.closePath();
+    ctx.stroke();
+};
+
+HexagonalValleyNode.prototype.drawValleyIcon = function(ctx, centerX, centerY, iconRadius) {
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    
+    switch (this.properties.valley_type) {
+        case "mountain":
+            this.drawMountainIcon(ctx, centerX, centerY, iconRadius);
+            break;
+        case "forest":
+            this.drawForestIcon(ctx, centerX, centerY, iconRadius);
+            break;
+        case "plains":
+            this.drawPlainsIcon(ctx, centerX, centerY, iconRadius);
+            break;
+        case "water":
+            this.drawWaterIcon(ctx, centerX, centerY, iconRadius);
+            break;
+        case "desert":
+            this.drawDesertIcon(ctx, centerX, centerY, iconRadius);
+            break;
+        default:
+            this.drawMountainIcon(ctx, centerX, centerY, iconRadius);
+    }
+};
+
+HexagonalValleyNode.prototype.drawMountainIcon = function(ctx, centerX, centerY, radius) {
+    // Draw mountain peaks
+    ctx.beginPath();
+    ctx.moveTo(centerX - radius * 0.8, centerY + radius * 0.3);
+    ctx.lineTo(centerX - radius * 0.3, centerY - radius * 0.5);
+    ctx.lineTo(centerX, centerY - radius * 0.2);
+    ctx.lineTo(centerX + radius * 0.3, centerY - radius * 0.7);
+    ctx.lineTo(centerX + radius * 0.8, centerY + radius * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Add snow caps
+    ctx.fillStyle = "#e0e0e0";
+    ctx.beginPath();
+    ctx.moveTo(centerX - radius * 0.3, centerY - radius * 0.5);
+    ctx.lineTo(centerX - radius * 0.1, centerY - radius * 0.3);
+    ctx.lineTo(centerX + radius * 0.1, centerY - radius * 0.4);
+    ctx.lineTo(centerX, centerY - radius * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    
+    ctx.beginPath();
+    ctx.moveTo(centerX + radius * 0.3, centerY - radius * 0.7);
+    ctx.lineTo(centerX + radius * 0.5, centerY - radius * 0.4);
+    ctx.lineTo(centerX + radius * 0.1, centerY - radius * 0.4);
+    ctx.closePath();
+    ctx.fill();
+};
+
+HexagonalValleyNode.prototype.drawForestIcon = function(ctx, centerX, centerY, radius) {
+    // Draw trees
+    for (let i = 0; i < 3; i++) {
+        const offsetX = (i - 1) * radius * 0.4;
+        const offsetY = (i % 2) * radius * 0.2;
+        
+        // Tree trunk
+        ctx.fillStyle = "#8B4513";
+        ctx.fillRect(centerX + offsetX - 2, centerY + offsetY + radius * 0.2, 4, radius * 0.3);
+        
+        // Tree foliage
+        ctx.fillStyle = "#228B22";
+        ctx.beginPath();
+        ctx.arc(centerX + offsetX, centerY + offsetY, radius * 0.25, 0, Math.PI * 2);
+        ctx.fill();
+    }
+};
+
+HexagonalValleyNode.prototype.drawPlainsIcon = function(ctx, centerX, centerY, radius) {
+    // Draw grass/wheat
+    ctx.strokeStyle = "#90EE90";
+    ctx.lineWidth = 2;
+    
+    for (let i = 0; i < 8; i++) {
+        const angle = (Math.PI * 2 / 8) * i;
+        const startX = centerX + Math.cos(angle) * radius * 0.3;
+        const startY = centerY + Math.sin(angle) * radius * 0.3;
+        const endX = centerX + Math.cos(angle) * radius * 0.6;
+        const endY = centerY + Math.sin(angle) * radius * 0.6;
+        
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+    }
+};
+
+HexagonalValleyNode.prototype.drawWaterIcon = function(ctx, centerX, centerY, radius) {
+    // Draw water waves
+    ctx.strokeStyle = "#4169E1";
+    ctx.lineWidth = 2;
+    
+    for (let i = 0; i < 3; i++) {
+        const y = centerY - radius * 0.3 + i * radius * 0.3;
+        ctx.beginPath();
+        ctx.moveTo(centerX - radius * 0.5, y);
+        
+        for (let x = -radius * 0.5; x <= radius * 0.5; x += radius * 0.2) {
+            const waveY = y + Math.sin((x / radius) * Math.PI * 2) * radius * 0.1;
+            ctx.lineTo(centerX + x, waveY);
+        }
+        ctx.stroke();
+    }
+};
+
+HexagonalValleyNode.prototype.drawDesertIcon = function(ctx, centerX, centerY, radius) {
+    // Draw sand dunes
+    ctx.fillStyle = "#F4A460";
+    
+    // Large dune
+    ctx.beginPath();
+    ctx.arc(centerX - radius * 0.2, centerY + radius * 0.1, radius * 0.4, Math.PI, 0);
+    ctx.fill();
+    
+    // Small dune
+    ctx.beginPath();
+    ctx.arc(centerX + radius * 0.3, centerY + radius * 0.2, radius * 0.25, Math.PI, 0);
+    ctx.fill();
+    
+    // Cactus
+    ctx.fillStyle = "#228B22";
+    ctx.fillRect(centerX + radius * 0.1, centerY - radius * 0.3, 4, radius * 0.5);
+    ctx.fillRect(centerX + radius * 0.1 - 8, centerY - radius * 0.1, 12, 4);
+};
+
+HexagonalValleyNode.prototype.drawStatusIndicators = function(ctx, centerX, centerY, radius) {
+    // Draw small status dots around the hexagon
+    const indicators = [
+        { label: "P", value: this.properties.population || 0, color: "#4CAF50", angle: 0 },
+        { label: "R", value: this.properties.resources || 0, color: "#FF9800", angle: Math.PI / 3 },
+        { label: "C", value: this.properties.connections || 0, color: "#2196F3", angle: 2 * Math.PI / 3 }
+    ];
+    
+    indicators.forEach(indicator => {
+        const dotX = centerX + Math.cos(indicator.angle) * (radius + 15);
+        const dotY = centerY + Math.sin(indicator.angle) * (radius + 15);
+        
+        // Draw indicator dot
+        ctx.fillStyle = indicator.color;
+        ctx.beginPath();
+        ctx.arc(dotX, dotY, 6, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Draw indicator value
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "8px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText((indicator.value || 0).toString(), dotX, dotY + 2);
+    });
+};
+
+HexagonalValleyNode.prototype.drawConnectionPoints = function(ctx, centerX, centerY, radius) {
+    // Draw blue connection points at hexagon vertices
+    for (let i = 0; i < 6; i++) {
+        const angle = (i * Math.PI) / 3 - Math.PI / 2; // Start from top vertex
+        const pointX = centerX + Math.cos(angle) * radius;
+        const pointY = centerY + Math.sin(angle) * radius;
+        
+        // Draw blue connection point
+        ctx.fillStyle = "#2196F3";
+        ctx.beginPath();
+        ctx.arc(pointX, pointY, 4, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Add white border for visibility
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+    }
+};
+
+HexagonalValleyNode.prototype.getValleyColor = function() {
+    // Uniform color by node type: valley = green
+    return "#2ECC71";
+};
+
+HexagonalValleyNode.prototype.getValleyBorderColor = function() {
+    return this.properties.status === "active" ? "#FFD700" : 
+           this.properties.status === "inactive" ? "#808080" : "#FF4444";
+};
+
+HexagonalValleyNode.prototype.onExecute = function() {
+    // Count active connections
+    let activeConnections = 0;
+    if (this.inputs) {
+        for (let i = 0; i < this.inputs.length; i++) {
+            if (this.inputs[i].link) activeConnections++;
+        }
+    }
+    this.properties.connections = activeConnections;
+    
+    // Simulate population and resource changes
+    if (this.properties.status === "active") {
+        this.properties.population = Math.min(99, this.properties.population + Math.random() * 0.1);
+        this.properties.resources = Math.min(99, this.properties.resources + Math.random() * 0.05);
+        
+        // Update prosperity based on connections and activity
+        this.properties.prosperity = Math.min(100, Math.max(0, 
+            this.properties.prosperity + (activeConnections * 0.5) - 0.1 + Math.random() * 0.2
+        ));
+    }
+    
+    // Create valley data object
+    const valleyData = {
+        name: this.properties.valley_name,
+        type: this.properties.valley_type,
+        status: this.properties.status,
+        population: this.properties.population,
+        resources: this.properties.resources,
+        connections: this.properties.connections,
+        prosperity: this.properties.prosperity,
+        growth_stage: this.properties.growth_stage,
+        total_campfires: this.properties.total_campfires,
+        total_campers: this.properties.total_campers
+    };
+    
+    // Output data through all connection points
+    for (let i = 0; i < this.outputs.length; i++) {
+        this.setOutputData(i, valleyData);
+    }
+};
+
+HexagonalValleyNode.prototype.onPropertyChanged = function(name, value) {
+    if (name === "valley_type") {
+        this.setDirtyCanvas(true, true);
+    }
+};
+
+// Override connection positioning to place slots at hexagon vertices
+HexagonalValleyNode.prototype.getConnectionPos = function(is_input, slot_number, out) {
+    out = out || [0, 0];
+    
+    const centerX = this.size[0] / 2;
+    const centerY = this.size[1] / 2;
+    const radius = Math.min(this.size[0], this.size[1]) * 0.4;
+    
+    // Define hexagon vertex positions (starting from top, going clockwise)
+    const vertices = [
+        { angle: -Math.PI / 2, name: "North" },      // Top
+        { angle: -Math.PI / 6, name: "Northeast" },  // Top-right
+        { angle: Math.PI / 6, name: "Southeast" },   // Bottom-right
+        { angle: Math.PI / 2, name: "South" },       // Bottom
+        { angle: 5 * Math.PI / 6, name: "Southwest" }, // Bottom-left
+        { angle: -5 * Math.PI / 6, name: "Northwest" } // Top-left
+    ];
+    
+    // Map slot numbers to vertex positions
+    let vertexIndex = slot_number;
+    
+    // Handle dock_connection and campfire_connection outputs
+    if (!is_input && slot_number >= 3) {
+        if (slot_number === 6) { // dock_connection
+            vertexIndex = 3; // South vertex
+        } else if (slot_number === 7) { // campfire_connection
+            vertexIndex = 0; // North vertex
+        }
+    }
+    
+    // Ensure we have a valid vertex
+    if (vertexIndex >= 0 && vertexIndex < vertices.length) {
+        const vertex = vertices[vertexIndex];
+        out[0] = this.pos[0] + centerX + radius * Math.cos(vertex.angle);
+        out[1] = this.pos[1] + centerY + radius * Math.sin(vertex.angle);
+    } else {
+        // Fallback to center if invalid slot
+        out[0] = this.pos[0] + centerX;
+        out[1] = this.pos[1] + centerY;
+    }
+    
+    return out;
+};
+
+// Enhanced collision detection for hexagonal shape
+HexagonalValleyNode.prototype.isPointInside = function(x, y) {
+    const centerX = this.size[0] / 2;
+    const centerY = this.size[1] / 2;
+    const radius = Math.min(this.size[0], this.size[1]) * 0.4;
+    
+    // Proper hexagon collision detection
+    const dx = Math.abs(x - centerX);
+    const dy = Math.abs(y - centerY);
+    
+    // Check if point is within hexagon bounds
+    if (dx > radius * 0.866 || dy > radius) return false;
+    if (dx <= radius * 0.5) return true;
+    
+    // Check diagonal edges
+    const slope = Math.sqrt(3);
+    return (dy <= radius - slope * (dx - radius * 0.5));
+};
+
+// Enhanced mouse events for selection and interaction
+HexagonalValleyNode.prototype.onMouseDown = function(e, localpos, graphcanvas) {
+    if (e.which === 1) { // Left click
+        this.selected = true;
+        this.is_selected = true;
+        if (graphcanvas) {
+            graphcanvas.selectNode(this);
+        }
+        this.setDirtyCanvas(true, true);
+        return true;
+    }
+    return false;
+};
+
+HexagonalValleyNode.prototype.onMouseUp = function(e, localpos, graphcanvas) {
+    // Handle any mouse up logic here
+    return false;
+};
+
+HexagonalValleyNode.prototype.onMouseMove = function(e, localpos, graphcanvas) {
+    // Handle hover state
+    const wasMouseOver = this.mouseOver;
+    this.mouseOver = this.isPointInside(localpos[0], localpos[1]);
+    
+    if (wasMouseOver !== this.mouseOver) {
+        this.setDirtyCanvas(true, true);
+    }
+    
+    return false;
+};
+
+HexagonalValleyNode.prototype.onMouseEnter = function(e, localpos, graphcanvas) {
+    this.mouseOver = true;
+    this.setDirtyCanvas(true, true);
+};
+
+HexagonalValleyNode.prototype.onMouseLeave = function(e, localpos, graphcanvas) {
+    this.mouseOver = false;
+    this.setDirtyCanvas(true, true);
+};
+
+// Enhanced selection state changes
+HexagonalValleyNode.prototype.onSelected = function() {
+    this.is_selected = true;
+    this.selected = true;
+    this.setDirtyCanvas(true, true);
+};
+
+HexagonalValleyNode.prototype.onDeselected = function() {
+    this.is_selected = false;
+    this.selected = false;
+    this.setDirtyCanvas(true, true);
+};
+
+// Override getBounding to return proper hexagon bounds
+HexagonalValleyNode.prototype.getBounding = function(out) {
+    out = out || new Float32Array(4);
+    const radius = Math.min(this.size[0], this.size[1]) * 0.4;
+    const centerX = this.pos[0] + this.size[0] / 2;
+    const centerY = this.pos[1] + this.size[1] / 2;
+    
+    out[0] = centerX - radius; // left
+    out[1] = centerY - radius; // top
+    out[2] = radius * 2; // width
+    out[3] = radius * 2; // height
+    
+    return out;
+};
+
+// Register the hexagonal valley node
+LiteGraph.registerNodeType("campfire/hexagonal_valley", HexagonalValleyNode);
+
+// === Hex Overrides for Original Nodes (inheritance without duplication) ===
+// Generic hex mixin to replace rectangular rendering and connector geometry
+const HexNodeBaseMixin = {
+    onDrawBackground: function(ctx) {
+        if (this.flags && this.flags.collapsed) return;
+        const centerX = this.size[0] / 2;
+        const centerY = this.size[1] / 2;
+        const radius = Math.min(this.size[0], this.size[1]) * 0.4;
+
+        // layout metrics for top-aligned header (icon + title)
+        const paddingTop = Math.max(6, Math.round(radius * 0.10)); // tighter header
+        const iconSizeTop = Math.round(radius * 0.8);
+        const iconYTop = Math.round(centerY - radius + paddingTop);
+        const titleGap = Math.round(radius * 0.08); // reduced gap
+        const titleFontSize = Math.max(10, Math.round(radius * 0.18)); // ~50% smaller
+        const propFontSize = Math.max(9, Math.round(radius * 0.13));  // ~50% smaller
+        const titleY = iconYTop + iconSizeTop + titleGap;
+        // top header contrast band to reduce background pattern
+        (function() {
+            const headerHeight = Math.round(iconSizeTop + titleGap + titleFontSize + Math.max(2, Math.round(titleFontSize * 0.2)));
+            ctx.save();
+            // clip to hex
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI / 3) * i;
+                const x = centerX + radius * Math.cos(angle);
+                const y = centerY + radius * Math.sin(angle);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.clip();
+            ctx.fillStyle = "rgba(0, 0, 0, 0.20)";
+            ctx.fillRect(centerX - radius, Math.round(centerY - radius), radius * 2, headerHeight);
+            ctx.restore();
+        })();
+
+        // subtle glow on hover/selection
+        const isSelected = this.is_selected || this.selected || (this.flags && this.flags.selected);
+        if (isSelected || this.mouseOver) {
+            const glowRadius = radius + 8;
+            const gradient = ctx.createRadialGradient(centerX, centerY, radius, centerX, centerY, glowRadius);
+            gradient.addColorStop(0, "rgba(255,255,255,0.25)");
+            gradient.addColorStop(1, "rgba(255,255,255,0)");
+            ctx.fillStyle = gradient;
+            this.drawHexagon(ctx, centerX, centerY, glowRadius, gradient);
+        }
+
+        // base fill
+        this.drawHexagon(ctx, centerX, centerY, radius, this.getHexFillColor());
+
+        // scenic SVG overlay clipped to hex
+        if (!this._hexBg) {
+            const img = new Image();
+            img.src = "/static/img/hex_bg.svg";
+            img.onload = () => { this._hexBg_loaded = true; this.setDirtyCanvas(true, true); };
+            img.onerror = () => { this._hexBg_error = true; };
+            this._hexBg = img;
+        }
+        if (this._hexBg && (this._hexBg_loaded || this._hexBg.complete) && !this._hexBg_error) {
+            ctx.save();
+            // clip to hex path
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI / 3) * i;
+                const x = centerX + radius * Math.cos(angle);
+                const y = centerY + radius * Math.sin(angle);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.clip();
+            const prevAlpha = ctx.globalAlpha;
+            ctx.globalAlpha = 0.55;
+            ctx.drawImage(this._hexBg, centerX - radius, centerY - radius, radius * 2, radius * 2);
+            ctx.globalAlpha = prevAlpha;
+            ctx.restore();
+        }
+
+        // border stroke on top
+        ctx.strokeStyle = this.getHexBorderColor();
+        ctx.lineWidth = 3;
+        this.drawHexagonStroke(ctx, centerX, centerY, radius);
+    },
+
+    onDrawForeground: function(ctx) {
+        if (this.flags && this.flags.collapsed) return;
+        const centerX = this.size[0] / 2;
+        const centerY = this.size[1] / 2;
+        const radius = Math.min(this.size[0], this.size[1]) * 0.4;
+
+        // layout metrics for top-aligned header (icon + title)
+        const paddingTop = Math.max(4, Math.round(radius * 0.06)); // push icon closer to top
+        const iconSizeTop = Math.round(radius * 0.72); // slightly smaller icon
+        const iconYTop = Math.round(centerY - radius + paddingTop);
+        const titleGap = Math.round(radius * 0.06); // tighter gap
+        const titleFontSize = Math.max(10, Math.round(radius * 0.14)); // smaller title
+        const propFontSize = Math.max(9, Math.round(radius * 0.11));  // smaller details
+        const titleY = iconYTop + iconSizeTop + titleGap;
+
+        // draw foreground icon
+        const typeStr = (this.type || "").toLowerCase();
+        let iconPath = null;
+        const isCamper = (typeStr.includes("/camper") || /_camper$/.test(typeStr));
+        if (typeStr.includes("/valley")) iconPath = "/static/img/valley_icon.svg";
+        else if (typeStr.includes("/dock")) iconPath = "/static/img/dock_icon.svg";
+        else if (typeStr.includes("/campfire") || /_campfire$/.test(typeStr)) iconPath = "/static/img/campfire_icon.svg";
+
+        if (isCamper) {
+            const iconSize = iconSizeTop;
+            const iconY = iconYTop;
+            const headR = iconSize * 0.15;
+            const cx = centerX;
+            const headCY = iconY + headR + 6;
+            const bodyLen = iconSize * 0.45;
+            const shoulderY = headCY + headR + 6;
+            const hipY = shoulderY + bodyLen * 0.5;
+            const footY = shoulderY + bodyLen;
+
+            ctx.save();
+            // clip to hex
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI / 3) * i;
+                const x = centerX + radius * Math.cos(angle);
+                const y = centerY + radius * Math.sin(angle);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.clip();
+
+            ctx.strokeStyle = "#ffffff";
+            ctx.lineWidth = 3;
+            ctx.lineCap = "round";
+
+            // head
+            ctx.beginPath();
+            ctx.arc(cx, headCY, headR, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // body
+            ctx.beginPath();
+            ctx.moveTo(cx, shoulderY);
+            ctx.lineTo(cx, hipY);
+            ctx.stroke();
+
+            // arms
+            const armLen = iconSize * 0.28;
+            ctx.beginPath();
+            ctx.moveTo(cx, shoulderY);
+            ctx.lineTo(cx - armLen, shoulderY + armLen * 0.2);
+            ctx.moveTo(cx, shoulderY);
+            ctx.lineTo(cx + armLen, shoulderY + armLen * 0.2);
+            ctx.stroke();
+
+            // legs
+            const legLen = iconSize * 0.35;
+            ctx.beginPath();
+            ctx.moveTo(cx, hipY);
+            ctx.lineTo(cx - legLen * 0.5, footY);
+            ctx.moveTo(cx, hipY);
+            ctx.lineTo(cx + legLen * 0.5, footY);
+            ctx.stroke();
+
+            ctx.restore();
+        } else if (iconPath) {
+            if (!this._hexIcon || this._hexIcon_path !== iconPath) {
+                const img = new Image();
+                img.crossOrigin = "anonymous";
+                img.onload = () => { this._hexIcon_loaded = true; this.setDirtyCanvas(true, true); };
+                img.onerror = () => { this._hexIcon_error = true; };
+                img.src = iconPath;
+                this._hexIcon = img;
+                this._hexIcon_path = iconPath;
+                this._hexIcon_error = false;
+                this._hexIcon_loaded = false;
+            }
+            if (this._hexIcon && (this._hexIcon_loaded || this._hexIcon.complete) && !this._hexIcon_error) {
+                const iconSize = iconSizeTop;
+                const iconY = iconYTop;
+                ctx.save();
+                ctx.beginPath();
+                for (let i = 0; i < 6; i++) {
+                    const angle = (Math.PI / 3) * i;
+                    const x = centerX + radius * Math.cos(angle);
+                    const y = centerY + radius * Math.sin(angle);
+                    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                }
+                ctx.closePath();
+                ctx.clip();
+                ctx.drawImage(this._hexIcon, centerX - iconSize / 2, iconY, iconSize, iconSize);
+                ctx.restore();
+            } else if (this._hexIcon_error) {
+                // emoji fallback
+                ctx.fillStyle = "#ffffff";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "top";
+                ctx.font = Math.round(radius * 0.6) + "px Arial";
+                const emoji = typeStr.includes("/campfire") ? "🔥" : (typeStr.includes("/dock") ? "⚓" : "🏞️");
+                ctx.fillText(emoji, centerX, iconYTop + Math.round(iconSizeTop * 0.15));
+            }
+        }
+
+        // title: show specific camper role when available
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.font = "bold " + titleFontSize + "px Arial";
+        let displayTitle = this.title || (this.type || "Node").split('/').pop().toUpperCase();
+        const tstr = (this.type || "").toLowerCase();
+        const isCamperTitle = (tstr.includes("/camper") || /_camper$/.test(tstr));
+        if (isCamperTitle) {
+            const match = tstr.match(/\/([a-z0-9]+)_camper$/);
+            const roleGuess = match && match[1] ? match[1].toUpperCase() : null;
+            const roleProp = (this.properties && (this.properties.role || this.properties.camper_role || this.properties.kind)) || null;
+            if (roleProp || roleGuess) {
+                displayTitle = String(roleProp || roleGuess).toUpperCase();
+            }
+        }
+        ctx.fillText(displayTitle, centerX, titleY);
+
+        // show up to 3 key properties
+        const keys = Object.keys(this.properties || {});
+        ctx.font = propFontSize + "px Arial";
+        for (let i = 0; i < Math.min(3, keys.length); i++) {
+            const k = keys[i];
+            const v = this.properties[k];
+            const y = titleY + titleFontSize + 8 + i * (propFontSize + 6);
+            ctx.fillText(`${k}: ${v}`, centerX, y);
+        }
+
+        // draw connection points
+        this.drawConnectionPoints(ctx, centerX, centerY, radius);
+    },
+
+    onDrawNode: function(ctx, graphcanvas) {
+        if (this.flags && this.flags.collapsed) return;
+        this.onDrawBackground(ctx);
+        this.onDrawForeground(ctx);
+        this.drawConnectionSlots(ctx, graphcanvas);
+    },
+
+    drawConnectionSlots: function(ctx, graphcanvas) {
+        if (this.inputs) {
+            for (let i = 0; i < this.inputs.length; i++) {
+                const pos = this.getConnectionPos(true, i);
+                ctx.fillStyle = this.inputs[i].link ? "#4CAF50" : "#2196F3";
+                ctx.beginPath(); ctx.arc(pos[0], pos[1], 6, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke();
+            }
+        }
+        if (this.outputs) {
+            for (let i = 0; i < this.outputs.length; i++) {
+                const pos = this.getConnectionPos(false, i);
+                const connected = this.outputs[i].links && this.outputs[i].links.length > 0;
+                ctx.fillStyle = connected ? "#FF9800" : "#2196F3";
+                ctx.beginPath(); ctx.arc(pos[0], pos[1], 6, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke();
+            }
+        }
+    },
+
+    drawHexagon: HexagonalValleyNode.prototype.drawHexagon,
+    drawHexagonStroke: HexagonalValleyNode.prototype.drawHexagonStroke,
+
+    drawConnectionPoints: function(ctx, centerX, centerY, radius) {
+        const points = [];
+        for (let i = 0; i < 6; i++) {
+            const angle = (Math.PI / 3) * i;
+            points.push([centerX + radius * Math.cos(angle), centerY + radius * Math.sin(angle)]);
+        }
+        ctx.fillStyle = "#1e3a8a";
+        for (const p of points) { ctx.beginPath(); ctx.arc(p[0], p[1], 5, 0, Math.PI * 2); ctx.fill(); }
+    },
+
+    getHexFillColor: function() {
+        const t = this.type || "";
+        if (t.startsWith("campfire/valley")) return "#2ECC71";
+        if (t.startsWith("campfire/dock")) return "#1E90FF";
+        if (t === "campfire/campfire" || /_campfire$/.test(t)) return "#FF9800";
+        if (t === "campfire/camper" || /_camper$/.test(t)) return "#FFD700";
+        const status = (this.properties && this.properties.status) || "idle";
+        switch (status) {
+            case "active": return "#3a6ea1";
+            case "warning": return "#a13e3a";
+            case "error": return "#7a1b1b";
+            default: return "#315a85";
+        }
+    },
+    getHexBorderColor: function() { return "#ffffff"; },
+
+    getConnectionPos: function(is_input, slot_number, out) {
+        out = out || [0, 0];
+        const w = this.size[0], h = this.size[1];
+        const centerX = w / 2, centerY = h / 2;
+        const radius = Math.min(w, h) * 0.4;
+        const anglesInput = [Math.PI, (2 * Math.PI) / 3, (4 * Math.PI) / 3];
+        const anglesOutput = [0, (5 * Math.PI) / 3, Math.PI / 3];
+        const angles = is_input ? anglesInput : anglesOutput;
+        const angle = angles[slot_number % angles.length];
+        out[0] = this.pos[0] + centerX + radius * Math.cos(angle);
+        out[1] = this.pos[1] + centerY + radius * Math.sin(angle);
+        return out;
+    },
+
+    isPointInside: function(x, y) {
+        const localX = x - this.pos[0];
+        const localY = y - this.pos[1];
+        const centerX = this.size[0] / 2, centerY = this.size[1] / 2;
+        const radius = Math.min(this.size[0], this.size[1]) * 0.4;
+        const dx = localX - centerX, dy = localY - centerY;
+        return (dx * dx + dy * dy) <= (radius * radius);
+    },
+
+    getBounding: HexagonalValleyNode.prototype.getBounding
+};
+
+function applyHexOverride(BaseCtor, typeString, options = {}) {
+    const HexCtor = function() {
+        BaseCtor.call(this);
+        // Initialization tweaks for hex behavior
+        this.size = options.size || [220, 220];
+        this.shape = LiteGraph.BOX_SHAPE;
+        this.resizable = false;
+        this.movable = true; this.clonable = true; this.removable = true;
+        this.flags = this.flags || {}; this.flags.collapsed = false;
+        this.flags.no_panel = true; // skip default rectangular panel/title rendering
+        this.title = options.title || BaseCtor.title || this.title;
+        const debug = (typeof window !== "undefined" && (window.CAMPFIRE_DEBUG_ICONS ?? true));
+        if (debug) {
+            console.log("[HexOverride] instantiated", { intendedType: typeString, title: this.title });
+        }
+    };
+    HexCtor.title = options.nodeTitle || BaseCtor.title;
+    HexCtor.title_mode = LiteGraph.NO_TITLE; // hide default title bar on hex nodes
+    HexCtor.desc = (BaseCtor.desc || "") + " (hex override)";
+    HexCtor.prototype = Object.create(BaseCtor.prototype);
+    HexCtor.prototype.constructor = HexCtor;
+    Object.assign(HexCtor.prototype, HexNodeBaseMixin);
+    // Execute logic remains from base
+    if (BaseCtor.prototype.onExecute) {
+        HexCtor.prototype.onExecute = BaseCtor.prototype.onExecute;
+    }
+    LiteGraph.registerNodeType(typeString, HexCtor);
+}
+
+// Override original node types to render as hexagons with proper connectors
+applyHexOverride(ValleyNode, "campfire/valley", { title: "VALLEY" });
+applyHexOverride(DockNode, "campfire/dock", { title: "DOCK" });
+applyHexOverride(CampfireNode, "campfire/campfire", { title: "CAMPFIRE" });
+applyHexOverride(CamperNode, "campfire/camper", { title: "CAMPER" });
+
+// Extend hex overrides to specialized campfires and campers
+applyHexOverride(DockmasterCampfireNode, "campfire/dockmaster_campfire", { title: "DOCKMASTER" });
+applyHexOverride(SanitizerCampfireNode, "campfire/sanitizer_campfire", { title: "SANITIZER" });
+applyHexOverride(JusticeCampfireNode, "campfire/justice_campfire", { title: "JUSTICE" });
+
+applyHexOverride(LoaderCamperNode, "campfire/loader_camper", { title: "LOADER" });
+applyHexOverride(RouterCamperNode, "campfire/router_camper", { title: "ROUTER" });
+applyHexOverride(PackerCamperNode, "campfire/packer_camper", { title: "PACKER" });
+applyHexOverride(ScannerCamperNode, "campfire/scanner_camper", { title: "SCANNER" });
+applyHexOverride(FilterCamperNode, "campfire/filter_camper", { title: "FILTER" });
+applyHexOverride(QuarantineCamperNode, "campfire/quarantine_camper", { title: "QUARANTINE" });
+applyHexOverride(DetectorCamperNode, "campfire/detector_camper", { title: "DETECTOR" });
+applyHexOverride(EnforcerCamperNode, "campfire/enforcer_camper", { title: "ENFORCER" });
+applyHexOverride(GovernorCamperNode, "campfire/governor_camper", { title: "GOVERNOR" });

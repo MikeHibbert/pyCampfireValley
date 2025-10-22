@@ -153,5 +153,9 @@ simplified_marketing_report_*.json
 .DS_Store
 Thumbs.db
 
+# Node / Web
+node_modules/
+npm-debug.log*
+
 *party_box*
 *.kiro*

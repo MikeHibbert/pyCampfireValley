@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" fill="none"/>
+  <!-- Flame -->
+  <path d="M64 28 C 72 40, 74 54, 64 64 C 56 72, 54 84, 64 92 C 78 84, 84 68, 76 54 C 70 44, 70 36, 64 28 Z" fill="#f59e0b"/>
+  <path d="M64 40 C 68 48, 68 56, 62 62 C 58 66, 56 74, 62 78 C 70 74, 72 66, 68 58 C 66 52, 66 46, 64 40 Z" fill="#fb923c"/>
+  <!-- Logs -->
+  <rect x="44" y="94" width="40" height="8" rx="4" fill="#a16207"/>
+  <rect x="48" y="98" width="40" height="8" rx="4" transform="rotate(-12 68 102)" fill="#854d0e"/>
+</svg>

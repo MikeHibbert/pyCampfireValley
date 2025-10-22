@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="mountGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9ec6a7"/>
+      <stop offset="100%" stop-color="#5b8e63"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" fill="none"/>
+  <path d="M0 96 L32 72 L56 92 L84 62 L128 96 L128 128 L0 128 Z" fill="url(#mountGrad)"/>
+  <path d="M0 110 C 24 100, 48 112, 80 100 C 96 94, 112 98, 128 110 L128 128 L0 128 Z" fill="#7fa027"/>
+  <circle cx="92" cy="32" r="10" fill="#ffffff"/>
+  <circle cx="102" cy="36" r="8" fill="#ffffff"/>
+  <rect x="88" y="30" width="24" height="12" rx="6" fill="#ffffff"/>
+</svg>

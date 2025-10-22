@@ -1,0 +1,27 @@
+{
+  "name": "campfirevalley",
+  "version": "1.0.0",
+  "description": "A Python library that extends the Campfires framework by introducing the concept of \"valleys\" as interconnected, secure communities of campfires. The library manages docks as gateways for inter-valley communication, handles riverboat (torch) exchanges via MCP, and provides default campfires for loading/offloading, security sanitization, and justice enforcement.",
+  "main": "index.js",
+  "directories": {
+    "example": "examples",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MikeHibbert/pyCampfireValley.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/MikeHibbert/pyCampfireValley/issues"
+  },
+  "homepage": "https://github.com/MikeHibbert/pyCampfireValley#readme",
+  "dependencies": {
+    "acorn": "^8.15.0"
+  }
+}

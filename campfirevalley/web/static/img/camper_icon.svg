@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" fill="none"/>
+  <!-- Tent -->
+  <path d="M20 96 L52 40 L84 96 Z" fill="#10b981"/>
+  <path d="M52 40 L64 64 L76 96" stroke="#065f46" stroke-width="3" fill="none"/>
+  <!-- Camp sign/person -->
+  <circle cx="100" cy="52" r="10" fill="#3b82f6"/>
+  <rect x="96" y="62" width="8" height="24" rx="4" fill="#2563eb"/>
+</svg>

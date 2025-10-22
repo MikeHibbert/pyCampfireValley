@@ -98,6 +98,7 @@ CampfireValley is now **~95% complete** with comprehensive enterprise-grade feat
 The CampfireValley server includes:
 
 - **Web Interface**: LiteGraph-based visual campfire management at http://localhost:8000
+  - UI header layout tuning: see [docs/ui-header-layout.md](docs/ui-header-layout.md)
 - **Valley Management**: Core campfire orchestration and routing
 - **Redis**: Inter-campfire communication and caching
 - **Monitoring**: Real-time metrics and health monitoring

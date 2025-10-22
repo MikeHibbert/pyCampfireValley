@@ -241,21 +241,9 @@ class CampfireValleyLiteGraph {
         // Initialize DAG layout
         const dagLayout = new DAGLayout(LAYOUT_CONFIG);
         
-        // Create single UI control panel containing all UI controls
-        const uiControlPanel = LiteGraph.createNode("campfire/ui_control_panel");
-        uiControlPanel.pos = [20, 20]; // Position the panel on the left side
-        this.graph.add(uiControlPanel);
-        this.nodes.uiControlPanel = uiControlPanel;
-        
-        // Store references to the panel for backward compatibility
-        this.nodes.websocket = uiControlPanel;
-        this.nodes.taskInput = uiControlPanel;
-        this.nodes.viewMode = uiControlPanel;
-        this.nodes.filter = uiControlPanel;
-        this.nodes.zoomControl = uiControlPanel;
-        this.nodes.displayOptions = uiControlPanel;
-        this.nodes.nodeDetails = uiControlPanel;
-        this.nodes.statusLegend = uiControlPanel;
+        // Old UI control panel suppressed: do not render legacy stacked controls
+        // This intentionally disables the left-side legacy UI to prevent panel rendering
+        // and allow the hex-only interface. All references are removed.
         
         // Define DAG structure - nodes and their dependencies
         // Add all nodes to the DAG layout system first
@@ -514,6 +502,8 @@ class CampfireValleyLiteGraph {
         Object.assign(camperNode3.properties, dagLayout.nodes.get('camper3').properties);
         this.graph.add(camperNode3);
         this.nodes.camper3 = camperNode3;
+        
+        // Demo hexagonal valley nodes removed per request
         
         // Connect nodes logically
         this.connectNodes();
