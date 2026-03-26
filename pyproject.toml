@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "campfirevalley"
-version = "1.2.0"
+version = "1.2.1"
 authors = [
     {name = "Mike Hibbert", email = "mike@hibbertitsolutions.co.uk"},
 ]
@@ -15,7 +15,6 @@ requires-python = ">=3.8"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -29,18 +28,18 @@ classifiers = [
 ]
 keywords = ["ai", "agents", "orchestration", "distributed", "litegraph", "visualization"]
 dependencies = [
+    "campfires>=0.4.0",
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0",
+    "aiofiles>=23.0.0",
+    "redis>=4.5.0",
+    "cryptography>=41.0.0",
+    "lz4>=4.3.0",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
-    "pydantic>=2.0.0",
-    "pyyaml>=6.0",
-    "aiofiles>=23.0.0",
-    "python-multipart>=0.0.6",
-    "jinja2>=3.1.0",
-    "click>=8.0.0",
-    "rich>=13.0.0",
-    "asyncio-mqtt>=0.16.0",
     "websockets>=12.0",
-    "httpx>=0.25.0",
+    "httpx>=0.26.0",
+    "prometheus-client>=0.17.0",
 ]
 
 [project.optional-dependencies]
@@ -58,13 +57,18 @@ docs = [
     "mkdocs-material>=9.0.0",
     "mkdocstrings[python]>=0.23.0",
 ]
+optional = [
+    "asyncio-mqtt>=0.16.0",
+    "psycopg2-binary>=2.9.0",
+    "elasticsearch>=8.0.0",
+    "grafana-api>=1.0.3",
+]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/CampfireValley"
-Documentation = "https://yourusername.github.io/CampfireValley"
-Repository = "https://github.com/yourusername/CampfireValley.git"
-"Bug Tracker" = "https://github.com/yourusername/CampfireValley/issues"
-Changelog = "https://github.com/yourusername/CampfireValley/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/MikeHibbert/pyCamperValley"
+Repository = "https://github.com/MikeHibbert/pyCamperValley.git"
+"Bug Tracker" = "https://github.com/MikeHibbert/pyCamperValley/issues"
+Changelog = "https://github.com/MikeHibbert/pyCamperValley/blob/main/CHANGELOG.md"
 
 [project.scripts]
 campfirevalley = "campfirevalley.cli:main"
@@ -79,8 +83,6 @@ exclude = ["tests*", "docs*", "examples*"]
 campfirevalley = [
     "web/static/**/*",
     "web/templates/**/*",
-    "config/**/*.yaml",
-    "config/**/*.yml",
 ]
 
 [tool.black]

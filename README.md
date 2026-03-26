@@ -242,6 +242,15 @@ Quickstart:
 Server-side fallback:
 - `/api/voice/ingest` transcribes audio when `text` is empty or a placeholder (e.g., “voice sample”) ensuring audio becomes text before LLM processing.
 
+## Team Orchestration API
+
+- `POST /api/team/organize`
+  - Body: `{ "base_campfire": "Development Team", "personas": [ { "name": "Planner", "persona": "analytical", "model": "gemma3:4b", "system_prompt": "You plan tasks with care." }, ... ] }`
+  - Creates LLMCampfires per persona with the provided model and system prompt.
+- `POST /api/team/add`
+  - Body: `{ "persona": { "name": "Designer", "persona": "empathetic", "model": "gemma3:4b", "system_prompt": "You focus on user experience and clarity." } }`
+  - Adds a single camper campfire.
+
 3. **Method 3: Environment variable**
    ```bash
    export CAMPFIRE_MANIFEST_PATH="./manifest-dev.yaml"

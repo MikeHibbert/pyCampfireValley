@@ -101,6 +101,18 @@ def onboard(args):
         dst = config_dir / name
         if src.exists() and not dst.exists():
             dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        if not dst.exists():
+            if name == "default.yaml":
+                dst.write_text(
+                    "stt:\n"
+                    "  default_engine: \"parakeet_local\"\n"
+                    "  timeout_seconds: 30\n"
+                    "  parakeet:\n"
+                    "    endpoint: \"http://localhost:8765/transcribe\"\n",
+                    encoding="utf-8",
+                )
+            else:
+                dst.write_text("", encoding="utf-8")
 
     # Create manifest.yaml if missing
     manifest = base_dir / "manifest.yaml"

@@ -1,7 +1,31 @@
 from typing import Any, Dict, Optional
-from campfires.core.security_hooks import SecurityHooks, SecurityHookResult
-from campfires.core.routing_strategy import RoutingStrategy, TargetDecision
-from campfires.core.torch import Torch as BaseTorch
+
+try:
+    from campfires.core.security_hooks import SecurityHooks, SecurityHookResult
+except Exception:
+    class SecurityHooks:
+        pass
+
+    class SecurityHookResult:
+        def __init__(self, action: str, torch: Any):
+            self.action = action
+            self.torch = torch
+
+try:
+    from campfires.core.routing_strategy import RoutingStrategy, TargetDecision
+except Exception:
+    class RoutingStrategy:
+        pass
+
+    class TargetDecision:
+        def __init__(self, target: str, confidence: float = 1.0):
+            self.target = target
+            self.confidence = confidence
+
+try:
+    from campfires.core.torch import Torch as BaseTorch
+except Exception:
+    from campfires import Torch as BaseTorch
 
 
 class ValleySecurityHooks(SecurityHooks):

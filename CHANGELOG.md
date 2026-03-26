@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No functional/code changes since 1.1.1.
 - Housekeeping: align versions to 1.2.0 across project, runtime, and Docker tags.
 
+## [1.2.1] - 2026-03-26
+### Added
+- Gateway CLI onboarding (`campfirevalley onboard`) and PID-tracked daemon helpers (`campfirevalley daemon run|status`)
+- Voice ingestion endpoint (`POST /api/voice/ingest`) with admin token gating
+- Local Parakeet STT fallback for audio transcription (`audio_base64` / `audio_url`)
+
 ## [1.1.1] - 2025-10-22
 
 ### Changed

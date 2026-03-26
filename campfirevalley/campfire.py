@@ -6,8 +6,17 @@ import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from campfires import Campfire as BaseCampfire, Camper as BaseCamper, Torch as BaseTorch
-from campfires.core.security_hooks import SecurityHooks
-from campfires.core.routing_strategy import RoutingStrategy
+try:
+    from campfires.core.security_hooks import SecurityHooks
+except Exception:
+    class SecurityHooks:
+        pass
+
+try:
+    from campfires.core.routing_strategy import RoutingStrategy
+except Exception:
+    class RoutingStrategy:
+        pass
 from .interfaces import ICampfire, IMCPBroker
 from .models import Torch, CampfireConfig
 from .monitoring import get_monitoring_system, LogLevel, AlertSeverity

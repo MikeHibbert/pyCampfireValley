@@ -17,7 +17,7 @@ if (this_directory / "requirements.txt").exists():
 
 setup(
     name="campfirevalley",
-    version="1.2.0",
+    version="1.2.1",
     author="Mike Hibbert",
     author_email="mike@hibbertitsolutions.co.uk",
     description="A sophisticated multi-agent AI system for collaborative problem-solving through specialized AI campfires",
@@ -40,7 +40,20 @@ setup(
         "Topic :: System :: Distributed Computing",
     ],
     python_requires=">=3.8",
-    install_requires=requirements,
+    install_requires=[
+        "campfires>=0.4.0",
+        "pydantic>=2.0.0",
+        "PyYAML>=6.0",
+        "redis>=4.5.0",
+        "cryptography>=41.0.0",
+        "aiofiles>=23.0.0",
+        "fastapi>=0.104.0",
+        "uvicorn[standard]>=0.24.0",
+        "websockets>=12.0",
+        "httpx>=0.26.0",
+        "lz4>=4.3.0",
+        "prometheus-client>=0.17.0",
+    ],
     extras_require={
         "dev": [
             "pytest>=7.0.0",

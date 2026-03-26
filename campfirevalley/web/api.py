@@ -320,6 +320,54 @@ async def voice_ingest(payload: dict = Body(...)):
     result = await current_valley.send_voice_text(target, content, admin)
     return result
 
+@app.post("/api/team/organize")
+async def team_organize(request: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    personas = request.get("personas") or []
+    base = request.get("base_campfire") or "Development Team"
+    created = []
+    for p in personas:
+        name = p.get("name") or f"{base}-{len(created)+1}"
+        cfg = {
+            "llm": {
+                "model": p.get("model") or "gemma3:4b"
+            },
+            "prompts": {
+                "system": p.get("system_prompt") or f"You are {name}. Persona: {p.get('persona','generic')}."
+            },
+            "persona": p
+        }
+        campfire_cfg = current_valley.__class__.__module__
+        from ..models import CampfireConfig
+        c = CampfireConfig(name=name, type="LLMCampfire", config=cfg)
+        ok = await current_valley.provision_campfire(c)
+        if ok:
+            created.append(name)
+    return {"status": "success", "created": created}
+
+@app.post("/api/team/add")
+async def team_add(request: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    p = request.get("persona") or {}
+    name = p.get("name") or request.get("name") or f"Persona-{datetime.now().strftime('%H%M%S')}"
+    cfg = {
+        "llm": {
+            "model": p.get("model") or "gemma3:4b"
+        },
+        "prompts": {
+            "system": p.get("system_prompt") or f"You are {name}. Persona: {p.get('persona','generic')}."
+        },
+        "persona": p
+    }
+    from ..models import CampfireConfig
+    c = CampfireConfig(name=name, type="LLMCampfire", config=cfg)
+    ok = await current_valley.provision_campfire(c)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to add camper")
+    return {"status": "success", "created": name}
+
 async def update_loop():
     """Background task to broadcast state updates"""
     while True:

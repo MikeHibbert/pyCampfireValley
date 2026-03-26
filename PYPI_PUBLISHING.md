@@ -35,38 +35,34 @@ This guide provides instructions for publishing CampfireValley to PyPI.
 
 ### Step 1: Verify Package Build
 
-The package has already been built and tested:
+Build the package and verify metadata:
 ```bash
-# Build was successful - files in dist/:
-# - campfirevalley-1.1.0-py3-none-any.whl
-# - campfirevalley-1.1.0.tar.gz
-
-# Verification passed:
-twine check dist/campfirevalley-1.1.0*
+python -m build
+python -m twine check dist/*
 ```
 
 ### Step 2: Test Upload to TestPyPI (Recommended)
 
 ```bash
 # Upload to TestPyPI first
-twine upload --repository testpypi dist/campfirevalley-1.1.0*
+twine upload --repository testpypi dist/campfirevalley-1.2.1*
 
 # Test installation from TestPyPI
-pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ campfirevalley==1.1.0
+pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ campfirevalley==1.2.1
 ```
 
 ### Step 3: Upload to Production PyPI
 
 ```bash
 # Upload to production PyPI
-twine upload dist/campfirevalley-1.1.1*
+twine upload dist/campfirevalley-1.2.1*
 ```
 
 ### Step 4: Verify Installation
 
 ```bash
 # Install from PyPI
-pip install campfirevalley==1.1.1
+pip install campfirevalley==1.2.1
 
 # Test the installation
 python -c "import campfirevalley; print(campfirevalley.__version__)"
@@ -76,24 +72,23 @@ campfirevalley --help
 ## Package Information
 
 - **Package Name**: `campfirevalley`
-- **Version**: `1.1.1`
+- **Version**: `1.2.1`
 - **Description**: A distributed AI agent orchestration platform with visual LiteGraph interface
 - **Author**: Mike Hibbert
 - **License**: MIT
 - **Python Support**: 3.8+
 
-## Key Features in v1.1.0
+## Key Features in v1.2.1
 
-- LiteGraph integration for visual campfire management
-- Enhanced web interface with FastAPI backend
-- Federation support for multi-valley environments
-- Comprehensive documentation and configuration improvements
+- Gateway CLI onboarding (`campfirevalley onboard`) and PID-tracked daemon helpers (`campfirevalley daemon run|status`)
+- Voice ingestion endpoint (`POST /api/voice/ingest`) with admin token gating
+- Local Parakeet STT fallback for audio transcription (`audio_base64` / `audio_url`)
 
 ## Files Included in Package
 
 - Core Python modules (`campfirevalley/`)
 - Web interface assets (`campfirevalley/web/static/`)
-- Configuration files and templates
+- Configuration templates are created by `campfirevalley onboard` (and the manifest is created if missing)
 - Command-line interface tools
 
 ## Troubleshooting
@@ -122,13 +117,13 @@ campfirevalley --help
 twine check dist/*
 
 # Upload with verbose output
-twine upload --verbose dist/campfirevalley-1.1.0*
+twine upload --verbose dist/campfirevalley-1.2.1*
 
 # Upload only if doesn't exist
-twine upload --skip-existing dist/campfirevalley-1.1.0*
+twine upload --skip-existing dist/campfirevalley-1.2.1*
 
 # Upload to specific repository
-twine upload --repository testpypi dist/campfirevalley-1.1.0*
+twine upload --repository testpypi dist/campfirevalley-1.2.1*
 ```
 
 ## Security Notes
