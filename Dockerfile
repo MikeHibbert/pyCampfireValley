@@ -13,25 +13,21 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+COPY CampfireValley/requirements.txt ./requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install additional dependencies for MCP server
-RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn \
-    aiohttp \
-    websockets \
-    pydantic \
-    duckduckgo-search \
-    redis \
-    prometheus-client \
-    lz4
+RUN pip install --no-cache-dir fastapi uvicorn aiohttp websockets pydantic duckduckgo-search redis prometheus-client lz4 httpx
+
+# Optionally install local Campfires source when building with extended context
+ARG USE_LOCAL_CAMPFIRES=false
+COPY Campfires /opt/campfires-src
+RUN if [ "$USE_LOCAL_CAMPFIRES" = "true" ]; then pip install --no-cache-dir /opt/campfires-src; fi
 
 # Copy the application code
-COPY . .
+COPY CampfireValley /app
 
 # Create necessary directories
 RUN mkdir -p /app/logs /app/data /app/reports

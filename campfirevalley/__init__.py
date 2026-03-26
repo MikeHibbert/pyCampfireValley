@@ -58,6 +58,7 @@ from .routing import (
     RouteMetrics, RouteNode, RoutePath, RouteRequest, RouteResponse,
     IRouteHealthChecker, ILoadBalancer, BasicHealthChecker
 )
+from .adapters import ValleySecurityHooks, ValleyRoutingStrategy
 
 # Monitoring and Logging
 from .monitoring import (
@@ -167,6 +168,8 @@ __all__ = [
     "IRouteHealthChecker",
     "ILoadBalancer",
     "BasicHealthChecker",
+    "ValleySecurityHooks",
+    "ValleyRoutingStrategy",
     
     # Monitoring and Logging
     "MonitoringSystem",

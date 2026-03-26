@@ -107,6 +107,13 @@ monitoring:
     track_memory_usage: true
     track_cpu_usage: true
 
+# Speech-to-Text (STT) Configuration
+stt:
+  default_engine: "parakeet_local"
+  timeout_seconds: 30
+  parakeet:
+    endpoint: "http://localhost:8765/transcribe"
+
 # Storage Configuration
 storage:
   party_box:

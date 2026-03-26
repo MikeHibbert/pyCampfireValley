@@ -3,8 +3,10 @@ version: '3.8'
 services:
   campfire-valley:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: CampfireValley/Dockerfile
+      args:
+        USE_LOCAL_CAMPFIRES: "true"
     container_name: campfire-valley-web
     ports:
       - "8000:8000"  # Web visualization interface

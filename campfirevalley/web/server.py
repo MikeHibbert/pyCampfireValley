@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from campfirevalley.valley import Valley
 from campfirevalley.models import CampfireConfig
+from campfirevalley.llm_campfire import create_openrouter_campfire, create_ollama_campfire
+import os
 from campfirevalley.web.api import run_web_server
 
 
@@ -22,19 +24,22 @@ from campfirevalley.web.api import run_web_server
 async def create_demo_valley():
     """Create a demo valley for testing the web interface"""
     
-    # Create a demo valley without MCP broker to avoid Redis dependency
+    # Create demo valley without MCP broker to avoid Redis dependency
     valley = Valley(name="Demo Valley", mcp_broker=None)
     
     # Start the valley first
     await valley.start()
     
-    # Create demo campfire configs
-    config1 = CampfireConfig(name="Development Team")
+    # Create an LLM-enabled Development Team using local Ollama by default
+    dev_cfg = CampfireConfig(name="Development Team", type="LLMCampfire")
+    ollama_base = os.environ.get("OLLAMA_HOST", "http://host.docker.internal:11434")
+    dev_llm = create_ollama_campfire(dev_cfg, valley.mcp_broker, base_url=ollama_base, default_model="gemma3:4b")
+    await dev_llm.start()
+    valley.campfires["Development Team"] = dev_llm
+    
+    # Add two plain demo teams
     config2 = CampfireConfig(name="Design Team")
     config3 = CampfireConfig(name="QA Team")
-    
-    # Provision campfires in valley
-    await valley.provision_campfire(config1)
     await valley.provision_campfire(config2)
     await valley.provision_campfire(config3)
     

@@ -7,7 +7,7 @@ import logging
 from typing import Optional, List, Dict, Any, Union
 from campfires import LLMCamperMixin
 from campfires.core.openrouter import OpenRouterConfig, ChatMessage
-from campfires.core.ollama import OllamaConfig
+from campfires.core.ollama import OllamaConfig, OllamaClient
 import logging
 from .campfire import Campfire
 from .interfaces import IMCPBroker
@@ -71,8 +71,8 @@ class LLMCampfire(Campfire):
             # Get the system prompt from configuration
             system_prompt = self.config.config.get('prompts', {}).get('system', '')
             
-            # Prepare the prompt with torch data
-            torch_data = torch.data.get('content', str(torch.data))
+            # Prepare the prompt with torch data (prefer 'content' or 'text')
+            torch_data = torch.data.get('content') or torch.data.get('text') or str(torch.data)
             prompt = f"{system_prompt}\n\nUser Request: {torch_data}"
             
             # Process with LLM
@@ -119,7 +119,7 @@ class LLMCampfire(Campfire):
             # Update torch with LLM response
             if response:
                 torch.data['llm_response'] = response
-                torch.data['llm_model'] = model or self.llm_config.default_model
+                torch.data['llm_model'] = model or getattr(self.llm_config, 'default_model', 'llama3:latest')
                 torch.metadata['processed_by_llm'] = True
                 
                 logger.info(f"Torch {torch.id} processed with LLM successfully")
@@ -215,30 +215,51 @@ class LLMCamper(LLMCamperMixin):
             logger.error("LLM Camper not initialized")
             return None
         
-        # Check if using demo/placeholder API key
-        if self.llm_config.api_key == 'demo_key_placeholder':
-            logger.info("Using demo mode - returning mock response")
-            return self._generate_mock_response(prompt)
+        try:
+            api_key = getattr(self.llm_config, "api_key", None)
+            if api_key == "demo_key_placeholder":
+                return self._generate_mock_response(prompt)
+        except Exception:
+            pass
         
         try:
-            # Create chat messages for the LLM
-            messages = [ChatMessage(role="user", content=prompt)]
-            
-            # Use the LLMCamperMixin functionality
-            response = await self.llm_chat(
-                messages=messages,
-                model=model or self.llm_config.default_model
-            )
-            
-            # Extract the content from the response
-            if response and hasattr(response, 'choices') and response.choices:
-                # choices is a List[Dict[str, Any]], so access the first choice as a dict
-                first_choice = response.choices[0]
-                if isinstance(first_choice, dict) and 'message' in first_choice:
-                    return first_choice['message'].get('content', '')
-                elif hasattr(first_choice, 'message'):
-                    return first_choice.message.content
-            return None
+            if isinstance(self.llm_config, OpenRouterConfig):
+                messages = [ChatMessage(role="user", content=prompt)]
+                response = await self.llm_chat(
+                    messages=messages,
+                    model=model or getattr(self.llm_config, "default_model", "gemma3:4b")
+                )
+                if response and hasattr(response, 'choices') and response.choices:
+                    first_choice = response.choices[0]
+                    if isinstance(first_choice, dict) and 'message' in first_choice:
+                        return first_choice['message'].get('content', '')
+                    elif hasattr(first_choice, 'message'):
+                        return first_choice.message.content
+                return None
+            elif isinstance(self.llm_config, OllamaConfig):
+                client = OllamaClient(self.llm_config)
+                await client.start_session()
+                try:
+                    try:
+                        result = await client.generate(
+                            prompt=prompt,
+                            model=model or self.llm_config.model
+                        )
+                        logger.info("Ollama generate succeeded")
+                        return result
+                    except Exception as ge:
+                        logger.warning(f"Ollama generate failed, trying chat: {ge}")
+                        result = await client.chat(
+                            messages=[{"role": "user", "content": prompt}],
+                            model=model or self.llm_config.model
+                        )
+                        logger.info("Ollama chat succeeded")
+                        return result
+                finally:
+                    await client.close_session()
+            else:
+                logger.error(f"Unsupported LLM client type for chat: {type(self.llm_config)}")
+                return None
             
         except Exception as e:
             logger.error(f"LLM processing failed: {e}")
@@ -279,13 +300,13 @@ class LLMCamper(LLMCamperMixin):
 
     async def _initialize_ollama(self) -> None:
         """Initialize Ollama connection"""
-        # Create OllamaConfig object
-        config = OllamaConfig(
-            base_url=self.llm_config.base_url,
-            default_model=self.llm_config.default_model
-        )
-        
-        # Setup LLM connection using the config
+        # Create OllamaConfig object (base_url only for compatibility)
+        try:
+            config = OllamaConfig(base_url=self.llm_config.base_url)
+        except Exception:
+            # Fallback to whatever config was provided
+            config = self.llm_config
+        # Setup LLM connection using the config; model selection happens at call time
         self.setup_llm(config=config)
         logger.info("Ollama LLM initialized")
     
@@ -332,8 +353,5 @@ def create_ollama_campfire(config: CampfireConfig, mcp_broker: IMCPBroker,
     Returns:
         Configured LLM campfire
     """
-    llm_config = OllamaConfig(
-        base_url=base_url,
-        default_model=default_model
-    )
+    llm_config = OllamaConfig(base_url=base_url, model=default_model)
     return LLMCampfire(config, mcp_broker, llm_config)

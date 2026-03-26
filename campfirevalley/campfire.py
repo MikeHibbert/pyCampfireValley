@@ -6,6 +6,8 @@ import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from campfires import Campfire as BaseCampfire, Camper as BaseCamper, Torch as BaseTorch
+from campfires.core.security_hooks import SecurityHooks
+from campfires.core.routing_strategy import RoutingStrategy
 from .interfaces import ICampfire, IMCPBroker
 from .models import Torch, CampfireConfig
 from .monitoring import get_monitoring_system, LogLevel, AlertSeverity
@@ -19,7 +21,7 @@ class Campfire(BaseCampfire, ICampfire):
     Base Campfire implementation that can be extended for specific functionality.
     """
     
-    def __init__(self, config: CampfireConfig, mcp_broker: IMCPBroker, party_box=None, campers=None):
+    def __init__(self, config: CampfireConfig, mcp_broker: IMCPBroker, party_box=None, campers=None, security_hooks: SecurityHooks = None, routing_strategy: RoutingStrategy = None):
         """
         Initialize a Campfire instance.
         
@@ -44,7 +46,9 @@ class Campfire(BaseCampfire, ICampfire):
             campers=campers,
             party_box=party_box,
             mcp_protocol=None,  # We'll handle MCP through our own broker
-            config={}  # Additional config can be passed here if needed
+            config={}, 
+            security_hooks=security_hooks or SecurityHooks(),
+            routing_strategy=routing_strategy
         )
         
         # CampfireValley specific configuration

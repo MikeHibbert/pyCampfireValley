@@ -1,0 +1,46 @@
+{
+  "name": "campfirevalley-tray-agent",
+  "version": "0.1.0",
+  "description": "Cross-platform desktop tray agent for Campfire Valley (Electron + TypeScript)",
+  "main": "dist/main.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "npm run build && electron .",
+    "dev": "concurrently -k \"tsc -w\" \"wait-on dist/main.js && electron .\"",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "electron": "^30.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "concurrently": "^8.2.2",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.4.0",
+    "wait-on": "^7.0.1"
+  },
+  "build": {
+    "appId": "com.campfirevalley.trayagent",
+    "productName": "Campfire Valley Tray Agent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "assets/icons"
+    }
+  }
+}

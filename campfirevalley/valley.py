@@ -6,16 +6,17 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from datetime import datetime
 from .interfaces import IValley, IDock, IPartyBox, IMCPBroker, IFederationManager, IKeyManager
 from .models import ValleyConfig, CampfireConfig, CommunityMembership, FederationMembership
 from .config import ConfigManager
 from .config_manager import (
     get_config_manager, ConfigSource, ConfigFormat, 
-    ConfigScope, ConfigEnvironment, load_config_from_file
+    ConfigScope, ConfigEnvironment
 )
 from .monitoring import get_monitoring_system, LogLevel
+from .voice import make_voice_torch
 
 
 logger = logging.getLogger(__name__)
@@ -538,6 +539,18 @@ class Valley(IValley):
             current_env = ConfigEnvironment.DEVELOPMENT
             logger.warning(f"Unknown environment '{env_name}', using development")
         
+        # Minimal validation rules for core fields
+        try:
+            from .config_manager import ConfigValidationRule
+            self.config_manager.add_validation_rule(
+                ConfigValidationRule(field_path="env.dock_mode", rule_type="required")
+            )
+            self.config_manager.add_validation_rule(
+                ConfigValidationRule(field_path="campfires.visible", rule_type="type", parameters={"type": list})
+            )
+        except Exception as e:
+            logger.debug(f"Skipping validation rule setup: {e}")
+        
         # Load default configuration first (lowest priority)
         default_config = config_path / "default.yaml"
         if default_config.exists():
@@ -696,6 +709,21 @@ class Valley(IValley):
             health["overall"] = "degraded" if len(health["issues"]) < 3 else "unhealthy"
         
         return health
+    
+    async def send_voice_text(self, campfire: Optional[str], text: str, admin: bool = False) -> Dict[str, Any]:
+        """Send a voice-transcribed text message into a campfire"""
+        if not self._running:
+            raise RuntimeError("Valley must be started")
+        target = campfire or (next(iter(self.campfires)) if self.campfires else None)
+        if not target:
+            raise ValueError("No campfire available")
+        torch_dict = make_voice_torch(self.name, target, text, admin)
+        from .models import Torch
+        torch = Torch(**torch_dict)
+        resp = await self.process_torch(torch)
+        if resp and hasattr(resp, "data"):
+            return {"status": "ok", "campfire": target, "response": resp.data}
+        return {"status": "ok", "campfire": target, "response": None}
     
     def __repr__(self) -> str:
         return f"Valley(name='{self.name}', running={self._running}, campfires={len(self.campfires)}, federations={len(self.federations)})"

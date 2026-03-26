@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,9 @@ from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTEN
 from .models import VisualizationState, WebSocketMessage, NodeUpdate, ConnectionUpdate
 from .visualization import ValleyVisualizer
 from ..valley import Valley
+from ..voice import is_admin, parse_intent
+from ..stt import get_engine
+import base64
 
 
 class WebSocketManager:
@@ -285,6 +289,36 @@ async def get_campfires():
     
     return campfires
 
+
+@app.post("/api/voice/ingest")
+async def voice_ingest(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    text = payload.get("text", "")
+    campfire = payload.get("campfire")
+    token = payload.get("admin_token")
+    # Fallback: if text is missing or looks like a placeholder, transcribe audio
+    placeholder = (text or "").strip().lower()
+    force_stt = (not text) or (placeholder in {"voice sample", "(no content)", "sample"})
+    if force_stt:
+        audio_b64 = payload.get("audio_base64")
+        audio_url = payload.get("audio_url")
+        if not audio_b64 and not audio_url:
+            raise HTTPException(status_code=400, detail="Missing text or audio input")
+        try:
+            engine = await get_engine()
+            audio_bytes = base64.b64decode(audio_b64) if audio_b64 else None
+            text = await engine.transcribe(audio_bytes=audio_bytes, audio_url=audio_url)
+            if not text:
+                raise HTTPException(status_code=502, detail="STT returned empty transcript")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"STT error: {e}")
+    admin = is_admin(token)
+    intent = parse_intent(text)
+    target = campfire or intent.get("campfire")
+    content = intent.get("content") or text
+    result = await current_valley.send_voice_text(target, content, admin)
+    return result
 
 async def update_loop():
     """Background task to broadcast state updates"""

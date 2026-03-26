@@ -218,6 +218,30 @@ To switch between different valley configurations:
    await valley.start()
    ```
 
+## 🗣️ Tray Agent Voice UX (PTT, STT, TTS, History)
+
+The Tray Agent provides a streamlined voice interface:
+
+- Push-to-talk with overlay timer and auto-stop
+- Secure recorder window to ensure `navigator.mediaDevices` availability
+- Local speech-to-text (Windows SAPI) for accurate transcripts sent to the LLM
+- Text-to-speech of LLM replies with selectable engine:
+  - Web Speech (fast)
+  - Windows SAPI (sink-aware playback via selected output device)
+- Output device and voice picker with live “Voice <name>” sample
+- Minimal tray menu: Settings…, Target Campfire, History…, Quit
+- History viewer shows recent transcripts and replies
+
+Quickstart:
+1. `cd tray-agent && npm run dev`
+2. Settings… → choose Input/Output devices, voice, and TTS/STT engines
+3. Hold or toggle Alt+Space to speak; release to send
+4. Tray logs show “Transcribed: …” and “Upload succeeded. Reply: …”
+5. History… opens the transcript/reply list
+
+Server-side fallback:
+- `/api/voice/ingest` transcribes audio when `text` is empty or a placeholder (e.g., “voice sample”) ensuring audio becomes text before LLM processing.
+
 3. **Method 3: Environment variable**
    ```bash
    export CAMPFIRE_MANIFEST_PATH="./manifest-dev.yaml"
@@ -619,6 +643,60 @@ The system follows these key principles:
 - **Schema Validation**: All configurations are validated against JSON schemas
 - **Hot Reload**: Runtime configuration updates without service restart
 - **Encryption Support**: Sensitive data is automatically encrypted
+
+## Gateway CLI
+
+CampfireValley ships with a gateway CLI that mirrors an OpenClaw-like workflow:
+
+- Initialize a project:
+  - `campfirevalley onboard MyValley`
+    - Creates `config/` with `default.yaml` and environment files
+    - Creates `manifest.yaml` if missing
+    - Sets up `.secrets/` for local allowlists and keys
+- Validate configuration:
+  - `campfirevalley validate-config ./manifest.yaml`
+- Run the gateway (foreground):
+  - `campfirevalley start MyValley --manifest ./manifest.yaml`
+- Run with PID tracking and status checks:
+  - `campfirevalley daemon run MyValley --manifest ./manifest.yaml`
+  - `campfirevalley daemon status MyValley`
+
+The `daemon run` command keeps a PID file in `.campfirevalley/<valley>.pid` for simple status checks. On Windows this runs in the foreground; service installation is intentionally left to external supervisors.
+
+## Voice Ingestion (Interactive Pathway)
+
+Send speech-to-text results into running campfires for interactive dialogue and admin control:
+
+- HTTP endpoint  
+  - `POST /api/voice/ingest`  
+  - Body:
+    - `text`: transcribed text
+    - `campfire` (optional): target campfire name (defaults to first available)
+    - `admin_token` (optional): required for admin-only intents
+- Admin token
+  - Place a token in `.secrets/admin_token` or set `CAMPFIRE_ADMIN_TOKEN`
+- Examples
+  - Route inline: `{"text": "send to assistant: summarize the notes"}`  
+  - Explicit target: `{"text": "please reindex project docs", "campfire": "assistant"}`
+  - Admin: `{"text": "update rag path /docs/new", "campfire": "assistant", "admin_token": "..." }`
+
+This endpoint accepts transcribed text from any STT system (local or external). Future adapters can integrate directly with providers.
+
+### Local Parakeet STT (Default Fallback)
+
+By default, Campfire Valley uses a local Parakeet STT engine as the fallback:
+
+- Config (config/default.yaml):
+  - stt.default_engine: parakeet_local
+  - stt.parakeet.endpoint: http://localhost:8765/transcribe
+- POST body options:
+  - Provide `text` directly, or
+  - Provide `audio_base64` (WAV/MP3 bytes) or `audio_url`
+- Expected Parakeet server contract:
+  - POST to `/transcribe` with `{ "audio_base64": "...", "audio_url": "..." }`
+  - Returns `{ "text": "transcript" }`
+
+You can point the endpoint to your local Parakeet HTTP bridge, or swap engines later without changing clients.
 
 ### Configuration Hierarchy
 
