@@ -117,6 +117,7 @@ manager = WebSocketManager()
 current_valley: Optional[Valley] = None
 visualizer: Optional[ValleyVisualizer] = None
 current_state: Optional[VisualizationState] = None
+auditor_dialog: Dict[str, Dict] = {"active": False, "fields": {}, "awaiting": []}
 
 
 def set_valley(valley: Valley):
@@ -317,8 +318,50 @@ async def voice_ingest(payload: dict = Body(...)):
     intent = parse_intent(text)
     target = campfire or intent.get("campfire")
     content = intent.get("content") or text
+    if "auditor" in (text or "").lower() or (target and target.lower() == "auditor"):
+        resp = await _handle_auditor_conversation(text)
+        return {"status": "ok", "campfire": target or "Auditor", "response": {"text": resp}}
     result = await current_valley.send_voice_text(target, content, admin)
     return result
+
+async def _handle_auditor_conversation(text: str) -> str:
+    t = text.strip()
+    low = t.lower()
+    global auditor_dialog
+    if "add camper" in low:
+        auditor_dialog = {"active": True, "fields": {}, "awaiting": ["name", "persona", "model", "system_prompt"]}
+    if auditor_dialog.get("active"):
+        f = auditor_dialog["fields"]
+        import re
+        m = re.search(r"name\s+([A-Za-z0-9_\- ]+)", low)
+        if m:
+            f["name"] = m.group(1).strip()
+        m = re.search(r"persona\s+([A-Za-z0-9_\- ]+)", low)
+        if m:
+            f["persona"] = m.group(1).strip()
+        m = re.search(r"model\s+([A-Za-z0-9_\-:]+)", low)
+        if m:
+            f["model"] = m.group(1).strip()
+        m = re.search(r"(?:prompt|system\s+prompt)\s*[:\-]\s*(.+)", t, re.IGNORECASE)
+        if m:
+            f["system_prompt"] = m.group(1).strip()
+        missing = [k for k in ["name", "persona", "model", "system_prompt"] if not f.get(k)]
+        if missing:
+            auditor_dialog["awaiting"] = missing
+            return "Please provide " + ", ".join(missing) + " for the new camper."
+        from ..models import CampfireConfig
+        cfg = {
+            "llm": {"model": f.get("model", "gemma3:4b")},
+            "prompts": {"system": f.get("system_prompt") or f"You are {f.get('name')}. Persona: {f.get('persona')}."},
+            "persona": {"name": f.get("name"), "persona": f.get("persona"), "model": f.get("model")}
+        }
+        c = CampfireConfig(name=f["name"], type="LLMCampfire", config=cfg)
+        ok = await current_valley.provision_campfire(c)
+        auditor_dialog = {"active": False, "fields": {}, "awaiting": []}
+        if ok:
+            return f"Created camper '{f['name']}' with persona '{f['persona']}' and model '{cfg['llm']['model']}'."
+        return "Failed to create the camper."
+    return "Auditor is listening. Say 'add camper' to begin, then provide name, persona, model, and system prompt."
 
 @app.post("/api/team/organize")
 async def team_organize(request: dict = Body(...)):

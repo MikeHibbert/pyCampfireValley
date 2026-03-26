@@ -43,6 +43,10 @@ async def create_demo_valley():
     await valley.provision_campfire(config2)
     await valley.provision_campfire(config3)
     
+    # Add an Auditor team for conversational organization
+    auditor_cfg = CampfireConfig(name="Auditor", type="LLMCampfire", config={"llm": {"model": "gemma3:4b"}, "prompts": {"system": "You are an auditor and organizer. Ask for missing details and confirm actions."}})
+    await valley.provision_campfire(auditor_cfg)
+    
     return valley
 
 
