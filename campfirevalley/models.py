@@ -3,13 +3,14 @@ Data models for CampfireValley using Pydantic for type validation.
 Extends the base pyCampfires models with CampfireValley-specific functionality.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, AliasChoices
 from typing import Optional, Dict, List, Any, Union
 from datetime import datetime
 from enum import Enum
 import json
 import base64
 import gzip
+import uuid
 from campfires import Torch as BaseTorch
 
 
@@ -39,23 +40,48 @@ class Torch(BaseTorch):
     CampfireValley Torch extending the base pyCampfires Torch.
     Message container for inter-valley communication with enhanced routing and security.
     """
-    # CampfireValley-specific fields
-    sender_valley: str = Field(..., description="Valley that sent this torch")
-    target_address: str = Field(..., description="Target address in format valley:name/campfire/camper")
+    claim: str = Field(default="generic", description="Torch claim/type")
+    source_campfire: str = Field(default="voice", description="Source campfire identifier")
+    channel: str = Field(default="default", description="Routing channel")
+    torch_id: str = Field(
+        default_factory=lambda: f"torch_{uuid.uuid4().hex}",
+        validation_alias=AliasChoices("torch_id", "id"),
+        description="Torch ID",
+    )
+
+    sender_valley: str = Field(default="local", description="Valley that sent this torch")
+    target_address: str = Field(default="valley:local", description="Target address in format valley:name/campfire/camper")
     attachments: List[str] = Field(default_factory=list, description="List of attachment references")
-    signature: str = Field(..., description="Digital signature for authentication")
+    signature: str = Field(default="", description="Digital signature for authentication")
     
     # Override base fields with CampfireValley defaults
     source: str = Field(default="", description="Source campfire/camper")
     destination: str = Field(default="", description="Destination campfire/camper")
-    data: Dict[str, Any] = Field(default_factory=dict, description="Torch data payload")
+    data: Dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("data", "payload"),
+        description="Torch data payload",
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Torch metadata")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_fields(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        if "target_address" not in values and "sender_valley" in values and "destination" in values:
+            sender = str(values.get("sender_valley") or "local")
+            dest = str(values.get("destination") or "").strip()
+            values["target_address"] = f"valley:{sender}/{dest}" if dest else f"valley:{sender}"
+        return values
     
     @field_validator('target_address')
     @classmethod
     def validate_address_format(cls, v):
         """Validate hierarchical address format: valley:name/campfire/camper"""
-        if not v or ':' not in v:
+        if not v:
+            return "valley:local"
+        if ':' not in v:
             raise ValueError("Address must contain valley name with colon separator")
         return v
     

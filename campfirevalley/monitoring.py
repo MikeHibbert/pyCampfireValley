@@ -26,10 +26,13 @@ class MetricType(Enum):
     TIMER = "timer"
 
 class AlertSeverity(Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
-    CRITICAL = "critical"
 
 class LogLevel(Enum):
     DEBUG = "debug"
@@ -42,38 +45,40 @@ class LogLevel(Enum):
 @dataclass
 class Metric:
     name: str
-    type: MetricType
+    metric_type: MetricType
     value: Union[int, float]
     timestamp: datetime = field(default_factory=datetime.utcnow)
     tags: Dict[str, str] = field(default_factory=dict)
-    labels: Dict[str, str] = field(default_factory=dict)
+    unit: Optional[str] = None
+
+    @property
+    def type(self) -> MetricType:
+        return self.metric_type
 
 @dataclass
 class Alert:
     id: str
+    title: str
     severity: AlertSeverity
     message: str
     source: str
     timestamp: datetime = field(default_factory=datetime.utcnow)
     resolved: bool = False
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    tags: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class PerformanceMetrics:
-    component: str
     operation: str
     duration: float
     success: bool
     timestamp: datetime = field(default_factory=datetime.utcnow)
-    memory_usage: Optional[float] = None
-    cpu_usage: Optional[float] = None
-    error_message: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class LogEntry:
     level: LogLevel
     message: str
-    component: str
+    source: str
     timestamp: datetime = field(default_factory=datetime.utcnow)
     context: Dict[str, Any] = field(default_factory=dict)
     correlation_id: Optional[str] = None
@@ -81,11 +86,19 @@ class LogEntry:
 # Interfaces
 class IMetricsCollector(ABC):
     @abstractmethod
-    async def collect_metric(self, metric: Metric) -> None:
+    async def record_metric(self, metric: Metric) -> None:
         pass
     
     @abstractmethod
-    async def get_metrics(self, name: str, start_time: datetime, end_time: datetime) -> List[Metric]:
+    async def get_metrics(self, metric_name: Optional[str] = None, limit: Optional[int] = None) -> List[Metric]:
+        pass
+
+    @abstractmethod
+    async def get_metric_summary(self, metric_name: str) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    async def clear_metrics(self) -> None:
         pass
 
 class IAlertManager(ABC):
@@ -94,39 +107,63 @@ class IAlertManager(ABC):
         pass
     
     @abstractmethod
+    async def get_alerts(self, severity: Optional[AlertSeverity] = None, limit: Optional[int] = None) -> List[Alert]:
+        pass
+
+    @abstractmethod
     async def resolve_alert(self, alert_id: str) -> None:
         pass
 
 class ILogHandler(ABC):
     @abstractmethod
-    async def handle_log(self, entry: LogEntry) -> None:
+    async def log(self, entry: LogEntry) -> None:
+        pass
+
+    @abstractmethod
+    async def get_logs(self, level: Optional[LogLevel] = None, limit: Optional[int] = None) -> List[LogEntry]:
         pass
 
 # Implementations
 class InMemoryMetricsCollector(IMetricsCollector):
     def __init__(self, max_metrics: int = 10000):
-        self.metrics: Dict[str, deque] = defaultdict(lambda: deque(maxlen=max_metrics))
+        self._max_metrics = max_metrics
+        self.metrics: List[Metric] = []
         self._lock = threading.Lock()
-    
-    async def collect_metric(self, metric: Metric) -> None:
+
+    async def record_metric(self, metric: Metric) -> None:
         with self._lock:
-            self.metrics[metric.name].append(metric)
-    
-    async def get_metrics(self, name: str, start_time: datetime, end_time: datetime) -> List[Metric]:
+            self.metrics.append(metric)
+            if len(self.metrics) > self._max_metrics:
+                self.metrics = self.metrics[-self._max_metrics :]
+
+    async def get_metrics(self, metric_name: Optional[str] = None, limit: Optional[int] = None) -> List[Metric]:
         with self._lock:
-            if name not in self.metrics:
-                return []
-            
-            return [
-                metric for metric in self.metrics[name]
-                if start_time <= metric.timestamp <= end_time
-            ]
-    
-    def get_latest_metric(self, name: str) -> Optional[Metric]:
+            items = [m for m in self.metrics if (metric_name is None or m.name == metric_name)]
+            if limit is not None:
+                try:
+                    limit = int(limit)
+                except Exception:
+                    limit = None
+            if limit:
+                items = items[-limit:]
+            return list(items)
+
+    async def get_metric_summary(self, metric_name: str) -> Dict[str, Any]:
+        metrics = await self.get_metrics(metric_name=metric_name)
+        if not metrics:
+            return {"count": 0, "min": None, "max": None, "avg": None, "latest": None}
+        values = [m.value for m in metrics]
+        return {
+            "count": len(values),
+            "min": min(values),
+            "max": max(values),
+            "avg": sum(values) / len(values) if values else None,
+            "latest": values[-1] if values else None,
+        }
+
+    async def clear_metrics(self) -> None:
         with self._lock:
-            if name in self.metrics and self.metrics[name]:
-                return self.metrics[name][-1]
-            return None
+            self.metrics.clear()
 
 class ConsoleAlertManager(IAlertManager):
     def __init__(self):
@@ -135,15 +172,21 @@ class ConsoleAlertManager(IAlertManager):
     
     async def send_alert(self, alert: Alert) -> None:
         self.alerts[alert.id] = alert
-        severity_emoji = {
-            AlertSeverity.LOW: "🟡",
-            AlertSeverity.MEDIUM: "🟠", 
-            AlertSeverity.HIGH: "🔴",
-            AlertSeverity.CRITICAL: "🚨"
-        }
-        
-        emoji = severity_emoji.get(alert.severity, "⚠️")
-        self.logger.warning(f"{emoji} ALERT [{alert.severity.value.upper()}] {alert.source}: {alert.message}")
+        print(f"[{alert.severity.name}] {alert.title}: {alert.message} ({alert.source})")
+
+    async def get_alerts(self, severity: Optional[AlertSeverity] = None, limit: Optional[int] = None) -> List[Alert]:
+        items = list(self.alerts.values())
+        if severity is not None:
+            items = [a for a in items if a.severity == severity]
+        items.sort(key=lambda a: a.timestamp)
+        if limit is not None:
+            try:
+                limit = int(limit)
+            except Exception:
+                limit = None
+        if limit:
+            items = items[-limit:]
+        return items
     
     async def resolve_alert(self, alert_id: str) -> None:
         if alert_id in self.alerts:
@@ -155,250 +198,208 @@ class StructuredLogHandler(ILogHandler):
         self.logger = logger or logging.getLogger(__name__)
         self.log_entries: deque = deque(maxlen=1000)
     
-    async def handle_log(self, entry: LogEntry) -> None:
+    async def log(self, entry: LogEntry) -> None:
         self.log_entries.append(entry)
         
-        # Format structured log
         log_data = {
             "timestamp": entry.timestamp.isoformat(),
-            "level": entry.level.value,
-            "component": entry.component,
+            "level": entry.level.name,
+            "source": entry.source,
             "message": entry.message,
             "context": entry.context
         }
         
         if entry.correlation_id:
             log_data["correlation_id"] = entry.correlation_id
-        
-        # Log to standard logger
-        log_level = getattr(logging, entry.level.value.upper())
-        self.logger.log(log_level, json.dumps(log_data))
+        print(json.dumps(log_data))
+
+    async def handle_log(self, entry: LogEntry) -> None:
+        await self.log(entry)
+
+    async def get_logs(self, level: Optional[LogLevel] = None, limit: Optional[int] = None) -> List[LogEntry]:
+        items = list(self.log_entries)
+        if level is not None:
+            items = [e for e in items if e.level == level]
+        if limit is not None:
+            try:
+                limit = int(limit)
+            except Exception:
+                limit = None
+        if limit:
+            items = items[-limit:]
+        return items
 
 class PerformanceMonitor:
     def __init__(self, metrics_collector: IMetricsCollector):
         self.metrics_collector = metrics_collector
-        self.active_operations: Dict[str, float] = {}
-        self._lock = threading.Lock()
-    
-    @contextmanager
-    def monitor_operation(self, component: str, operation: str):
-        operation_id = f"{component}.{operation}.{int(time.time() * 1000)}"
-        start_time = time.time()
-        
-        with self._lock:
-            self.active_operations[operation_id] = start_time
-        
+        self.performance_history: List[PerformanceMetrics] = []
+
+    async def monitor_performance(self, operation: str, func: Callable, *args, **kwargs):
+        start = time.perf_counter()
         try:
-            yield
-            success = True
-            error_message = None
-        except Exception as e:
-            success = False
-            error_message = str(e)
+            result = await func(*args, **kwargs) if asyncio.iscoroutinefunction(func) else func(*args, **kwargs)
+        except Exception:
+            duration_ms = (time.perf_counter() - start) * 1000.0
+            pm = PerformanceMetrics(operation=operation, duration=duration_ms, success=False)
+            await self.record_performance_metrics(pm)
             raise
-        finally:
-            end_time = time.time()
-            duration = end_time - start_time
-            
-            with self._lock:
-                self.active_operations.pop(operation_id, None)
-            
-            # Record performance metrics
-            perf_metric = PerformanceMetrics(
-                component=component,
-                operation=operation,
-                duration=duration,
-                success=success,
-                error_message=error_message
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        pm = PerformanceMetrics(operation=operation, duration=duration_ms, success=True)
+        await self.record_performance_metrics(pm)
+        return result
+
+    async def record_performance_metrics(self, perf: PerformanceMetrics) -> None:
+        self.performance_history.append(perf)
+        await self.metrics_collector.record_metric(
+            Metric(
+                name="operation_duration",
+                value=perf.duration,
+                metric_type=MetricType.HISTOGRAM,
+                tags={"operation": perf.operation},
             )
-            
-            # Convert to metric and collect
-            metric = Metric(
-                name=f"{component}.{operation}.duration",
-                type=MetricType.TIMER,
-                value=duration,
-                tags={"component": component, "operation": operation, "success": str(success)}
+        )
+        await self.metrics_collector.record_metric(
+            Metric(
+                name="operation_success" if perf.success else "operation_failure",
+                value=1,
+                metric_type=MetricType.COUNTER,
+                tags={"operation": perf.operation},
             )
-            
-            asyncio.create_task(self.metrics_collector.collect_metric(metric))
+        )
+
+    async def get_performance_summary(self, operation: str) -> Dict[str, Any]:
+        items = [p for p in self.performance_history if p.operation == operation]
+        if not items:
+            return {"total_operations": 0, "successful_operations": 0, "failed_operations": 0, "success_rate": 0.0, "avg_duration": None}
+        total = len(items)
+        success = len([p for p in items if p.success])
+        failed = total - success
+        avg = sum([p.duration for p in items]) / total
+        return {
+            "total_operations": total,
+            "successful_operations": success,
+            "failed_operations": failed,
+            "success_rate": success / total if total else 0.0,
+            "avg_duration": avg,
+        }
+
+    def monitor_operation(self, component: str, operation: str):
+        @contextmanager
+        def _cm():
+            yield
+        return _cm()
 
 class HealthChecker:
     def __init__(self, metrics_collector: IMetricsCollector, alert_manager: IAlertManager):
         self.metrics_collector = metrics_collector
         self.alert_manager = alert_manager
         self.health_checks: Dict[str, Callable] = {}
-        self.thresholds: Dict[str, Dict[str, Any]] = {}
-        self.running = False
-        self.check_interval = 30  # seconds
-    
-    def register_health_check(self, name: str, check_func: Callable, thresholds: Dict[str, Any]):
+
+    def add_health_check(self, name: str, check_func: Callable) -> None:
         self.health_checks[name] = check_func
-        self.thresholds[name] = thresholds
-    
-    async def start_monitoring(self):
-        self.running = True
-        while self.running:
-            await self._run_health_checks()
-            await asyncio.sleep(self.check_interval)
-    
-    def stop_monitoring(self):
-        self.running = False
-    
-    async def _run_health_checks(self):
-        for name, check_func in self.health_checks.items():
+
+    async def check_health(self, service_name: Optional[str] = None) -> Dict[str, Any]:
+        names = [service_name] if service_name else list(self.health_checks.keys())
+        results: Dict[str, Any] = {}
+        for name in names:
+            check = self.health_checks.get(name)
+            if not check:
+                continue
             try:
-                result = await check_func() if asyncio.iscoroutinefunction(check_func) else check_func()
-                
-                # Record health metric
-                metric = Metric(
-                    name=f"health.{name}",
-                    type=MetricType.GAUGE,
-                    value=1 if result else 0,
-                    tags={"check": name}
-                )
-                await self.metrics_collector.collect_metric(metric)
-                
-                # Check thresholds and send alerts
-                if not result and name in self.thresholds:
-                    alert = Alert(
-                        id=f"health.{name}.{int(time.time())}",
-                        severity=AlertSeverity.HIGH,
-                        message=f"Health check failed: {name}",
-                        source="HealthChecker"
-                    )
-                    await self.alert_manager.send_alert(alert)
-                    
+                healthy, msg = await check() if asyncio.iscoroutinefunction(check) else check()
             except Exception as e:
-                # Health check itself failed
-                alert = Alert(
-                    id=f"health.{name}.error.{int(time.time())}",
-                    severity=AlertSeverity.CRITICAL,
-                    message=f"Health check error for {name}: {str(e)}",
-                    source="HealthChecker"
+                healthy, msg = False, str(e)
+            results[name] = {"healthy": bool(healthy), "message": msg}
+            await self.metrics_collector.record_metric(
+                Metric(name="service_health", value=1 if healthy else 0, metric_type=MetricType.GAUGE, tags={"service": name})
+            )
+            if not healthy:
+                await self.alert_manager.send_alert(
+                    Alert(
+                        id=f"health_{name}_{int(time.time())}",
+                        title=f"Health check failed: {name}",
+                        message=msg,
+                        severity=AlertSeverity.WARNING,
+                        source="HealthChecker",
+                    )
                 )
-                await self.alert_manager.send_alert(alert)
+        return results
 
 class MonitoringSystem:
     def __init__(self):
-        self.metrics_collector = InMemoryMetricsCollector()
-        self.alert_manager = ConsoleAlertManager()
-        self.log_handler = StructuredLogHandler()
-        self.performance_monitor = PerformanceMonitor(self.metrics_collector)
-        self.health_checker = HealthChecker(self.metrics_collector, self.alert_manager)
-        
-        # Setup default health checks
-        self._setup_default_health_checks()
+        self.metrics_collector: Optional[IMetricsCollector] = None
+        self.alert_manager: Optional[IAlertManager] = None
+        self.log_handler: Optional[ILogHandler] = None
+        self.performance_monitor: Optional[PerformanceMonitor] = None
+        self.health_checker: Optional[HealthChecker] = None
+
+    async def initialize(self) -> None:
+        if self.metrics_collector is None:
+            self.metrics_collector = InMemoryMetricsCollector()
+        if self.alert_manager is None:
+            self.alert_manager = ConsoleAlertManager()
+        if self.log_handler is None:
+            self.log_handler = StructuredLogHandler()
+        if self.performance_monitor is None:
+            self.performance_monitor = PerformanceMonitor(self.metrics_collector)
+        if self.health_checker is None:
+            self.health_checker = HealthChecker(self.metrics_collector, self.alert_manager)
+        return None
     
     def _setup_default_health_checks(self):
-        """Setup default health checks for the system"""
-        
-        async def memory_check():
-            try:
-                import psutil
-                memory = psutil.virtual_memory()
-                return memory.percent < 90  # Alert if memory usage > 90%
-            except ImportError:
-                return True  # Skip if psutil not available
-        
-        async def disk_check():
-            try:
-                import psutil
-                disk = psutil.disk_usage('/')
-                return disk.percent < 95  # Alert if disk usage > 95%
-            except (ImportError, FileNotFoundError):
-                return True  # Skip if psutil not available or on Windows
-        
-        self.health_checker.register_health_check(
-            "memory_usage", 
-            memory_check, 
-            {"max_percent": 90}
-        )
-        
-        self.health_checker.register_health_check(
-            "disk_usage", 
-            disk_check, 
-            {"max_percent": 95}
-        )
+        return None
     
-    async def log(self, level: LogLevel, message: str, component: str, 
-                  context: Optional[Dict[str, Any]] = None, 
+    async def log(self, level: LogLevel, message: str, component: str,
+                  context: Optional[Dict[str, Any]] = None,
                   correlation_id: Optional[str] = None):
-        """Log a message with structured logging"""
-        entry = LogEntry(
-            level=level,
-            message=message,
-            component=component,
-            context=context or {},
-            correlation_id=correlation_id
-        )
-        await self.log_handler.handle_log(entry)
+        if not self.log_handler:
+            await self.initialize()
+        entry = LogEntry(level=level, message=message, source=component, context=context or {}, correlation_id=correlation_id)
+        await self.log_handler.log(entry)
+
+    async def log_info(self, message: str, source: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
+        await self.log(LogLevel.INFO, message, source or "app", context=context)
+
+    async def log_warning(self, message: str, source: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
+        await self.log(LogLevel.WARNING, message, source or "app", context=context)
+
+    async def log_error(self, message: str, source: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
+        await self.log(LogLevel.ERROR, message, source or "app", context=context)
     
-    async def record_metric(self, name: str, value: Union[int, float], 
+    async def record_metric(self, name: str, value: Union[int, float],
                            metric_type: MetricType = MetricType.GAUGE,
-                           tags: Optional[Dict[str, str]] = None):
-        """Record a metric"""
-        metric = Metric(
-            name=name,
-            type=metric_type,
-            value=value,
-            tags=tags or {}
-        )
-        await self.metrics_collector.collect_metric(metric)
+                           tags: Optional[Dict[str, str]] = None,
+                           unit: Optional[str] = None):
+        if not self.metrics_collector:
+            await self.initialize()
+        metric = Metric(name=name, value=value, metric_type=metric_type, tags=tags or {}, unit=unit)
+        await self.metrics_collector.record_metric(metric)
     
-    async def send_alert(self, severity: AlertSeverity, message: str, source: str,
-                        metadata: Optional[Dict[str, Any]] = None):
-        """Send an alert"""
-        alert = Alert(
-            id=f"{source}.{int(time.time())}",
-            severity=severity,
-            message=message,
-            source=source,
-            metadata=metadata or {}
-        )
+    async def send_alert(self, title: str, message: str, severity: AlertSeverity, source: Optional[str] = None, tags: Optional[Dict[str, Any]] = None):
+        if not self.alert_manager:
+            await self.initialize()
+        alert = Alert(id=f"alert_{int(time.time()*1000)}", title=title, message=message, severity=severity, source=source or "app", tags=tags or {})
         await self.alert_manager.send_alert(alert)
     
-    def monitor_performance(self, component: str, operation: str):
-        """Context manager for monitoring operation performance"""
-        return self.performance_monitor.monitor_operation(component, operation)
-    
-    async def start_health_monitoring(self):
-        """Start the health monitoring system"""
-        await self.health_checker.start_monitoring()
-    
-    def stop_health_monitoring(self):
-        """Stop the health monitoring system"""
-        self.health_checker.stop_monitoring()
+    async def monitor_performance(self, operation: str, func: Callable, *args, **kwargs):
+        if not self.performance_monitor:
+            await self.initialize()
+        return await self.performance_monitor.monitor_performance(operation, func, *args, **kwargs)
     
     async def get_system_status(self) -> Dict[str, Any]:
-        """Get overall system status"""
-        now = datetime.utcnow()
-        last_hour = now - timedelta(hours=1)
-        
-        # Get recent metrics
-        status = {
-            "timestamp": now.isoformat(),
-            "health_checks": {},
-            "recent_alerts": [],
-            "performance_summary": {}
+        if not self.health_checker or not self.metrics_collector or not self.alert_manager:
+            await self.initialize()
+        health = await self.health_checker.check_health()
+        overall = all(v.get("healthy") for v in health.values()) if health else True
+        recent_alerts = await self.alert_manager.get_alerts(limit=10)
+        metrics_summary = {}
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "health_checks": health,
+            "metrics_summary": metrics_summary,
+            "recent_alerts": recent_alerts,
+            "overall_health": overall,
         }
-        
-        # Check recent alerts
-        recent_alerts = [
-            alert for alert in self.alert_manager.alerts.values()
-            if alert.timestamp >= last_hour and not alert.resolved
-        ]
-        status["recent_alerts"] = [
-            {
-                "id": alert.id,
-                "severity": alert.severity.value,
-                "message": alert.message,
-                "source": alert.source,
-                "timestamp": alert.timestamp.isoformat()
-            }
-            for alert in recent_alerts
-        ]
-        
-        return status
 
 # Global monitoring instance
 _monitoring_system = None
@@ -411,17 +412,21 @@ def get_monitoring_system() -> MonitoringSystem:
     return _monitoring_system
 
 # Convenience functions
-async def log_info(message: str, component: str, **kwargs):
+async def log_info(message: str, source: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
     monitoring = get_monitoring_system()
-    await monitoring.log(LogLevel.INFO, message, component, **kwargs)
+    await monitoring.log_info(message, source=source, context=context)
 
-async def log_error(message: str, component: str, **kwargs):
+async def log_warning(message: str, source: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
     monitoring = get_monitoring_system()
-    await monitoring.log(LogLevel.ERROR, message, component, **kwargs)
+    await monitoring.log_warning(message, source=source, context=context)
 
-async def log_warning(message: str, component: str, **kwargs):
+async def log_error(message: str, source: Optional[str] = None, context: Optional[Dict[str, Any]] = None):
     monitoring = get_monitoring_system()
-    await monitoring.log(LogLevel.WARNING, message, component, **kwargs)
+    await monitoring.log_error(message, source=source, context=context)
+
+async def record_metric(name: str, value: Union[int, float], metric_type: MetricType, tags: Optional[Dict[str, str]] = None, unit: Optional[str] = None):
+    monitoring = get_monitoring_system()
+    await monitoring.record_metric(name, value, metric_type, tags=tags, unit=unit)
 
 async def record_counter(name: str, value: int = 1, tags: Optional[Dict[str, str]] = None):
     monitoring = get_monitoring_system()
@@ -431,6 +436,6 @@ async def record_gauge(name: str, value: Union[int, float], tags: Optional[Dict[
     monitoring = get_monitoring_system()
     await monitoring.record_metric(name, value, MetricType.GAUGE, tags)
 
-async def send_alert(severity: AlertSeverity, message: str, source: str, **kwargs):
+async def send_alert(title: str, message: str, severity: AlertSeverity, source: Optional[str] = None, tags: Optional[Dict[str, Any]] = None):
     monitoring = get_monitoring_system()
-    await monitoring.send_alert(severity, message, source, **kwargs)
+    await monitoring.send_alert(title, message, severity, source=source, tags=tags)
