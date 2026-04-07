@@ -1,6 +1,9 @@
 # Development Environment Configuration
 # Overrides for development environment
 
+env:
+  dock_mode: true
+
 # Valley Configuration
 valley:
   max_campfires: 10

@@ -4,6 +4,9 @@ LLM-enabled Campfire implementation using the pyCampfires framework.
 
 import asyncio
 import logging
+import os
+import re
+import math
 from typing import Optional, List, Dict, Any, Union
 from campfires import LLMCamperMixin
 from campfires.core.openrouter import OpenRouterConfig, ChatMessage
@@ -16,6 +19,70 @@ from .monitoring import get_monitoring_system, LogLevel, AlertSeverity
 
 
 logger = logging.getLogger(__name__)
+
+_beliefs_collection = None
+
+
+def _hash_embed(texts: List[str], dims: int = 384) -> List[List[float]]:
+    vectors: List[List[float]] = []
+    for t in texts:
+        v = [0.0] * dims
+        for token in re.findall(r"[a-zA-Z0-9']+", (t or "").lower()):
+            idx = (hash(token) & 0x7FFFFFFF) % dims
+            v[idx] += 1.0
+        norm = math.sqrt(sum(x * x for x in v)) or 1.0
+        vectors.append([x / norm for x in v])
+    return vectors
+
+
+def _embed_texts(texts: List[str]) -> List[List[float]]:
+    impl = (os.getenv("BELIEFS_EMBEDDING_IMPL") or "hash").strip().lower()
+    if impl != "st":
+        return _hash_embed(texts)
+    try:
+        from sentence_transformers import SentenceTransformer
+        model_name = os.getenv("BELIEFS_EMBED_MODEL", "all-MiniLM-L6-v2")
+        model = SentenceTransformer(model_name)
+        emb = model.encode(texts, normalize_embeddings=True)
+        return [row.tolist() for row in emb]
+    except Exception:
+        return _hash_embed(texts)
+
+
+def _get_beliefs_collection():
+    global _beliefs_collection
+    if _beliefs_collection is not None:
+        return _beliefs_collection
+    try:
+        import chromadb
+        embeddings_dir = os.getenv("EMBEDDINGS_DIR", "/app/data/embeddings")
+        os.makedirs(embeddings_dir, exist_ok=True)
+        client = chromadb.PersistentClient(path=os.path.join(embeddings_dir, "chroma"))
+        _beliefs_collection = client.get_or_create_collection(name="campfirevalley_beliefs")
+        return _beliefs_collection
+    except Exception:
+        _beliefs_collection = False
+        return _beliefs_collection
+
+
+def _get_beliefs_for(campfire_name: str, query: str, k: int = 5) -> List[str]:
+    collection = _get_beliefs_collection()
+    if not collection or not campfire_name or not query:
+        return []
+    try:
+        qemb = _embed_texts([query])[0]
+        result = collection.query(
+            query_embeddings=[qemb],
+            n_results=k,
+            where={"campfire": campfire_name},
+            include=["documents"]
+        )
+        docs = (result or {}).get("documents") or []
+        if docs and isinstance(docs[0], list):
+            return [d for d in docs[0] if isinstance(d, str)]
+        return []
+    except Exception:
+        return []
 
 
 class LLMCampfire(Campfire):
@@ -73,7 +140,37 @@ class LLMCampfire(Campfire):
             
             # Prepare the prompt with torch data (prefer 'content' or 'text')
             torch_data = torch.data.get('content') or torch.data.get('text') or str(torch.data)
-            prompt = f"{system_prompt}\n\nUser Request: {torch_data}"
+            beliefs = _get_beliefs_for(self.config.name, torch_data, k=5)
+            rag_docs = []
+            try:
+                rag_block = (self.config.config or {}).get("rag", {})
+                if isinstance(rag_block, dict):
+                    rag_docs = rag_block.get("documents") or []
+            except Exception:
+                rag_docs = []
+            if not isinstance(rag_docs, list):
+                rag_docs = []
+            rag_docs = [d for d in rag_docs if isinstance(d, str) and d.strip()][:5]
+            belief_prefix = ""
+            if beliefs:
+                belief_lines = "\n".join([f"- {b}" for b in beliefs])
+                belief_prefix = f"You remember:\n{belief_lines}\n\n"
+            rag_prefix = ""
+            if rag_docs:
+                rag_lines = "\n\n".join(rag_docs)
+                rag_prefix = f"Reference:\n{rag_lines}\n\n"
+            tools_block = (self.config.config or {}).get("tools") or {}
+            zeit = tools_block.get("zeitgeist") or {}
+            zeit_prefix = ""
+            if zeit.get("enabled"):
+                feats = []
+                if zeit.get("web_search"):
+                    feats.append("web_search")
+                if zeit.get("image_ocr"):
+                    feats.append("image_ocr")
+                if feats:
+                    zeit_prefix = f"External tools enabled via Zeitgeist: {', '.join(feats)}.\n\n"
+            prompt = f"{belief_prefix}{rag_prefix}{zeit_prefix}{system_prompt}\n\nUser Request: {torch_data}"
             
             # Process with LLM
             response = await self.process_torch_with_llm(torch, prompt)

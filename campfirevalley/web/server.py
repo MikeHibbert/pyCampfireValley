@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from campfirevalley.valley import Valley
 from campfirevalley.models import CampfireConfig
-from campfirevalley.llm_campfire import create_openrouter_campfire, create_ollama_campfire
 import os
 from campfirevalley.web.api import run_web_server
 
@@ -24,28 +23,30 @@ from campfirevalley.web.api import run_web_server
 async def create_demo_valley():
     """Create a demo valley for testing the web interface"""
     
-    # Create demo valley without MCP broker to avoid Redis dependency
-    valley = Valley(name="Demo Valley", mcp_broker=None)
+    valley_name = os.environ.get("VALLEY_NAME", "Demo Valley")
+    enable_dock = os.environ.get("ENABLE_DOCK_ON_START", "false").strip().lower() in {"1", "true", "yes"}
+    redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
+    broker = redis_url if enable_dock else None
+    valley = Valley(name=valley_name, mcp_broker=broker)
+    mode = os.environ.get("DOCK_MODE", "").strip().lower()
+    if mode in {"private", "partial", "public"}:
+        valley.config.env["dock_mode"] = mode
+    valley.config.env["auto_create_dock"] = enable_dock
     
     # Start the valley first
     await valley.start()
     
-    # Create an LLM-enabled Development Team using local Ollama by default
-    dev_cfg = CampfireConfig(name="Development Team", type="LLMCampfire")
     ollama_base = os.environ.get("OLLAMA_HOST", "http://host.docker.internal:11434")
-    dev_llm = create_ollama_campfire(dev_cfg, valley.mcp_broker, base_url=ollama_base, default_model="gemma3:4b")
-    await dev_llm.start()
-    valley.campfires["Development Team"] = dev_llm
-    
-    # Add two plain demo teams
-    config2 = CampfireConfig(name="Design Team")
-    config3 = CampfireConfig(name="QA Team")
-    await valley.provision_campfire(config2)
-    await valley.provision_campfire(config3)
-    
-    # Add an Auditor team for conversational organization
-    auditor_cfg = CampfireConfig(name="Auditor", type="LLMCampfire", config={"llm": {"model": "gemma3:4b"}, "prompts": {"system": "You are an auditor and organizer. Ask for missing details and confirm actions."}})
-    await valley.provision_campfire(auditor_cfg)
+    main_cfg = CampfireConfig(
+        name="Main Campfire",
+        type="LLMCampfire",
+        config={
+            "llm": {"provider": "ollama", "base_url": ollama_base, "model": "gemma3:4b"},
+            "prompts": {"system": "You are the main Campfire. Help the user build and refine their campfire setup."},
+        },
+    )
+    await valley.provision_campfire(main_cfg)
+    valley.config.campfires["visible"] = ["Main Campfire"]
     
     return valley
 

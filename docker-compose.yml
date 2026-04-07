@@ -3,13 +3,15 @@ version: '3.8'
 services:
   campfire-valley:
     build:
-      context: ..
-      dockerfile: CampfireValley/Dockerfile
+      context: .
+      dockerfile: ./Dockerfile
       args:
-        USE_LOCAL_CAMPFIRES: "true"
+        USE_LOCAL_CAMPFIRES: "false"
+        USE_GIT_CAMPFIRES: "true"
     container_name: campfire-valley-web
+    user: "0:0"
     ports:
-      - "8000:8000"  # Web visualization interface
+      - "${PORT:-8000}:8000"  # Web visualization interface (customizable host port)
     environment:
       - CAMPFIRE_VALLEY_ENV=docker
       - CAMPFIRE_VALLEY_HOST=0.0.0.0
@@ -18,12 +20,17 @@ services:
       - REDIS_URL=redis://redis:6379
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - CONFIG_DIR=/app/data/configs
+      - EMBEDDINGS_DIR=/app/data/embeddings
+      - LOGS_DIR=/app/data/logs
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs
-      - ./data:/app/data
       - ./reports:/app/reports
       - valley_data:/app/persistent_data
+      - campfire-configs:/app/data/configs
+      - campfire-embeddings:/app/data/embeddings
+      - campfire-logs:/app/data/logs
     networks:
       - campfire-network
     depends_on:
@@ -40,6 +47,42 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  campfire-valley-remote:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        USE_LOCAL_CAMPFIRES: "false"
+        USE_GIT_CAMPFIRES: "true"
+    container_name: campfire-valley-remote
+    user: "0:0"
+    ports:
+      - "8001:8000"
+    environment:
+      - CAMPFIRE_VALLEY_ENV=docker
+      - CAMPFIRE_VALLEY_HOST=0.0.0.0
+      - CAMPFIRE_VALLEY_PORT=8000
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - CONFIG_DIR=/app/data/configs
+      - EMBEDDINGS_DIR=/app/data/embeddings
+      - LOGS_DIR=/app/data/logs
+      - VALLEY_NAME=Remote Valley
+      - ENABLE_DOCK_ON_START=true
+      - DOCK_MODE=public
+    volumes:
+      - ./config:/app/config:ro
+      - valley_data_remote:/app/persistent_data
+      - campfire-configs-remote:/app/data/configs
+      - campfire-embeddings-remote:/app/data/embeddings
+      - campfire-logs-remote:/app/data/logs
+    networks:
+      - campfire-network
+    depends_on:
+      - redis
+    restart: unless-stopped
 
   # Optional: Redis for caching and session management
   redis:
@@ -81,9 +124,23 @@ services:
 volumes:
   valley_data:
     driver: local
+  valley_data_remote:
+    driver: local
   redis_data:
     driver: local
   prometheus_data:
+    driver: local
+  campfire-configs:
+    driver: local
+  campfire-embeddings:
+    driver: local
+  campfire-logs:
+    driver: local
+  campfire-configs-remote:
+    driver: local
+  campfire-embeddings-remote:
+    driver: local
+  campfire-logs-remote:
     driver: local
 
 networks:

@@ -3,11 +3,15 @@ Valley manager implementation.
 """
 
 import asyncio
+import json
 import logging
 import os
+import re
+import uuid
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from datetime import datetime
+import yaml
 from .interfaces import IValley, IDock, IPartyBox, IMCPBroker, IFederationManager, IKeyManager
 from .models import ValleyConfig, CampfireConfig, CommunityMembership, FederationMembership
 from .config import ConfigManager
@@ -50,6 +54,10 @@ class Valley(IValley):
         self.mcp_broker_url = mcp_broker
         self.party_box = party_box
         self.config_dir = config_dir
+        self._workflow_cache: Dict[str, Any] = {}
+        self._schedule_tasks: Dict[str, asyncio.Task] = {}
+        self._schedule_locks: Dict[str, asyncio.Lock] = {}
+        self._last_schedule_run: Dict[str, Dict[str, Any]] = {}
         
         # Initialize configuration management
         self.config_manager = get_config_manager()
@@ -62,6 +70,7 @@ class Valley(IValley):
             logger.warning(f"Manifest file not found at {manifest_path}, creating default config")
             self.config = ConfigManager.create_default_valley_config(name)
             ConfigManager.save_valley_config(self.config, manifest_path)
+        self.config.name = name
         
         # Initialize components (will be set during start())
         self.dock: Optional[IDock] = None
@@ -109,7 +118,7 @@ class Valley(IValley):
             # Try to connect to MCP broker, but continue if it fails (for demo purposes)
             if self.mcp_broker:
                 try:
-                    broker_connected = await self.mcp_broker.connect()
+                    broker_connected = await asyncio.wait_for(self.mcp_broker.connect(), timeout=6)
                     if broker_connected:
                         logger.info("MCP broker connected successfully")
                     else:
@@ -127,8 +136,12 @@ class Valley(IValley):
             # Initialize key manager
             from .key_manager import CampfireKeyManager
             self.key_manager = CampfireKeyManager(valley_name=self.name)
-            await self.key_manager.initialize_valley_keys()
-            logger.info("Key manager initialized")
+            try:
+                await asyncio.wait_for(self.key_manager.initialize_valley_keys(), timeout=8)
+                logger.info("Key manager initialized")
+            except Exception as e:
+                logger.warning(f"Key manager initialization failed: {e}")
+                self.key_manager = None
             
             # Initialize federation manager
             federation_config = await self.get_config_value("federation", {})
@@ -144,31 +157,42 @@ class Valley(IValley):
             
             # Initialize VALI coordinator
             if self.mcp_broker:
-                from .vali import VALICoordinator
+                from .vali import VALICoordinator, VALIServiceRegistry
+                registry = VALIServiceRegistry()
                 self.vali_coordinator = VALICoordinator(
                     mcp_broker=self.mcp_broker,
+                    registry=registry,
                     federation_manager=self.federation_manager,
                     valley_name=self.name
                 )
-                await self.vali_coordinator.start()
-                logger.info("VALI coordinator started")
+                try:
+                    await asyncio.wait_for(self.vali_coordinator.start(), timeout=6)
+                    logger.info("VALI coordinator started")
+                except Exception as e:
+                    logger.warning(f"VALI coordinator start failed: {e}")
+                    self.vali_coordinator = None
             
             # Create and start dock if auto_create_dock is enabled and MCP broker is connected
             if self.config.env.get("auto_create_dock", True) and self.mcp_broker and self.mcp_broker.is_connected():
                 from .dock import Dock  # Import here to avoid circular imports
                 self.dock = Dock(
-                    valley_name=self.name,
+                    valley=self,
                     mcp_broker=self.mcp_broker,
                     party_box=self.party_box,
                     federation_manager=self.federation_manager,
                     vali_coordinator=self.vali_coordinator
                 )
-                await self.dock.start_gateway()
+                try:
+                    await asyncio.wait_for(self.dock.start_gateway(), timeout=6)
+                except Exception as e:
+                    logger.warning(f"Dock start failed: {e}")
+                    self.dock = None
             elif self.config.env.get("auto_create_dock", True):
                 logger.warning("Dock creation skipped - MCP broker not connected")
             
             self._running = True
             logger.info(f"Valley '{self.name}' started successfully")
+            self._start_schedules_from_disk()
             
         except Exception as e:
             logger.error(f"Failed to start valley '{self.name}': {e}")
@@ -186,10 +210,16 @@ class Valley(IValley):
         for task in self._tasks:
             if not task.done():
                 task.cancel()
+        for t in list(self._schedule_tasks.values()):
+            if t and not t.done():
+                t.cancel()
         
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._schedule_tasks:
+            await asyncio.gather(*self._schedule_tasks.values(), return_exceptions=True)
+        self._schedule_tasks.clear()
         
         # Stop dock
         if self.dock:
@@ -361,22 +391,32 @@ class Valley(IValley):
             campfire = None
             
             if campfire_config.type == "LLMCampfire":
-                from .llm_campfire import create_openrouter_campfire
-                from campfires import OpenRouterConfig
-                
-                # Extract LLM configuration from campfire config
-                llm_config = campfire_config.config.get('llm', {})
-                api_key = llm_config.get('api_key') or os.getenv('OPENROUTER_API_KEY', 'demo_key_placeholder')
-                model = llm_config.get('model', 'anthropic/claude-3.5-sonnet')
-                
-                # Create LLM campfire
-                campfire = create_openrouter_campfire(
-                    campfire_config, 
-                    self.mcp_broker, 
-                    api_key=api_key,
-                    default_model=model
-                )
-                logger.info(f"Created LLMCampfire '{campfire_name}' with model '{model}'")
+                llm_config = campfire_config.config.get('llm', {}) if isinstance(campfire_config.config, dict) else {}
+                provider = (llm_config.get("provider") or os.getenv("LLM_PROVIDER") or "").strip().lower()
+                if not provider:
+                    provider = "ollama" if not os.getenv("OPENROUTER_API_KEY") else "openrouter"
+                model = llm_config.get('model', 'gemma3:4b')
+
+                if provider == "openrouter":
+                    from .llm_campfire import create_openrouter_campfire
+                    api_key = llm_config.get('api_key') or os.getenv('OPENROUTER_API_KEY') or 'demo_key_placeholder'
+                    campfire = create_openrouter_campfire(
+                        campfire_config,
+                        self.mcp_broker,
+                        api_key=api_key,
+                        default_model=model
+                    )
+                    logger.info(f"Created LLMCampfire '{campfire_name}' via OpenRouter with model '{model}'")
+                else:
+                    from .llm_campfire import create_ollama_campfire
+                    base_url = llm_config.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+                    campfire = create_ollama_campfire(
+                        campfire_config,
+                        self.mcp_broker,
+                        base_url=base_url,
+                        default_model=model
+                    )
+                    logger.info(f"Created LLMCampfire '{campfire_name}' via Ollama with model '{model}'")
                 
             elif campfire_config.type == "dockmaster":
                 from .campfires.dockmaster import DockmasterCampfire
@@ -407,6 +447,38 @@ class Valley(IValley):
             await campfire.start()
             
             self.campfires[campfire_name] = campfire
+
+            lower_name = campfire_name.strip().lower()
+            is_auditor_name = lower_name == "auditor" or lower_name.endswith(" auditor")
+            if not is_auditor_name:
+                auditor_name = f"{campfire_name} Auditor"
+                if auditor_name not in self.campfires:
+                    llm_cfg = {}
+                    if isinstance(campfire_config.config, dict):
+                        llm_cfg = (campfire_config.config.get("llm") or {}) if isinstance(campfire_config.config.get("llm"), dict) else {}
+                    provider = (llm_cfg.get("provider") or os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
+                    if provider not in {"ollama", "openrouter"}:
+                        provider = "ollama"
+                    model = llm_cfg.get("model") or "gemma3:4b"
+                    base_url = llm_cfg.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+                    system_prompt = (
+                        "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. "
+                        "You identify which campers are needed, create them, assign them ordered tasks, and coordinate their outputs. "
+                        "Ask clarifying questions when needed and confirm actions."
+                    )
+                    auditor_cfg = CampfireConfig(
+                        name=auditor_name,
+                        type="LLMCampfire",
+                        config={
+                            "llm": {
+                                "provider": provider,
+                                "base_url": base_url,
+                                "model": model,
+                            },
+                            "prompts": {"system": system_prompt},
+                        },
+                    )
+                    await self.provision_campfire(auditor_cfg)
             
             # Register with VALI if available
             if self.vali_coordinator and hasattr(campfire, 'get_service_type'):
@@ -467,6 +539,292 @@ class Valley(IValley):
     def get_campfires(self) -> Dict[str, 'ICampfire']:
         """Get all active campfires"""
         return self.campfires.copy()
+
+    def _workflow_dir(self) -> Path:
+        p = Path(os.getenv("CONFIG_DIR", "/app/data/configs"))
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _slugify_workflow_key(self, name: str) -> str:
+        s = (name or "").strip().lower()
+        s = re.sub(r"[^a-z0-9]+", "_", s)
+        s = re.sub(r"_+", "_", s).strip("_")
+        return s or "campfire"
+
+    def _workflow_path_for(self, campfire_name: str) -> Path:
+        return self._workflow_dir() / f"workflow_{self._slugify_workflow_key(campfire_name)}.yaml"
+
+    def get_workflow(self, campfire_name: str) -> Optional[Dict[str, Any]]:
+        if not campfire_name:
+            return None
+        path = self._workflow_path_for(campfire_name)
+        try:
+            mtime = path.stat().st_mtime if path.exists() else None
+        except Exception:
+            mtime = None
+        cached = self._workflow_cache.get(campfire_name)
+        if cached and cached.get("mtime") == mtime:
+            return cached.get("data")
+        if not path.exists():
+            self._workflow_cache[campfire_name] = {"mtime": mtime, "data": None}
+            return None
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or None
+        except Exception:
+            data = None
+        self._workflow_cache[campfire_name] = {"mtime": mtime, "data": data}
+        return data
+
+    def set_workflow(self, campfire_name: str, steps: List[Dict[str, Any]]) -> bool:
+        if not campfire_name:
+            return False
+        clean_steps: List[Dict[str, Any]] = []
+        for s in steps or []:
+            if not isinstance(s, dict):
+                continue
+            camper = (s.get("camper") or "").strip()
+            task = (s.get("task") or "").strip()
+            if not camper or not task:
+                continue
+            clean_steps.append({"camper": camper, "task": task})
+        existing = self.get_workflow(campfire_name) or {}
+        schedule = existing.get("schedule") if isinstance(existing, dict) else None
+        payload = {"version": 1, "campfire": campfire_name, "steps": clean_steps, "updated_at": datetime.utcnow().isoformat()}
+        if isinstance(schedule, dict):
+            payload["schedule"] = schedule
+        path = self._workflow_path_for(campfire_name)
+        try:
+            path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+            try:
+                mtime = path.stat().st_mtime
+            except Exception:
+                mtime = None
+            self._workflow_cache[campfire_name] = {"mtime": mtime, "data": payload}
+            return True
+        except Exception:
+            return False
+
+    def get_schedule(self, campfire_name: str) -> Optional[Dict[str, Any]]:
+        wf = self.get_workflow(campfire_name) or {}
+        schedule = wf.get("schedule") if isinstance(wf, dict) else None
+        return schedule if isinstance(schedule, dict) else None
+
+    def set_schedule(self, campfire_name: str, interval_seconds: int, input_text: Optional[str] = None) -> bool:
+        if not campfire_name:
+            return False
+        try:
+            interval_seconds = int(interval_seconds)
+        except Exception:
+            return False
+        if interval_seconds < 5:
+            interval_seconds = 5
+        wf = self.get_workflow(campfire_name) or {}
+        if not isinstance(wf, dict):
+            wf = {"version": 1, "campfire": campfire_name, "steps": []}
+        schedule = {
+            "enabled": True,
+            "interval_seconds": interval_seconds,
+            "input": (input_text or "").strip(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        wf["schedule"] = schedule
+        wf["updated_at"] = datetime.utcnow().isoformat()
+        path = self._workflow_path_for(campfire_name)
+        try:
+            path.write_text(yaml.safe_dump(wf, sort_keys=False), encoding="utf-8")
+            try:
+                mtime = path.stat().st_mtime
+            except Exception:
+                mtime = None
+            self._workflow_cache[campfire_name] = {"mtime": mtime, "data": wf}
+        except Exception:
+            return False
+        self.refresh_schedule(campfire_name)
+        return True
+
+    def clear_schedule(self, campfire_name: str) -> bool:
+        if not campfire_name:
+            return False
+        wf = self.get_workflow(campfire_name) or {}
+        if not isinstance(wf, dict):
+            wf = {"version": 1, "campfire": campfire_name, "steps": []}
+        if "schedule" in wf:
+            wf.pop("schedule", None)
+            wf["updated_at"] = datetime.utcnow().isoformat()
+            path = self._workflow_path_for(campfire_name)
+            try:
+                path.write_text(yaml.safe_dump(wf, sort_keys=False), encoding="utf-8")
+                try:
+                    mtime = path.stat().st_mtime
+                except Exception:
+                    mtime = None
+                self._workflow_cache[campfire_name] = {"mtime": mtime, "data": wf}
+            except Exception:
+                return False
+        self.refresh_schedule(campfire_name)
+        return True
+
+    def refresh_schedule(self, campfire_name: str) -> None:
+        t = self._schedule_tasks.get(campfire_name)
+        if t and not t.done():
+            t.cancel()
+        self._schedule_tasks.pop(campfire_name, None)
+        if not self._running:
+            return
+        schedule = self.get_schedule(campfire_name)
+        if not schedule or not schedule.get("enabled"):
+            return
+        task = asyncio.create_task(self._schedule_loop(campfire_name))
+        self._schedule_tasks[campfire_name] = task
+        self._tasks.append(task)
+
+    def _start_schedules_from_disk(self) -> None:
+        try:
+            cfg_dir = self._workflow_dir()
+            paths = list(cfg_dir.glob("workflow_*.yaml"))
+        except Exception:
+            paths = []
+        for p in paths:
+            try:
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            campfire_name = data.get("campfire") if isinstance(data, dict) else None
+            if not isinstance(campfire_name, str) or not campfire_name.strip():
+                continue
+            schedule = data.get("schedule") if isinstance(data, dict) else None
+            if isinstance(schedule, dict) and schedule.get("enabled"):
+                self.refresh_schedule(campfire_name.strip())
+
+    async def _schedule_loop(self, campfire_name: str) -> None:
+        lock = self._schedule_locks.get(campfire_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._schedule_locks[campfire_name] = lock
+        while self._running:
+            schedule = self.get_schedule(campfire_name) or {}
+            if not schedule.get("enabled"):
+                return
+            try:
+                interval = int(schedule.get("interval_seconds") or 0)
+            except Exception:
+                interval = 0
+            if interval < 5:
+                interval = 5
+            await asyncio.sleep(interval)
+            if not self._running:
+                return
+            if campfire_name not in self.campfires:
+                continue
+            async with lock:
+                schedule = self.get_schedule(campfire_name) or {}
+                if not schedule.get("enabled"):
+                    return
+                input_text = (schedule.get("input") or "").strip()
+                if not input_text:
+                    input_text = f"Scheduled run at {datetime.utcnow().isoformat()}"
+                try:
+                    from .models import Torch
+                    torch = Torch(
+                        claim="scheduled_request",
+                        source_campfire="scheduler",
+                        channel="schedule",
+                        torch_id=f"schedule_{uuid.uuid4().hex}",
+                        sender_valley=self.name,
+                        target_address=f"valley:{self.name}/{campfire_name}",
+                        data={"text": input_text},
+                        signature="schedule_placeholder",
+                    )
+                    resp = await self.process_torch(torch)
+                    self._last_schedule_run[campfire_name] = {"at": datetime.utcnow().isoformat(), "ok": bool(resp), "response": getattr(resp, "data", None)}
+                except Exception as e:
+                    self._last_schedule_run[campfire_name] = {"at": datetime.utcnow().isoformat(), "ok": False, "error": str(e)}
+
+    def clear_workflow(self, campfire_name: str) -> bool:
+        if not campfire_name:
+            return False
+        path = self._workflow_path_for(campfire_name)
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            return False
+        self._workflow_cache.pop(campfire_name, None)
+        return True
+
+    def _torch_text(self, torch: 'Torch') -> str:
+        try:
+            if isinstance(torch.data, dict):
+                return (torch.data.get("content") or torch.data.get("text") or "").strip() or json.dumps(torch.data)
+        except Exception:
+            pass
+        return str(getattr(torch, "data", "") or "")
+
+    def _is_service_torch(self, torch: 'Torch') -> bool:
+        if getattr(torch, "claim", None) == "voice_text":
+            return False
+        if getattr(torch, "source_campfire", None) == "voice":
+            return False
+        if isinstance(getattr(torch, "data", None), dict) and torch.data.get("admin") is True:
+            return False
+        return True
+
+    async def process_service_call(self, campfire_name: str, torch: 'Torch') -> Optional['Torch']:
+        if not self._is_service_torch(torch):
+            return None
+        workflow = self.get_workflow(campfire_name) or {}
+        steps = workflow.get("steps") if isinstance(workflow, dict) else None
+        if not isinstance(steps, list) or not steps:
+            return None
+        user_input = self._torch_text(torch)
+        outputs: List[Dict[str, Any]] = []
+        for idx, step in enumerate(steps[:20]):
+            if not isinstance(step, dict):
+                continue
+            camper = (step.get("camper") or "").strip()
+            task_tmpl = (step.get("task") or "").strip()
+            if not camper or not task_tmpl:
+                continue
+            campfire = self.campfires.get(camper)
+            if not campfire:
+                outputs.append({"step": idx + 1, "camper": camper, "ok": False, "error": "missing_camper"})
+                continue
+            prior = json.dumps(outputs, ensure_ascii=False)
+            if "{input}" in task_tmpl or "{previous}" in task_tmpl:
+                prompt = task_tmpl.replace("{input}", user_input).replace("{previous}", prior)
+            else:
+                prompt = f"{task_tmpl}\n\nInput:\n{user_input}\n\nPrior outputs:\n{prior}"
+            step_torch = type(torch)(
+                claim="workflow_step",
+                source_campfire=f"{campfire_name} Auditor",
+                channel="workflow",
+                torch_id=f"workflow_{uuid.uuid4().hex}",
+                sender_valley=self.name,
+                target_address=f"valley:{self.name}/{camper}",
+                data={"text": prompt, "service_mode": True, "parent": campfire_name, "step": idx + 1},
+                signature="workflow_placeholder",
+            )
+            resp = await campfire.process_torch(step_torch)
+            text = None
+            if resp is not None and hasattr(resp, "data") and isinstance(resp.data, dict):
+                text = resp.data.get("llm_response") or resp.data.get("text")
+            outputs.append({"step": idx + 1, "camper": camper, "ok": bool(resp), "response": text, "data": getattr(resp, "data", None)})
+        final_text = ""
+        for o in reversed(outputs):
+            if o.get("response"):
+                final_text = str(o["response"])
+                break
+        result = {"text": final_text or "Workflow completed.", "campfire": campfire_name, "results": outputs}
+        return type(torch)(
+            claim="service_response",
+            source_campfire=f"{campfire_name} Auditor",
+            channel="service",
+            torch_id=f"service_{uuid.uuid4().hex}",
+            sender_valley=self.name,
+            target_address=f"valley:{torch.sender_valley}",
+            data=result,
+            signature="service_placeholder",
+        )
     
     async def process_torch(self, torch: 'Torch') -> Optional['Torch']:
         """Process a torch by routing it to the appropriate campfire"""
@@ -506,6 +864,9 @@ class Valley(IValley):
             if campfire_name in self.campfires:
                 campfire = self.campfires[campfire_name]
                 logger.info(f"Routing torch {torch.torch_id} to campfire '{campfire_name}'")
+                service_resp = await self.process_service_call(campfire_name, torch)
+                if service_resp is not None:
+                    return service_resp
                 return await campfire.process_torch(torch)
             else:
                 # If no specific campfire found, try to route through dock if available

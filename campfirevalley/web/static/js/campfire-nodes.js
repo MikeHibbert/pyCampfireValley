@@ -3541,8 +3541,55 @@ const HexNodeBaseMixin = {
             ctx.fillText(`${k}: ${v}`, centerX, y);
         }
 
+        const canVoice = (this.type === "campfire/campfire" || this.type === "campfire/camper" || /_campfire$/.test(this.type || "") || /_camper$/.test(this.type || ""));
+        if (canVoice) {
+            const btnSize = Math.max(18, Math.round(radius * 0.18));
+            const pad = Math.max(8, Math.round(radius * 0.06));
+            const bx = Math.round(centerX + radius - pad - btnSize);
+            const by = Math.round(centerY - radius + pad);
+            this._voiceBtn = { x: bx, y: by, w: btnSize, h: btnSize };
+
+            const isAuditor = (this.properties && (this.properties.type === "auditor" || String(this.properties.name || "").toLowerCase() === "auditor")) || false;
+            ctx.save();
+            ctx.beginPath();
+            ctx.fillStyle = isAuditor ? "rgba(255, 107, 53, 0.9)" : "rgba(0, 0, 0, 0.45)";
+            ctx.strokeStyle = isAuditor ? "#ff6b35" : "rgba(255,255,255,0.35)";
+            ctx.lineWidth = 2;
+            ctx.roundRect(bx, by, btnSize, btnSize, Math.max(4, Math.round(btnSize * 0.25)));
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = "#ffffff";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.font = Math.max(12, Math.round(btnSize * 0.65)) + "px Arial";
+            ctx.fillText("🎙", bx + btnSize / 2, by + btnSize / 2 + 1);
+            ctx.restore();
+        } else {
+            this._voiceBtn = null;
+        }
+
         // draw connection points
         this.drawConnectionPoints(ctx, centerX, centerY, radius);
+    },
+
+    onMouseDown: function(e, localpos, graphcanvas) {
+        if (e && e.which === 1 && this._voiceBtn) {
+            const x = localpos[0];
+            const y = localpos[1];
+            const b = this._voiceBtn;
+            if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+                if (graphcanvas) {
+                    graphcanvas.selectNode(this);
+                }
+                const lg = (typeof window !== "undefined") ? window.campfireValleyLiteGraph : null;
+                if (lg && typeof lg.startVoiceForNode === "function") {
+                    lg.startVoiceForNode(this);
+                }
+                this.setDirtyCanvas(true, true);
+                return true;
+            }
+        }
+        return false;
     },
 
     onDrawNode: function(ctx, graphcanvas) {

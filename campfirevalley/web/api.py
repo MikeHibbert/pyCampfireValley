@@ -1,16 +1,22 @@
 """FastAPI backend for CampfireValley web visualization interface"""
 
 import asyncio
+import copy
 import json
 import os
+from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi import Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import yaml
+import re
+import math
+import uuid
 
 # Prometheus metrics
 from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
@@ -18,9 +24,11 @@ from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTEN
 from .models import VisualizationState, WebSocketMessage, NodeUpdate, ConnectionUpdate
 from .visualization import ValleyVisualizer
 from ..valley import Valley
-from ..voice import is_admin, parse_intent
+from ..config import ConfigManager
+from ..voice import is_admin, parse_intent, make_voice_torch
 from ..stt import get_engine
 import base64
+from ..models import CampfireConfig, Torch
 
 
 class WebSocketManager:
@@ -118,6 +126,443 @@ current_valley: Optional[Valley] = None
 visualizer: Optional[ValleyVisualizer] = None
 current_state: Optional[VisualizationState] = None
 auditor_dialog: Dict[str, Dict] = {"active": False, "fields": {}, "awaiting": []}
+dock_enable_task: Optional[asyncio.Task] = None
+dock_enable_state: Dict[str, Any] = {"status": "idle", "detail": None, "updated_at": None}
+campfire_parent: Dict[str, str] = {}
+
+
+def _get_config_dir() -> Path:
+    return Path(os.getenv("CONFIG_DIR", "/app/data/configs"))
+
+
+def _get_embeddings_dir() -> Path:
+    return Path(os.getenv("EMBEDDINGS_DIR", "/app/data/embeddings"))
+
+
+def _get_logs_dir() -> Path:
+    return Path(os.getenv("LOGS_DIR", "/app/data/logs"))
+
+
+def _log_path_for(campfire_name: str) -> Path:
+    log_dir = _get_logs_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"{_slugify(campfire_name)}.jsonl"
+
+
+def _append_log(campfire_name: str, role: str, text: str) -> None:
+    entry = {
+        "ts": datetime.utcnow().isoformat(),
+        "campfire": campfire_name,
+        "role": role,
+        "text": text,
+    }
+    path = _log_path_for(campfire_name)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _read_logs(campfire_name: str, limit: int = 200) -> List[dict]:
+    path = _log_path_for(campfire_name)
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        tail = lines[-limit:] if limit > 0 else lines
+        out: List[dict] = []
+        for line in tail:
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    out.append(obj)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def _write_logs(campfire_name: str, entries: List[dict]) -> None:
+    path = _log_path_for(campfire_name)
+    with path.open("w", encoding="utf-8") as f:
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
+
+def _slugify(text: str) -> str:
+    t = re.sub(r"[^a-zA-Z0-9_\-]+", "_", text.strip())
+    return t.strip("_") or "campfire"
+
+
+def _hash_embed(texts: List[str], dims: int = 384) -> List[List[float]]:
+    vectors: List[List[float]] = []
+    for t in texts:
+        v = [0.0] * dims
+        for token in re.findall(r"[a-zA-Z0-9']+", (t or "").lower()):
+            idx = (hash(token) & 0x7FFFFFFF) % dims
+            v[idx] += 1.0
+        norm = math.sqrt(sum(x * x for x in v)) or 1.0
+        vectors.append([x / norm for x in v])
+    return vectors
+
+
+def _embed_texts(texts: List[str]) -> List[List[float]]:
+    impl = (os.getenv("BELIEFS_EMBEDDING_IMPL") or "hash").strip().lower()
+    if impl != "st":
+        return _hash_embed(texts)
+    try:
+        from sentence_transformers import SentenceTransformer
+        model_name = os.getenv("BELIEFS_EMBED_MODEL", "all-MiniLM-L6-v2")
+        model = SentenceTransformer(model_name)
+        emb = model.encode(texts, normalize_embeddings=True)
+        return [row.tolist() for row in emb]
+    except Exception:
+        return _hash_embed(texts)
+
+
+def _get_beliefs_collection():
+    import chromadb
+    embed_dir = _get_embeddings_dir()
+    embed_dir.mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(path=str(embed_dir / "chroma"))
+    return client.get_or_create_collection(name="campfirevalley_beliefs")
+
+
+def _query_beliefs(campfire_name: str, query: str, k: int = 5) -> List[str]:
+    collection = _get_beliefs_collection()
+    qemb = _embed_texts([query])[0]
+    result = collection.query(
+        query_embeddings=[qemb],
+        n_results=k,
+        where={"campfire": campfire_name},
+        include=["documents"]
+    )
+    docs = (result or {}).get("documents") or []
+    if docs and isinstance(docs[0], list):
+        return [d for d in docs[0] if isinstance(d, str)]
+    return []
+
+
+def _extract_beliefs(campfire_name: str, campfire_config: Optional[CampfireConfig], messages: List[dict]) -> List[str]:
+    beliefs: List[str] = []
+    if campfire_config:
+        sys_prompt = (campfire_config.config or {}).get("prompts", {}).get("system") if isinstance(campfire_config.config, dict) else ""
+        sys_prompt = sys_prompt or campfire_config.prompts.get("system") if isinstance(campfire_config.prompts, dict) else ""
+        if sys_prompt:
+            beliefs.append(f"Role: {sys_prompt.strip()[:240]}")
+        persona = (campfire_config.config or {}).get("persona") if isinstance(campfire_config.config, dict) else None
+        if isinstance(persona, dict):
+            if persona.get("persona"):
+                beliefs.append(f"Persona: {str(persona.get('persona')).strip()[:200]}")
+            if persona.get("name"):
+                beliefs.append(f"Name: {str(persona.get('name')).strip()[:120]}")
+    beliefs.append(f"Campfire name: {campfire_name}")
+
+    for m in messages[-60:]:
+        role = (m.get("role") or "").lower()
+        text = (m.get("text") or "").strip()
+        if not text:
+            continue
+        if role == "user":
+            pref = re.search(r"\b(i\s+prefer|please\s+be|keep\s+it|always|never)\b(.+)", text, re.IGNORECASE)
+            if pref:
+                beliefs.append(f"User preference: {pref.group(0).strip()[:220]}")
+            if "my name is" in text.lower():
+                beliefs.append(f"User identity: {text.strip()[:180]}")
+        if role in {"system", "assistant"}:
+            if "you are" in text.lower() or "rules" in text.lower():
+                beliefs.append(f"Instruction: {text.strip()[:220]}")
+
+    deduped: List[str] = []
+    seen = set()
+    for b in beliefs:
+        k = b.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(b)
+    return deduped[:40]
+
+
+def _default_rag_documents(campfire_name: str, persona: Optional[str] = None) -> List[str]:
+    p = (persona or "").strip()
+    head = f"Campfire: {campfire_name}"
+    if p:
+        head += f"\nPersona: {p}"
+    return [
+        head
+        + "\n\nUse this as your working context:\n"
+          "- Ask 1-2 clarifying questions when requirements are ambiguous.\n"
+          "- Prefer concrete, step-by-step answers.\n"
+          "- When you make an assumption, state it plainly.\n"
+          "- If the user asks for changes, propose the minimal safe change that satisfies the request.\n"
+    ]
+
+
+def _is_auditor_target(target: Any) -> bool:
+    if not isinstance(target, str):
+        return False
+    t = target.strip().lower()
+    return t == "auditor" or t.endswith(" auditor")
+
+
+def _parent_from_auditor_name(auditor_name: str) -> Optional[str]:
+    if not isinstance(auditor_name, str):
+        return None
+    t = auditor_name.strip()
+    if not t.lower().endswith(" auditor"):
+        return None
+    return t[: -len(" Auditor")].strip() or None
+
+
+def _parse_remove_camper_command(text: str) -> Optional[str]:
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip()
+    low = t.lower()
+    if not (
+        low.startswith("remove camper") or low.startswith("remove a camper")
+        or low.startswith("delete camper") or low.startswith("delete a camper")
+    ):
+        return None
+    m = re.search(r"(?:remove|delete)\s+(?:a\s+)?camper\s+(.+)$", t, re.IGNORECASE)
+    if m:
+        name = m.group(1).strip()
+        return name if name else None
+    return ""
+
+
+def _parse_rename_camper_command(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip()
+    low = t.lower()
+    if not (
+        low.startswith("rename camper") or low.startswith("rename a camper")
+        or low.startswith("rename campa") or low.startswith("rename a campa")
+    ):
+        return None
+    rest = t.split(" ", 1)[1] if " " in t else ""
+    rest = rest.replace("camper", "", 1).replace("campa", "", 1).strip()
+    if not rest:
+        return {"old": "", "new": ""}
+    m = re.match(r"^(?P<old>\"[^\"]+\"|'[^']+'|.+?)\s*(?:to|as|->)\s*(?P<new>\"[^\"]+\"|'[^']+'|.+)$", rest, re.IGNORECASE)
+    if m:
+        old = (m.group("old") or "").strip().strip("\"'").strip()
+        new = (m.group("new") or "").strip().strip("\"'").strip()
+        return {"old": old, "new": new}
+    old = rest.strip().strip("\"'").strip()
+    return {"old": old, "new": ""}
+
+
+def _rename_file_if_exists(src: Path, dst: Path) -> None:
+    try:
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                return
+            src.rename(dst)
+    except Exception:
+        pass
+
+
+def _rename_campfire_artifacts(old_name: str, new_name: str) -> None:
+    if not old_name or not new_name:
+        return
+    _rename_file_if_exists(_log_path_for(old_name), _log_path_for(new_name))
+    cfg_dir = _get_config_dir()
+    _rename_file_if_exists(
+        cfg_dir / f"camper_{_slugify(old_name)}_beliefs.yaml",
+        cfg_dir / f"camper_{_slugify(new_name)}_beliefs.yaml",
+    )
+    _rename_file_if_exists(
+        cfg_dir / f"campfire_{_slugify(old_name)}.yaml",
+        cfg_dir / f"campfire_{_slugify(new_name)}.yaml",
+    )
+
+
+def _parse_set_schedule_command(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip()
+    low = t.lower()
+    if not low.startswith("set schedule"):
+        return None
+    rest = t[len("set schedule"):].strip()
+    m = re.match(r"^(?P<num>\d+)\s*(?P<unit>s|sec|secs|second|seconds|m|min|mins|minute|minutes)?\s*(?P<input>.*)$", rest, re.IGNORECASE)
+    if not m:
+        return {}
+    n = int(m.group("num"))
+    unit = (m.group("unit") or "s").lower()
+    if unit.startswith("m"):
+        n = n * 60
+    input_text = (m.group("input") or "").strip()
+    return {"interval_seconds": n, "input": input_text}
+
+
+def _campers_for_parent(parent: str) -> List[str]:
+    if not current_valley or not parent:
+        return []
+    out: List[str] = []
+    for name, p in list(campfire_parent.items()):
+        if p != parent:
+            continue
+        if name not in current_valley.campfires:
+            continue
+        if _is_auditor_target(name):
+            continue
+        out.append(name)
+    return sorted(out)
+
+
+def _cleanup_campfire_artifacts(campfire_name: str) -> None:
+    if not campfire_name:
+        return
+    try:
+        p = _log_path_for(campfire_name)
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+    try:
+        cfg_dir = _get_config_dir()
+        belief_path = cfg_dir / f"camper_{_slugify(campfire_name)}_beliefs.yaml"
+        if belief_path.exists():
+            belief_path.unlink()
+    except Exception:
+        pass
+    try:
+        collection = _get_beliefs_collection()
+        collection.delete(where={"campfire": campfire_name})
+    except Exception:
+        pass
+
+
+def _move_beliefs_embeddings(old_name: str, new_name: str) -> None:
+    if not old_name or not new_name:
+        return
+    try:
+        collection = _get_beliefs_collection()
+        got = collection.get(where={"campfire": old_name}, include=["documents", "metadatas"])
+        ids = (got or {}).get("ids") or []
+        docs = (got or {}).get("documents") or []
+        metas = (got or {}).get("metadatas") or []
+        if not ids:
+            return
+        try:
+            collection.delete(ids=ids)
+        except Exception:
+            pass
+        new_docs = [d for d in docs if isinstance(d, str)]
+        if not new_docs:
+            return
+        new_metas = []
+        for m in metas:
+            mm = m if isinstance(m, dict) else {}
+            mm = dict(mm)
+            mm["campfire"] = new_name
+            new_metas.append(mm)
+        while len(new_metas) < len(new_docs):
+            new_metas.append({"campfire": new_name})
+        emb = _embed_texts(new_docs)
+        collection.add(
+            ids=[f"{new_name}:{i}:{uuid.uuid4().hex}" for i in range(len(new_docs))],
+            documents=new_docs,
+            embeddings=emb,
+            metadatas=new_metas[: len(new_docs)],
+        )
+    except Exception:
+        return
+
+
+def _auditor_orchestrator_instruction() -> str:
+    return (
+        "You are the Campfire Auditor and Orchestrator.\n"
+        "You do not solve the user's domain problem.\n"
+        "Your job is ONLY to: (1) decide which campers should exist, (2) define them, "
+        "(3) propose an ordered task plan assigning tasks to campers, and (4) briefly explain what will run next.\n"
+        "Return ONLY valid JSON with keys:\n"
+        "- campers_to_create: array of {name, persona, model, system_prompt, rag_template}\n"
+        "- task_plan: array of {camper, task}\n"
+        "- message_to_user: string\n"
+        "Do not include any extra text outside the JSON."
+    )
+
+
+def _extract_first_json_object(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+    s = text.strip()
+    try:
+        parsed = json.loads(s)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    start = s.find("{")
+    end = s.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    candidate = s[start:end + 1]
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _default_llm_provider() -> str:
+    provider = (os.getenv("LLM_PROVIDER") or "").strip().lower()
+    if provider in {"ollama", "openrouter"}:
+        return provider
+    return "ollama" if not os.getenv("OPENROUTER_API_KEY") else "openrouter"
+
+
+def _coerce_model(provider: str, model: str) -> str:
+    m = (model or "").strip()
+    if m:
+        return m
+    return "gemma3:4b" if provider == "ollama" else "gpt-4o-mini"
+
+
+def _pick_provider_and_model(requested_model: Optional[str]) -> tuple[str, str]:
+    requested = (requested_model or "").strip()
+    if not requested:
+        p = _default_llm_provider()
+        return p, _coerce_model(p, "")
+    lower = requested.lower()
+    if ("gpt" in lower or "claude" in lower or "openai" in lower) and os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter", requested
+    if "gemma" in lower or "llama" in lower or "mistral" in lower:
+        return "ollama", requested
+    p = _default_llm_provider()
+    return p, _coerce_model(p, requested if p == "openrouter" else "gemma3:4b")
+
+
+def _parse_add_camper_command(text: str) -> Optional[str]:
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip()
+    low = t.lower()
+    if not (
+        low.startswith("add camper") or low.startswith("add a camper")
+        or low.startswith("create camper") or low.startswith("create a camper")
+        or low.startswith("add camera") or low.startswith("add a camera")
+        or low.startswith("create camera") or low.startswith("create a camera")
+    ):
+        return None
+    m = re.search(r"(?:named|called)\s+(\"[^\"]+\"|'[^']+'|.+)$", t, re.IGNORECASE)
+    if m:
+        name = m.group(1).strip().strip("\"'").strip()
+        return name if name else None
+    m2 = re.search(r"(?:add|create)\s+(?:a\s+)?(?:camper|camera)\s+(\"[^\"]+\"|'[^']+'|.+)$", t, re.IGNORECASE)
+    if m2:
+        name = m2.group(1).strip().strip("\"'").strip()
+        return name if name else None
+    m3 = re.match(r"^(?:add|create)\s+(?:a\s+)?(?:camper|camera)\s*:\s*(.+)$", t, re.IGNORECASE)
+    if m3:
+        name = (m3.group(1) or "").strip().strip("\"'").strip()
+        return name if name else None
+    return ""
 
 
 def set_valley(valley: Valley):
@@ -232,6 +677,185 @@ async def get_valley_status():
             "campfires": 0,
             "active_connections": len(manager.active_connections)
         }
+
+
+@app.get("/api/mcp/status")
+async def get_mcp_status():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    broker = getattr(current_valley, "mcp_broker", None)
+    connected = bool(broker and getattr(broker, "is_connected", None) and broker.is_connected())
+    return {
+        "status": "ok",
+        "connected": connected,
+        "broker": broker.__class__.__name__ if broker else None,
+        "connection_string": getattr(current_valley, "mcp_broker_url", None),
+    }
+
+
+@app.get("/api/mcp/stats")
+async def get_mcp_stats():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    broker = getattr(current_valley, "mcp_broker", None)
+    if not broker or not getattr(broker, "is_connected", None) or not broker.is_connected():
+        return {"status": "ok", "connected": False, "stats": None}
+    subs = list(getattr(broker, "_subscriptions", {}).keys()) if hasattr(broker, "_subscriptions") else []
+    if getattr(broker, "get_message_stats", None):
+        return {"status": "ok", "connected": True, "stats": await broker.get_message_stats(), "subscriptions": subs}
+    return {"status": "ok", "connected": True, "stats": None, "subscriptions": subs}
+
+
+@app.get("/api/dock/status")
+async def get_dock_status():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    dock = getattr(current_valley, "dock", None)
+    if not dock:
+        return {"status": "ok", "running": False, "mode": None, "known_valleys": 0}
+    return {
+        "status": "ok",
+        "running": bool(getattr(dock, "is_running", None) and dock.is_running()),
+        "mode": getattr(dock, "dock_mode", None).value if getattr(dock, "dock_mode", None) else None,
+        "known_valleys": len(getattr(dock, "get_known_valleys")() or {}) if getattr(dock, "get_known_valleys", None) else 0,
+        "routing_cache": getattr(dock, "get_routing_cache")() if getattr(dock, "get_routing_cache", None) else {},
+    }
+
+
+@app.get("/api/dock/valleys")
+async def get_dock_valleys():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    dock = getattr(current_valley, "dock", None)
+    if not dock or not getattr(dock, "get_known_valleys", None):
+        return {"status": "ok", "valleys": []}
+    known = dock.get_known_valleys() or {}
+    valleys = []
+    for name, membership in known.items():
+        md = getattr(membership, "metadata", None)
+        valleys.append({
+            "name": name,
+            "trust_level": getattr(membership, "trust_level", None).value if getattr(membership, "trust_level", None) else None,
+            "last_seen": getattr(membership, "last_seen", None).isoformat() if getattr(membership, "last_seen", None) else None,
+            "capabilities": getattr(membership, "capabilities", None) or [],
+            "exposed_campfires": (getattr(md, "get", None) and md.get("exposed_campfires")) or (md.get("exposed_campfires") if isinstance(md, dict) else []) or [],
+        })
+    valleys.sort(key=lambda v: v["name"])
+    return {"status": "ok", "valleys": valleys}
+
+
+@app.post("/api/dock/mode")
+async def set_dock_mode(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    mode = (payload.get("mode") or "").strip().lower()
+    if mode not in {"private", "partial", "public"}:
+        raise HTTPException(status_code=400, detail="Invalid mode")
+
+    current_valley.config.env["dock_mode"] = mode
+
+    broker = getattr(current_valley, "mcp_broker", None)
+    if not broker or not getattr(broker, "is_connected", None) or not broker.is_connected():
+        return {"status": "ok", "mode": mode, "running": False}
+
+    dock = getattr(current_valley, "dock", None)
+    if dock and getattr(dock, "is_running", None) and dock.is_running():
+        try:
+            await dock.stop_gateway()
+        except Exception:
+            pass
+
+    from ..dock import Dock
+    current_valley.dock = Dock(
+        valley=current_valley,
+        mcp_broker=broker,
+        party_box=getattr(current_valley, "party_box", None),
+        federation_manager=getattr(current_valley, "federation_manager", None),
+        vali_coordinator=getattr(current_valley, "vali_coordinator", None),
+    )
+    await current_valley.dock.start_gateway()
+    return {"status": "ok", "mode": mode, "running": True}
+
+
+@app.post("/api/dock/broadcast")
+async def broadcast_dock_discovery():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    dock = getattr(current_valley, "dock", None)
+    if not dock or not getattr(dock, "is_running", None) or not dock.is_running():
+        raise HTTPException(status_code=400, detail="Dock not running")
+    await dock.broadcast_discovery()
+    return {"status": "ok"}
+
+
+@app.post("/api/dock/enable")
+async def enable_dock(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    redis_url = (payload.get("redis_url") or os.getenv("REDIS_URL") or "redis://redis:6379").strip()
+    if not redis_url:
+        raise HTTPException(status_code=400, detail="Missing redis_url")
+    global dock_enable_task, dock_enable_state
+
+    if getattr(current_valley, "mcp_broker", None) and current_valley.mcp_broker.is_connected() and getattr(current_valley, "dock", None) and current_valley.dock.is_running():
+        return {"status": "ok", "enabled": True, "state": dock_enable_state}
+
+    if dock_enable_task and not dock_enable_task.done():
+        return {"status": "ok", "enabled": False, "state": dock_enable_state}
+
+    dock_enable_state = {"status": "starting", "detail": None, "updated_at": datetime.utcnow().isoformat()}
+
+    async def _do_enable():
+        global dock_enable_state
+        try:
+            from ..mcp import RedisMCPBroker
+            broker = getattr(current_valley, "mcp_broker", None)
+            if not broker:
+                broker = RedisMCPBroker(redis_url, valley_name=current_valley.name)
+                current_valley.mcp_broker = broker
+                current_valley.mcp_broker_url = redis_url
+
+            dock_enable_state = {"status": "connecting", "detail": None, "updated_at": datetime.utcnow().isoformat()}
+            ok = await asyncio.wait_for(broker.connect(), timeout=4)
+            if not ok or not broker.is_connected():
+                raise RuntimeError("MCP connect failed")
+
+            try:
+                from ..vali import VALICoordinator
+                dock_enable_state = {"status": "starting_vali", "detail": None, "updated_at": datetime.utcnow().isoformat()}
+                current_valley.vali_coordinator = VALICoordinator(
+                    mcp_broker=broker,
+                    federation_manager=getattr(current_valley, "federation_manager", None),
+                    valley_name=current_valley.name
+                )
+                await asyncio.wait_for(current_valley.vali_coordinator.start(), timeout=4)
+            except Exception:
+                current_valley.vali_coordinator = None
+
+            from ..dock import Dock
+            dock_enable_state = {"status": "starting_dock", "detail": None, "updated_at": datetime.utcnow().isoformat()}
+            current_valley.dock = Dock(
+                valley=current_valley,
+                mcp_broker=broker,
+                party_box=getattr(current_valley, "party_box", None),
+                federation_manager=getattr(current_valley, "federation_manager", None),
+                vali_coordinator=getattr(current_valley, "vali_coordinator", None)
+            )
+            await asyncio.wait_for(current_valley.dock.start_gateway(), timeout=4)
+
+            dock_enable_state = {"status": "enabled", "detail": None, "updated_at": datetime.utcnow().isoformat()}
+        except Exception as e:
+            current_valley.dock = None
+            dock_enable_state = {"status": "error", "detail": str(e), "updated_at": datetime.utcnow().isoformat()}
+
+    dock_enable_task = asyncio.create_task(_do_enable())
+    return {"status": "ok", "enabled": False, "state": dock_enable_state}
+
+
+@app.get("/api/dock/enable/status")
+async def get_dock_enable_status():
+    running = bool(dock_enable_task and not dock_enable_task.done())
+    return {"status": "ok", "running": running, "state": dock_enable_state}
     
 @app.get("/api/visualization/state")
 async def get_visualization_state():
@@ -285,10 +909,69 @@ async def get_campfires():
             "id": campfire_name,
             "type": cf.__class__.__name__,
             "running": getattr(cf, '_running', False),
-            "camper_count": len(getattr(cf, 'campers', []))
+            "camper_count": len(getattr(cf, 'campers', [])),
+            "parent": campfire_parent.get(campfire_name),
         })
     
     return campfires
+
+
+@app.get("/api/campfire/tools")
+async def get_campfire_tools(campfire: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    cf = current_valley.campfires.get(campfire)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    tools = {}
+    if isinstance(cfg, CampfireConfig):
+        conf = cfg.config or {}
+        tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+    elif isinstance(cfg, dict):
+        conf = cfg.get("config") or {}
+        tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+    persisted = {}
+    path = _get_config_dir() / f"campfire_{_slugify(campfire)}.yaml"
+    if path.exists():
+        try:
+            persisted_cfg = ConfigManager.load_campfire_config(str(path))
+            persisted = ((persisted_cfg.config or {}).get("tools") or {}).get("zeitgeist") or {}
+        except Exception:
+            persisted = {}
+    return {"status": "ok", "campfire": campfire, "tools": tools, "persisted": persisted}
+
+
+@app.post("/api/campfire/tools")
+async def set_campfire_tools(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    campfire = (payload.get("campfire") or "").strip()
+    zeitgeist = payload.get("zeitgeist") or {}
+    if not campfire:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    cf = current_valley.campfires.get(campfire)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    if isinstance(cfg, CampfireConfig):
+        cfg.config = cfg.config or {}
+        cfg.config["tools"] = cfg.config.get("tools") or {}
+        cfg.config["tools"]["zeitgeist"] = zeitgeist
+    elif isinstance(cfg, dict):
+        cfg.setdefault("config", {})
+        cfg["config"].setdefault("tools", {})
+        cfg["config"]["tools"]["zeitgeist"] = zeitgeist
+    path = _get_config_dir() / f"campfire_{_slugify(campfire)}.yaml"
+    try:
+        if isinstance(cfg, CampfireConfig):
+            ConfigManager.save_campfire_config(cfg, str(path))
+        else:
+            conf = CampfireConfig(name=campfire, type=cfg.get("type") or "LLMCampfire", config=cfg.get("config") or {})
+            ConfigManager.save_campfire_config(conf, str(path))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist tools: {e}")
+    return {"status": "ok", "campfire": campfire, "tools": zeitgeist}
 
 
 @app.post("/api/voice/ingest")
@@ -318,11 +1001,697 @@ async def voice_ingest(payload: dict = Body(...)):
     intent = parse_intent(text)
     target = campfire or intent.get("campfire")
     content = intent.get("content") or text
-    if "auditor" in (text or "").lower() or (target and target.lower() == "auditor"):
-        resp = await _handle_auditor_conversation(text)
-        return {"status": "ok", "campfire": target or "Auditor", "response": {"text": resp}}
-    result = await current_valley.send_voice_text(target, content, admin)
+    if not target:
+        raise HTTPException(status_code=400, detail="Missing campfire target")
+    _append_log(target or "Unknown", "user", content)
+    if isinstance(target, str) and target.startswith("valley:"):
+        dock = getattr(current_valley, "dock", None)
+        broker = getattr(current_valley, "mcp_broker", None)
+        if not dock or not getattr(dock, "is_running", None) or not dock.is_running():
+            raise HTTPException(status_code=400, detail="Dock not running")
+        if not broker or not getattr(broker, "is_connected", None) or not broker.is_connected():
+            raise HTTPException(status_code=400, detail="MCP broker not connected")
+
+        reply_channel = f"reply:{current_valley.name}:{uuid.uuid4().hex}"
+        future = asyncio.get_running_loop().create_future()
+
+        async def _reply_cb(_channel: str, msg: dict):
+            if not future.done():
+                future.set_result(msg)
+
+        await broker.subscribe(reply_channel, _reply_cb)
+        try:
+            torch_dict = make_voice_torch(current_valley.name, target, content, admin)
+            torch_dict["metadata"] = {"reply_channel": reply_channel}
+            torch = Torch(**torch_dict)
+            ok = await dock.send_torch(target, torch)
+            if not ok:
+                raise HTTPException(status_code=502, detail="Failed to send torch to remote valley")
+            try:
+                msg = await asyncio.wait_for(future, timeout=20)
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Timed out waiting for remote response")
+        finally:
+            try:
+                await broker.unsubscribe(reply_channel)
+            except Exception:
+                pass
+
+        response_text = None
+        if isinstance(msg, dict):
+            response_text = msg.get("llm_response") or msg.get("text")
+        if response_text:
+            _append_log(target, "assistant", str(response_text))
+        return {"status": "ok", "campfire": target, "response": msg}
+    if _is_auditor_target(target):
+        parent = _parent_from_auditor_name(target)
+        cmd = (content or "").strip()
+        low = cmd.lower()
+        if parent and low.startswith("show workflow"):
+            wf = None
+            if getattr(current_valley, "get_workflow", None):
+                wf = current_valley.get_workflow(parent)
+            steps = []
+            if isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                steps = wf.get("steps")
+            if not steps:
+                msg = f"No workflow set for '{parent}'."
+            else:
+                msg = f"Workflow for '{parent}': " + " -> ".join([str(s.get("camper")) for s in steps if isinstance(s, dict) and s.get("camper")])
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "workflow": wf}}
+        if parent and low.startswith("clear workflow"):
+            ok = False
+            if getattr(current_valley, "clear_workflow", None):
+                ok = current_valley.clear_workflow(parent)
+            msg = f"Cleared workflow for '{parent}'." if ok else f"Failed to clear workflow for '{parent}'."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": ok}}
+        if parent and low.startswith("set workflow"):
+            rest = cmd[len("set workflow"):].strip()
+            parsed = None
+            if rest:
+                try:
+                    parsed = json.loads(rest)
+                except Exception:
+                    parsed = None
+            steps = []
+            if isinstance(parsed, list):
+                steps = parsed
+            elif isinstance(parsed, dict) and isinstance(parsed.get("steps"), list):
+                steps = parsed.get("steps")
+            ok = False
+            if getattr(current_valley, "set_workflow", None):
+                ok = current_valley.set_workflow(parent, steps)
+            wf = current_valley.get_workflow(parent) if ok and getattr(current_valley, "get_workflow", None) else None
+            msg = f"Workflow updated for '{parent}'." if ok else f"Failed to update workflow for '{parent}'."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": ok, "workflow": wf}}
+
+        if parent and low.startswith("show schedule"):
+            schedule = current_valley.get_schedule(parent) if getattr(current_valley, "get_schedule", None) else None
+            msg = f"Schedule for '{parent}': disabled."
+            if isinstance(schedule, dict) and schedule.get("enabled"):
+                msg = f"Schedule for '{parent}': every {schedule.get('interval_seconds')}s."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "schedule": schedule}}
+        if parent and low.startswith("clear schedule"):
+            ok = current_valley.clear_schedule(parent) if getattr(current_valley, "clear_schedule", None) else False
+            msg = f"Cleared schedule for '{parent}'." if ok else f"Failed to clear schedule for '{parent}'."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": ok}}
+        if parent and low.startswith("set schedule"):
+            parsed = _parse_set_schedule_command(cmd) or {}
+            interval = parsed.get("interval_seconds")
+            if not interval:
+                msg = "Usage: set schedule <seconds|minutes> [optional input text]"
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg}}
+            ok = current_valley.set_schedule(parent, interval, parsed.get("input")) if getattr(current_valley, "set_schedule", None) else False
+            schedule = current_valley.get_schedule(parent) if ok and getattr(current_valley, "get_schedule", None) else None
+            msg = f"Schedule enabled for '{parent}' every {interval}s." if ok else f"Failed to set schedule for '{parent}'."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": ok, "schedule": schedule}}
+
+        requested_rename = _parse_rename_camper_command(content)
+        if requested_rename is not None and parent:
+            options = _campers_for_parent(parent)
+            old_name = (requested_rename.get("old") or "").strip()
+            new_name = (requested_rename.get("new") or "").strip()
+            if not old_name:
+                msg = f"Which camper should I rename in '{parent}'?"
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "options": options, "options_action": "rename"}}
+            if old_name not in options:
+                msg = f"Camper '{old_name}' not found for '{parent}'."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "options": options, "options_action": "rename"}}
+            if not new_name:
+                msg = f"What should '{old_name}' be renamed to?"
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "rename_from": old_name}}
+            if new_name in current_valley.campfires:
+                msg = f"Name '{new_name}' already exists. Pick a different name."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "rename_from": old_name}}
+
+            old_cf = current_valley.campfires.get(old_name)
+            old_cfg = getattr(old_cf, "config", None)
+            new_cfg = None
+            if isinstance(old_cfg, CampfireConfig):
+                new_cfg = CampfireConfig(
+                    name=new_name,
+                    type=old_cfg.type,
+                    config=copy.deepcopy(old_cfg.config) if isinstance(old_cfg.config, dict) else (old_cfg.config or {}),
+                )
+            else:
+                new_cfg = CampfireConfig(
+                    name=new_name,
+                    type="LLMCampfire",
+                    config={
+                        "llm": {"provider": "ollama", "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"), "model": "gemma3:4b"},
+                        "prompts": {"system": f"You are {new_name}. Respond concisely and helpfully."},
+                        "persona": {"name": new_name, "persona": "generic", "model": "gemma3:4b"},
+                        "rag": {"documents": _default_rag_documents(new_name, "generic")},
+                    },
+                )
+            ok = await current_valley.provision_campfire(new_cfg)
+            if not ok:
+                msg = f"Failed to rename '{old_name}' to '{new_name}'."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg}}
+
+            _rename_campfire_artifacts(old_name, new_name)
+            _move_beliefs_embeddings(old_name, new_name)
+
+            if old_name in campfire_parent:
+                campfire_parent[new_name] = campfire_parent.pop(old_name)
+
+            wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
+            if isinstance(wf, dict) and isinstance(wf.get("steps"), list) and getattr(current_valley, "set_workflow", None):
+                updated_steps = []
+                for s in wf.get("steps") or []:
+                    if not isinstance(s, dict):
+                        continue
+                    camper = s.get("camper")
+                    if camper == old_name:
+                        ss = dict(s)
+                        ss["camper"] = new_name
+                        updated_steps.append(ss)
+                    else:
+                        updated_steps.append(s)
+                current_valley.set_workflow(parent, updated_steps)
+
+            old_auditor = f"{old_name} Auditor"
+            try:
+                await current_valley.deprovision_campfire(old_name)
+            except Exception:
+                pass
+            try:
+                if old_auditor in current_valley.campfires:
+                    await current_valley.deprovision_campfire(old_auditor)
+            except Exception:
+                pass
+            _cleanup_campfire_artifacts(old_auditor)
+
+            msg = f"Renamed camper '{old_name}' to '{new_name}'."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "created": [new_name], "removed": [old_name], "renamed": {"from": old_name, "to": new_name}, "parent": parent}}
+
+        requested_remove = _parse_remove_camper_command(content)
+        if requested_remove is not None and parent:
+            name = requested_remove.strip() if isinstance(requested_remove, str) else ""
+            options = _campers_for_parent(parent)
+            if not name:
+                msg = f"Which camper should I remove from '{parent}'?"
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "options": options, "options_action": "remove"}}
+            if name not in options:
+                msg = f"Camper '{name}' not found for '{parent}'."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "options": options, "options_action": "remove"}}
+
+            auditor_name = f"{name} Auditor"
+            removed = []
+            try:
+                await current_valley.deprovision_campfire(name)
+                removed.append(name)
+            except Exception:
+                pass
+            try:
+                if auditor_name in current_valley.campfires:
+                    await current_valley.deprovision_campfire(auditor_name)
+                    removed.append(auditor_name)
+            except Exception:
+                pass
+
+            try:
+                campfire_parent.pop(name, None)
+            except Exception:
+                pass
+
+            _cleanup_campfire_artifacts(name)
+            _cleanup_campfire_artifacts(auditor_name)
+
+            msg = f"Removed camper '{name}' from '{parent}'."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "removed": [name], "parent": parent}}
+
+        requested_name = _parse_add_camper_command(content)
+        if requested_name is not None:
+            name = requested_name.strip() if isinstance(requested_name, str) else ""
+            if not name:
+                name = f"Camper-{datetime.utcnow().strftime('%H%M%S')}"
+            if name in current_valley.campfires:
+                msg = f"Camper '{name}' already exists."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg}}
+            provider, model = _pick_provider_and_model(None)
+            base_url = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+            cfg = CampfireConfig(
+                name=name,
+                type="LLMCampfire",
+                config={
+                    "llm": {"provider": provider, "base_url": base_url, "model": model},
+                    "prompts": {"system": f"You are {name}. Respond concisely and helpfully."},
+                    "persona": {"name": name, "persona": "generic", "model": model},
+                    "rag": {"documents": _default_rag_documents(name, "generic")},
+                },
+            )
+            ok = await current_valley.provision_campfire(cfg)
+            if ok and parent:
+                campfire_parent[name] = parent
+            msg = f"Created camper '{name}'. Select it to configure via chat/voice."
+            if not ok:
+                msg = f"Failed to create camper '{name}'."
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "created": [name] if ok else [], "parent": parent}}
+
+        if target not in current_valley.campfires:
+            cfg = {
+                "llm": {
+                    "provider": "ollama",
+                    "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
+                    "model": "gemma3:4b",
+                },
+                "prompts": {"system": "You are an Auditor and Orchestrator. You coordinate other campers. You do not solve the user's domain problem."},
+                "persona": {"name": target, "provider": "ollama", "model": "gemma3:4b"},
+                "rag": {"documents": _default_rag_documents(str(target), "orchestrator")},
+            }
+            await current_valley.provision_campfire(CampfireConfig(name=target, type="LLMCampfire", config=cfg))
+
+        combined = f"{_auditor_orchestrator_instruction()}\n\nUser request:\n{content.strip()}"
+        result = await current_valley.send_voice_text(target, combined, admin)
+        response = (result or {}).get("response")
+        response_text = None
+        if isinstance(response, dict):
+            response_text = response.get("llm_response") or response.get("text")
+        elif isinstance(response, str):
+            response_text = response
+        if response_text:
+            _append_log(target, "assistant", str(response_text))
+
+        plan = _extract_first_json_object(str(response_text or ""))
+        if not plan:
+            return result
+
+        campers_to_create = plan.get("campers_to_create") or []
+        task_plan = plan.get("task_plan") or []
+        message_to_user = plan.get("message_to_user") or ""
+        created = []
+        results = []
+
+        if isinstance(campers_to_create, list):
+            for raw in campers_to_create[:8]:
+                if not isinstance(raw, dict):
+                    continue
+                name = (raw.get("name") or "").strip()
+                if not name:
+                    continue
+                if name in current_valley.campfires:
+                    continue
+                persona = raw.get("persona")
+                provider, model = _pick_provider_and_model(raw.get("model"))
+                sys_prompt = (raw.get("system_prompt") or f"You are {name}.").strip()
+                rag_template = raw.get("rag_template")
+                rag_docs = [str(rag_template).strip()] if isinstance(rag_template, str) and rag_template.strip() else _default_rag_documents(name, str(persona) if persona else None)
+                cfg = CampfireConfig(
+                    name=name,
+                    type="LLMCampfire",
+                    config={
+                        "llm": {"provider": provider, "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"), "model": model},
+                        "prompts": {"system": sys_prompt},
+                        "persona": {"name": name, "persona": persona, "model": model},
+                        "rag": {"documents": rag_docs},
+                    },
+                )
+                ok = await current_valley.provision_campfire(cfg)
+                if ok:
+                    created.append(name)
+                    if parent:
+                        campfire_parent[name] = parent
+
+        if isinstance(task_plan, list):
+            for raw in task_plan[:12]:
+                if not isinstance(raw, dict):
+                    continue
+                camper = (raw.get("camper") or "").strip()
+                task = (raw.get("task") or "").strip()
+                if not camper or not task:
+                    continue
+                if camper not in current_valley.campfires:
+                    continue
+                _append_log(camper, "user", task)
+                try:
+                    r = await asyncio.wait_for(current_valley.send_voice_text(camper, task, admin=False), timeout=60)
+                except Exception as e:
+                    results.append({"camper": camper, "ok": False, "error": str(e)})
+                    continue
+                resp = (r or {}).get("response")
+                out = None
+                if isinstance(resp, dict):
+                    out = resp.get("llm_response") or resp.get("text")
+                elif isinstance(resp, str):
+                    out = resp
+                if out:
+                    _append_log(camper, "assistant", str(out))
+                results.append({"camper": camper, "ok": True, "response": resp})
+
+        final_payload = {"text": message_to_user or "Orchestration plan prepared.", "created": created, "results": results, "plan": plan, "parent": parent}
+        _append_log(target, "assistant", str(final_payload.get("text")))
+        return {"status": "ok", "campfire": target, "response": final_payload}
+    try:
+        result = await current_valley.send_voice_text(target, content, admin)
+    except ValueError as e:
+        if target not in current_valley.campfires:
+            cfg = {
+                "llm": {
+                    "provider": "ollama",
+                    "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
+                    "model": "gemma3:4b",
+                },
+                "prompts": {"system": f"You are {target}. Respond concisely and helpfully."},
+                "persona": {"name": target, "provider": "ollama", "model": "gemma3:4b"},
+                "rag": {"documents": _default_rag_documents(str(target), "concise, helpful")},
+            }
+            ok = await current_valley.provision_campfire(CampfireConfig(name=target, type="LLMCampfire", config=cfg))
+            if ok:
+                result = await current_valley.send_voice_text(target, content, admin)
+            else:
+                raise HTTPException(status_code=502, detail=f"Failed to provision campfire '{target}'")
+        else:
+            raise HTTPException(status_code=500, detail=str(e))
+    response = (result or {}).get("response")
+    response_text = None
+    if isinstance(response, dict):
+        response_text = response.get("llm_response") or response.get("text")
+    elif isinstance(response, str):
+        response_text = response
+    if response_text:
+        _append_log(target or "Unknown", "assistant", str(response_text))
     return result
+
+
+@app.post("/api/service/call")
+async def service_call(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    campfire = (payload.get("campfire") or "").strip()
+    text = (payload.get("text") or "").strip()
+    if not campfire or not text:
+        raise HTTPException(status_code=400, detail="Missing campfire or text")
+    sender = (payload.get("sender_valley") or "service").strip() or "service"
+    torch = Torch(
+        claim="service_request",
+        source_campfire="service",
+        channel="service",
+        torch_id=f"service_{uuid.uuid4().hex}",
+        sender_valley=sender,
+        target_address=f"valley:{current_valley.name}/{campfire}",
+        data={"text": text},
+        signature="service_placeholder",
+    )
+    resp = await current_valley.process_torch(torch)
+    if resp is None:
+        return {"status": "ok", "response": None}
+    data = getattr(resp, "data", None)
+    return {"status": "ok", "response": data}
+
+
+@app.get("/api/schedules")
+async def list_schedules():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    schedules = []
+    for name in list(getattr(current_valley, "campfires", {}).keys()):
+        if getattr(current_valley, "get_schedule", None):
+            schedule = current_valley.get_schedule(name)
+        else:
+            schedule = None
+        if schedule:
+            last = getattr(current_valley, "_last_schedule_run", {}).get(name)
+            schedules.append({"campfire": name, "schedule": schedule, "last_run": last})
+    return {"status": "ok", "schedules": schedules}
+
+
+@app.get("/api/logs/{campfire_name}")
+async def get_logs(campfire_name: str, limit: int = 200):
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 2000))
+    return {"status": "ok", "campfire": campfire_name, "entries": _read_logs(campfire_name, limit=limit)}
+
+
+@app.post("/api/campfire/export")
+async def export_campfire(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    campfire_name = (payload.get("campfire") or "").strip()
+    if not campfire_name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    cf = current_valley.campfires.get(campfire_name)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+
+    cfg = getattr(cf, "config", None)
+    cfg_dump = cfg.model_dump(by_alias=True) if isinstance(cfg, CampfireConfig) else None
+    logs = _read_logs(campfire_name, limit=2000)
+
+    cfg_dir = _get_config_dir()
+    belief_file = cfg_dir / f"camper_{_slugify(campfire_name)}_beliefs.yaml"
+    beliefs_block = {}
+    if belief_file.exists():
+        try:
+            beliefs_block = yaml.safe_load(belief_file.read_text(encoding="utf-8")) or {}
+        except Exception:
+            beliefs_block = {}
+
+    bundle = {
+        "version": "1",
+        "exported_at": datetime.utcnow().isoformat(),
+        "campfire": campfire_name,
+        "campfire_config": cfg_dump,
+        "logs": logs,
+        "beliefs": {
+            "beliefs": (beliefs_block.get("beliefs") if isinstance(beliefs_block, dict) else []) or [],
+        },
+    }
+
+    out_yaml = yaml.safe_dump(bundle, sort_keys=False, allow_unicode=True)
+    filename = f"campfire_export_{_slugify(campfire_name)}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.yaml"
+    return {"status": "ok", "filename": filename, "yaml": out_yaml}
+
+
+@app.post("/api/campfire/import")
+async def import_campfire(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    raw = payload.get("yaml")
+    if not raw or not isinstance(raw, str):
+        raise HTTPException(status_code=400, detail="Missing yaml")
+    data = yaml.safe_load(raw) or {}
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid yaml")
+
+    campfire_name = (data.get("campfire") or "").strip()
+    cfg_raw = data.get("campfire_config")
+    logs = data.get("logs") or []
+    beliefs_block = data.get("beliefs") or {}
+
+    if not campfire_name:
+        raise HTTPException(status_code=400, detail="Missing campfire name")
+    if not isinstance(cfg_raw, dict):
+        raise HTTPException(status_code=400, detail="Missing campfire_config")
+
+    if campfire_name in current_valley.campfires:
+        try:
+            await current_valley.campfires[campfire_name].stop()
+        finally:
+            current_valley.campfires.pop(campfire_name, None)
+
+    cfg = CampfireConfig(**cfg_raw)
+    cfg.name = campfire_name
+    ok = await current_valley.provision_campfire(cfg)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Failed to provision campfire")
+
+    if isinstance(logs, list):
+        _write_logs(campfire_name, [e for e in logs if isinstance(e, dict)])
+
+    beliefs_list = []
+    if isinstance(beliefs_block, dict):
+        beliefs_list = beliefs_block.get("beliefs") or []
+    if isinstance(beliefs_list, list):
+        beliefs_list = [b for b in beliefs_list if isinstance(b, str) and b.strip()]
+    if beliefs_list:
+        embeddings = _embed_texts(beliefs_list)
+        collection = _get_beliefs_collection()
+        ids = [f"{_slugify(campfire_name)}_{uuid.uuid4().hex}" for _ in beliefs_list]
+        metadatas = [{"campfire": campfire_name, "created_at": datetime.utcnow().isoformat(), "imported": True} for _ in beliefs_list]
+        collection.add(ids=ids, documents=beliefs_list, embeddings=embeddings, metadatas=metadatas)
+
+        cfg_dir = _get_config_dir()
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        out_name = f"camper_{_slugify(campfire_name)}_beliefs.yaml"
+        out_path = cfg_dir / out_name
+        snapshot = {
+            "version": "1",
+            "saved_at": datetime.utcnow().isoformat(),
+            "campfire": campfire_name,
+            "beliefs": beliefs_list,
+            "belief_ids": ids,
+            "imported": True,
+        }
+        with out_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(snapshot, f, sort_keys=False, allow_unicode=True)
+
+    return {"status": "ok", "campfire": campfire_name}
+
+
+@app.get("/api/valley/snapshots")
+async def list_snapshots():
+    cfg_dir = _get_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    files = sorted([p.name for p in cfg_dir.glob("*.yaml")], reverse=True)
+    return {"status": "ok", "snapshots": files}
+
+
+@app.post("/api/valley/save")
+async def save_valley(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    cfg_dir = _get_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+
+    graph = payload.get("graph") or {}
+    filename = payload.get("filename")
+    if not filename:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"valley_snapshot_{ts}.yaml"
+    if not filename.endswith(".yaml"):
+        filename = f"{filename}.yaml"
+    path = cfg_dir / filename
+
+    campfires = []
+    for _, cf in current_valley.campfires.items():
+        cfg = getattr(cf, "config", None)
+        if isinstance(cfg, CampfireConfig):
+            campfires.append(cfg.model_dump(by_alias=True))
+        elif isinstance(cfg, dict):
+            campfires.append(cfg)
+
+    snapshot = {
+        "version": "1",
+        "saved_at": datetime.utcnow().isoformat(),
+        "valley": {"name": current_valley.name},
+        "campfires": campfires,
+        "graph": graph,
+    }
+
+    with path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(snapshot, f, sort_keys=False, allow_unicode=True)
+
+    return {"status": "ok", "filename": filename}
+
+
+@app.post("/api/valley/load")
+async def load_valley(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    filename = payload.get("filename")
+    if not filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    cfg_dir = _get_config_dir()
+    path = cfg_dir / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    campfire_cfgs = data.get("campfires") or []
+    graph = data.get("graph") or {}
+
+    existing = list(current_valley.campfires.keys())
+    for name in existing:
+        try:
+            cf = current_valley.campfires.get(name)
+            if cf:
+                await cf.stop()
+        finally:
+            current_valley.campfires.pop(name, None)
+
+    restored = []
+    for raw in campfire_cfgs:
+        try:
+            cfg = CampfireConfig(**raw)
+        except Exception:
+            continue
+        ok = await current_valley.provision_campfire(cfg)
+        if ok:
+            restored.append(cfg.name)
+
+    return {"status": "ok", "restored": restored, "graph": graph}
+
+
+@app.post("/api/beliefs/freeze")
+async def freeze_beliefs(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    campfire_name = (payload.get("campfire") or "").strip()
+    if not campfire_name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    messages = payload.get("messages") or []
+    if not isinstance(messages, list):
+        raise HTTPException(status_code=400, detail="Invalid messages")
+
+    cf = current_valley.campfires.get(campfire_name)
+    cfg = getattr(cf, "config", None) if cf else None
+    if not isinstance(cfg, CampfireConfig):
+        cfg = None
+
+    beliefs = _extract_beliefs(campfire_name, cfg, messages)
+    embeddings = _embed_texts(beliefs)
+    collection = _get_beliefs_collection()
+    ids = [f"{_slugify(campfire_name)}_{uuid.uuid4().hex}" for _ in beliefs]
+    metadatas = [{"campfire": campfire_name, "created_at": datetime.utcnow().isoformat()} for _ in beliefs]
+    collection.add(ids=ids, documents=beliefs, embeddings=embeddings, metadatas=metadatas)
+
+    cfg_dir = _get_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    out_name = f"camper_{_slugify(campfire_name)}_beliefs.yaml"
+    out_path = cfg_dir / out_name
+    snapshot = {
+        "version": "1",
+        "saved_at": datetime.utcnow().isoformat(),
+        "campfire": campfire_name,
+        "beliefs": beliefs,
+        "belief_ids": ids,
+    }
+    if cfg:
+        snapshot["campfire_config"] = cfg.model_dump(by_alias=True)
+    with out_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(snapshot, f, sort_keys=False, allow_unicode=True)
+
+    return {"status": "ok", "campfire": campfire_name, "count": len(beliefs), "filename": out_name, "beliefs": beliefs[:10]}
+
+
+@app.post("/api/beliefs/query")
+async def query_beliefs(payload: dict = Body(...)):
+    campfire_name = (payload.get("campfire") or "").strip()
+    query = (payload.get("query") or "").strip()
+    k = payload.get("k") or 5
+    try:
+        k = int(k)
+    except Exception:
+        k = 5
+    if not campfire_name or not query:
+        raise HTTPException(status_code=400, detail="Missing campfire or query")
+    try:
+        beliefs = _query_beliefs(campfire_name, query, k=max(1, min(k, 20)))
+        return {"status": "ok", "campfire": campfire_name, "beliefs": beliefs}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Query failed: {e}")
 
 async def _handle_auditor_conversation(text: str) -> str:
     t = text.strip()
@@ -353,7 +1722,8 @@ async def _handle_auditor_conversation(text: str) -> str:
         cfg = {
             "llm": {"model": f.get("model", "gemma3:4b")},
             "prompts": {"system": f.get("system_prompt") or f"You are {f.get('name')}. Persona: {f.get('persona')}."},
-            "persona": {"name": f.get("name"), "persona": f.get("persona"), "model": f.get("model")}
+            "persona": {"name": f.get("name"), "persona": f.get("persona"), "model": f.get("model")},
+            "rag": {"documents": _default_rag_documents(f.get("name") or "Camper", f.get("persona"))},
         }
         c = CampfireConfig(name=f["name"], type="LLMCampfire", config=cfg)
         ok = await current_valley.provision_campfire(c)
@@ -379,7 +1749,8 @@ async def team_organize(request: dict = Body(...)):
             "prompts": {
                 "system": p.get("system_prompt") or f"You are {name}. Persona: {p.get('persona','generic')}."
             },
-            "persona": p
+            "persona": p,
+            "rag": {"documents": _default_rag_documents(name, p.get("persona"))},
         }
         campfire_cfg = current_valley.__class__.__module__
         from ..models import CampfireConfig
@@ -395,14 +1766,24 @@ async def team_add(request: dict = Body(...)):
         raise HTTPException(status_code=404, detail="No valley available")
     p = request.get("persona") or {}
     name = p.get("name") or request.get("name") or f"Persona-{datetime.now().strftime('%H%M%S')}"
+    rag_docs = None
+    if isinstance(request.get("rag"), dict) and isinstance(request.get("rag").get("documents"), list):
+        rag_docs = [d for d in request["rag"]["documents"] if isinstance(d, str) and d.strip()]
+    if rag_docs is None:
+        rag_template = request.get("rag_template")
+        if isinstance(rag_template, str) and rag_template.strip():
+            rag_docs = [rag_template.strip()]
     cfg = {
         "llm": {
+            "provider": p.get("provider") or "ollama",
+            "base_url": p.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
             "model": p.get("model") or "gemma3:4b"
         },
         "prompts": {
             "system": p.get("system_prompt") or f"You are {name}. Persona: {p.get('persona','generic')}."
         },
-        "persona": p
+        "persona": p,
+        "rag": {"documents": rag_docs or _default_rag_documents(name, p.get("persona"))},
     }
     from ..models import CampfireConfig
     c = CampfireConfig(name=name, type="LLMCampfire", config=cfg)

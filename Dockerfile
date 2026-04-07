@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY CampfireValley/requirements.txt ./requirements.txt
+COPY requirements.txt ./requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -21,13 +21,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install additional dependencies for MCP server
 RUN pip install --no-cache-dir fastapi uvicorn aiohttp websockets pydantic duckduckgo-search redis prometheus-client lz4 httpx
 
-# Optionally install local Campfires source when building with extended context
-ARG USE_LOCAL_CAMPFIRES=false
-COPY Campfires /opt/campfires-src
-RUN if [ "$USE_LOCAL_CAMPFIRES" = "true" ]; then pip install --no-cache-dir /opt/campfires-src; fi
+ARG USE_GIT_CAMPFIRES=true
+RUN if [ "$USE_GIT_CAMPFIRES" = "true" ]; then pip install --no-cache-dir "campfires @ git+https://github.com/mikehibbert/pyCampfires.git@v0.4.3"; fi
 
-# Copy the application code
-COPY CampfireValley /app
+# Copy the application code (entire repo)
+COPY . /app
 
 # Create necessary directories
 RUN mkdir -p /app/logs /app/data /app/reports
@@ -36,14 +34,12 @@ RUN mkdir -p /app/logs /app/data /app/reports
 ENV PYTHONPATH=/app
 ENV CAMPFIRE_VALLEY_ENV=docker
 ENV CAMPFIRE_VALLEY_HOST=0.0.0.0
-ENV CAMPFIRE_VALLEY_PORT=8080
+ENV CAMPFIRE_VALLEY_PORT=8000
 
-# Expose the MCP server port
-EXPOSE 8080
+EXPOSE 8000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:8000/ || exit 1
 
 # Create a non-root user for security
 RUN useradd -m -u 1000 campfire && \

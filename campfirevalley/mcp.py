@@ -205,18 +205,7 @@ class RedisMCPBroker(IMCPBroker):
             return False
             
         try:
-            # Enhance message with federation metadata
-            enhanced_message = {
-                "content": message,
-                "source_valley": self.valley_name,
-                "target_valley": target_valley,
-                "priority": priority,
-                "timestamp": datetime.utcnow().isoformat(),
-                "message_id": f"{self.valley_name}_{int(time.time() * 1000)}"
-            }
-            
-            # Serialize message to JSON
-            serialized_message = json.dumps(enhanced_message)
+            serialized_message = json.dumps(message)
             
             # Handle priority routing
             if priority == "high" and channel in self._priority_queues:
@@ -268,33 +257,37 @@ class RedisMCPBroker(IMCPBroker):
         try:
             while self._connected:
                 try:
-                    # Listen for Redis messages
-                    async for message in self._pubsub.listen():
-                        if message['type'] == 'message':
-                            channel = message['channel']
-                            
-                            try:
-                                # Parse JSON message data
-                                data = json.loads(message['data'])
-                                
-                                # Dispatch to registered callback
-                                if channel in self._subscriptions:
-                                    callback = self._subscriptions[channel]
-                                    # Run callback in background to avoid blocking listener
-                                    asyncio.create_task(callback(channel, data))
-                                    
-                                # Update statistics
-                                self._message_stats["received"] += 1
-                                    
-                            except json.JSONDecodeError as e:
-                                logger.error(f"Failed to decode message from {channel}: {e}")
-                                self._message_stats["errors"] += 1
-                            except Exception as e:
-                                logger.error(f"Error in callback for {channel}: {e}")
-                                self._message_stats["errors"] += 1
+                    message = await self._pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if not message:
+                        await asyncio.sleep(0)
+                        continue
+                    if message.get("type") != "message":
+                        continue
+
+                    channel = message.get("channel")
+                    if isinstance(channel, bytes):
+                        channel = channel.decode("utf-8", errors="ignore")
+                    try:
+                        raw_data = message.get("data")
+                        if isinstance(raw_data, bytes):
+                            raw_data = raw_data.decode("utf-8", errors="ignore")
+                        data = json.loads(raw_data)
+                        if channel in self._subscriptions:
+                            callback = self._subscriptions[channel]
+                            asyncio.create_task(callback(channel, data))
+                        self._message_stats["received"] += 1
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to decode message from {channel}: {e}")
+                        self._message_stats["errors"] += 1
+                    except Exception as e:
+                        logger.error(f"Error in callback for {channel}: {e}")
+                        self._message_stats["errors"] += 1
                                 
                 except Exception as e:
                     if self._connected:  # Only log if we're still supposed to be connected
+                        if "pubsub connection not set" in str(e):
+                            await asyncio.sleep(0.5)
+                            continue
                         logger.error(f"Error in message listener: {e}")
                         self._message_stats["errors"] += 1
                         await asyncio.sleep(1)  # Brief pause before retrying

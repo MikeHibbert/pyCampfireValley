@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CampfireValley Visualization</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260407">
     <script src="/static/js/litegraph.js"></script>
     <script src="/static/js/gamification.js"></script>
     <script src="/static/js/campfire-nodes.js"></script>
-    <script src="/static/js/litegraph-integration.js"></script>
-    <script src="/static/js/metrics.js"></script>
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/litegraph-integration.js?v=20260407"></script>
+    <script src="/static/js/metrics.js?v=20260407"></script>
+    <script src="/static/js/main.js?v=20260407"></script>
 </head>
 <body>
     <div class="container">
@@ -47,16 +47,51 @@
                         <!-- Dynamic node metrics will be populated here -->
                     </div>
                 </div>
+                <div class="metric-group">
+                    <h4>🌐 Dock</h4>
+                    <div id="dockMetrics" class="metrics-list"></div>
+                    <button id="dockEnable" class="btn" style="width:100%; margin-top:8px;">Enable Dock</button>
+                    <select id="dockMode" class="btn" style="width:100%; margin-top:8px;">
+                        <option value="private">Private</option>
+                        <option value="partial">Partial</option>
+                        <option value="public">Public</option>
+                    </select>
+                    <button id="dockBroadcast" class="btn" style="width:100%; margin-top:8px;">Broadcast Discovery</button>
+                    <div id="dockValleys" class="metrics-list"></div>
+                </div>
             </div>
         </div>
         <div class="litegraph-container">
             <div class="litegraph-header">
-                <h2>🏕️ CampfireValley - Node Editor</h2>
+                <h2>🏕️ CampfireValley </h2>
                 <div class="litegraph-controls">
                     <button id="resetLayout" class="btn">🔄 Reset Layout</button>
                     <button id="saveLayout" class="btn">💾 Save Layout</button>
                     <button id="loadLayout" class="btn">📁 Load Layout</button>
+                    <button id="saveValley" class="btn">💾 Save Valley</button>
+                    <button id="loadValley" class="btn">📁 Load Valley</button>
+                    <button id="importCampfire" class="btn">📥 Import Campfire</button>
                 </div>
+            </div>
+            <div id="chatPanel" class="chat-panel hidden">
+                <div class="chat-header">
+                    <div id="chatTitle" class="chat-title"></div>
+                    <button id="chatClose" class="chat-close" type="button">✕</button>
+                </div>
+                <div id="chatMessages" class="chat-messages"></div>
+                <div id="chatLogsPanel" class="chat-logs hidden"></div>
+                <div class="chat-input-row">
+                    <button id="chatMic" class="chat-mic" type="button">🎙️</button>
+                    <input id="chatInput" class="chat-input" type="text" placeholder="Message this node..." autocomplete="off" />
+                    <button id="chatSend" class="chat-send" type="button">Send</button>
+                </div>
+            </div>
+            <div id="chatActionBar" class="chat-action-bar hidden">
+                <button id="chatFreeze" class="chat-freeze" type="button">🔒 Freeze Beliefs</button>
+                <button id="chatLogs" class="chat-freeze" type="button">📜 Logs</button>
+                <button id="chatExport" class="chat-freeze" type="button">⬇ Export</button>
+                <button id="chatSpeak" class="chat-freeze" type="button">🔊 Speak: On</button>
+                <button id="chatTools" class="chat-freeze" type="button">🧰 Tools</button>
             </div>
             <canvas id="litegraphCanvas" class="litegraph-canvas"></canvas>
         </div>

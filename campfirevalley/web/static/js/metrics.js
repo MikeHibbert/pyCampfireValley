@@ -53,6 +53,22 @@ class MetricsDashboard {
             return null;
         }
     }
+
+    async fetchDock() {
+        try {
+            const [mcpRes, dockRes, valleysRes] = await Promise.all([
+                fetch('/api/mcp/status'),
+                fetch('/api/dock/status'),
+                fetch('/api/dock/valleys')
+            ]);
+            const mcp = mcpRes.ok ? await mcpRes.json() : null;
+            const dock = dockRes.ok ? await dockRes.json() : null;
+            const valleys = valleysRes.ok ? await valleysRes.json() : null;
+            return { mcp, dock, valleys };
+        } catch (e) {
+            return { mcp: null, dock: null, valleys: null };
+        }
+    }
     
     parsePrometheusMetrics(metricsText) {
         const metrics = {};
@@ -92,6 +108,72 @@ class MetricsDashboard {
         
         // Update node metrics
         this.updateNodeMetrics(metrics);
+    }
+
+    updateDockDisplay(dockData) {
+        const dockMetrics = document.getElementById('dockMetrics');
+        const dockValleys = document.getElementById('dockValleys');
+        const dockModeSelect = document.getElementById('dockMode');
+        if (!dockMetrics || !dockValleys) return;
+
+        dockMetrics.innerHTML = '';
+        dockValleys.innerHTML = '';
+
+        const mcp = dockData && dockData.mcp;
+        const dock = dockData && dockData.dock;
+        const valleys = dockData && dockData.valleys;
+
+        const line = (label, value) => {
+            const el = document.createElement('div');
+            el.className = 'node-metric';
+            const left = document.createElement('span');
+            left.className = 'node-name';
+            left.textContent = label;
+            const right = document.createElement('span');
+            right.className = 'node-status idle';
+            right.textContent = value;
+            el.appendChild(left);
+            el.appendChild(right);
+            return el;
+        };
+
+        if (!mcp || !dock) {
+            dockMetrics.appendChild(line('MCP', 'Unavailable'));
+            return;
+        }
+
+        dockMetrics.appendChild(line('MCP', mcp.connected ? 'Connected' : 'Disconnected'));
+        dockMetrics.appendChild(line('Dock', dock.running ? `Running (${dock.mode || 'unknown'})` : 'Stopped'));
+        dockMetrics.appendChild(line('Known Valleys', String(dock.known_valleys ?? 0)));
+        if (dockModeSelect && dock.mode) {
+            dockModeSelect.value = dock.mode;
+        }
+
+        const list = (valleys && valleys.valleys) || [];
+        if (!Array.isArray(list) || list.length === 0) {
+            const el = document.createElement('div');
+            el.className = 'node-metric';
+            const left = document.createElement('span');
+            left.className = 'node-name';
+            left.textContent = 'No remote valleys';
+            el.appendChild(left);
+            dockValleys.appendChild(el);
+            return;
+        }
+
+        list.forEach((v) => {
+            const el = document.createElement('div');
+            el.className = 'node-metric';
+            const left = document.createElement('span');
+            left.className = 'node-name';
+            left.textContent = v.name;
+            const right = document.createElement('span');
+            right.className = 'node-status active';
+            right.textContent = `${(v.exposed_campfires || []).length} campfires`;
+            el.appendChild(left);
+            el.appendChild(right);
+            dockValleys.appendChild(el);
+        });
     }
     
     updateCampfireMetrics(metrics) {
@@ -245,6 +327,9 @@ class MetricsDashboard {
     async updateMetrics() {
         const metrics = await this.fetchMetrics();
         this.updateMetricsDisplay(metrics);
+
+        const dockData = await this.fetchDock();
+        this.updateDockDisplay(dockData);
     }
     
     stopMetricsUpdates() {
@@ -262,6 +347,79 @@ class MetricsDashboard {
 // Initialize metrics dashboard when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     window.metricsDashboard = new MetricsDashboard();
+    window.metricsDashboard.startMetricsUpdates();
+
+    const dockEnable = document.getElementById('dockEnable');
+    const dockMode = document.getElementById('dockMode');
+    const dockBroadcast = document.getElementById('dockBroadcast');
+    if (dockEnable) {
+        dockEnable.addEventListener('click', async () => {
+            try {
+                dockEnable.textContent = 'Enabling...';
+                const res = await fetch('/api/dock/enable', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                if (!res.ok) {
+                    dockEnable.textContent = 'Enable failed';
+                    return;
+                }
+                await res.json();
+                dockEnable.textContent = 'Enabled';
+                setTimeout(() => {
+                    dockEnable.textContent = 'Enable Dock';
+                }, 2000);
+                window.metricsDashboard.updateMetrics();
+                if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.syncBackendCampfireNodes) {
+                    window.campfireValleyLiteGraph.syncBackendCampfireNodes();
+                }
+            } catch (e) {
+                dockEnable.textContent = 'Enable failed';
+            }
+        });
+    }
+
+    if (dockMode) {
+        dockMode.addEventListener('change', async () => {
+            try {
+                const mode = dockMode.value;
+                await fetch('/api/dock/mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode })
+                });
+                window.metricsDashboard.updateMetrics();
+                if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.syncBackendCampfireNodes) {
+                    window.campfireValleyLiteGraph.syncBackendCampfireNodes();
+                }
+            } catch (e) {
+            }
+        });
+    }
+
+    if (dockBroadcast) {
+        dockBroadcast.addEventListener('click', async () => {
+            try {
+                dockBroadcast.textContent = 'Broadcasting...';
+                const res = await fetch('/api/dock/broadcast', { method: 'POST' });
+                if (!res.ok) {
+                    dockBroadcast.textContent = 'Broadcast failed';
+                    return;
+                }
+                dockBroadcast.textContent = 'Broadcasted';
+                setTimeout(() => {
+                    dockBroadcast.textContent = 'Broadcast Discovery';
+                }, 2000);
+                window.metricsDashboard.updateMetrics();
+                if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.syncBackendCampfireNodes) {
+                    window.campfireValleyLiteGraph.syncBackendCampfireNodes();
+                }
+            } catch (e) {
+                dockBroadcast.textContent = 'Broadcast failed';
+            }
+        });
+    }
 });
 
 // Clean up on page unload

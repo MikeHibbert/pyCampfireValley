@@ -33,14 +33,14 @@ def parse_intent(text: str) -> Dict[str, Any]:
 
 
 def make_voice_torch(valley_name: str, campfire: str, text: str, admin: bool) -> Dict[str, Any]:
+    target_address = campfire if ":" in campfire else f"{valley_name}:{campfire}"
     return {
         "claim": "voice_text",
         "source_campfire": "voice",
         "channel": "voice",
         "torch_id": f"voice_{int(time.time()*1000)}",
         "sender_valley": valley_name,
-        "target_address": f"{valley_name}:{campfire}",
+        "target_address": target_address,
         "data": {"text": text, "admin": admin},
         "signature": "voice_placeholder",
     }
-

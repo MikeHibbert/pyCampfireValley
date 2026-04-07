@@ -4,6 +4,7 @@ CampfireValley Campfire implementation extending the base pyCampfires framework.
 
 import asyncio
 import logging
+import inspect
 from typing import Optional, List, Dict, Any
 from campfires import Campfire as BaseCampfire, Camper as BaseCamper, Torch as BaseTorch
 try:
@@ -49,16 +50,23 @@ class Campfire(BaseCampfire, ICampfire):
         if campers is None:
             campers = []
         
-        # Initialize base campfire with required arguments
-        super().__init__(
-            name=config.name,
-            campers=campers,
-            party_box=party_box,
-            mcp_protocol=None,  # We'll handle MCP through our own broker
-            config={}, 
-            security_hooks=security_hooks or SecurityHooks(),
-            routing_strategy=routing_strategy
-        )
+        # Initialize base campfire with required arguments (back-compat with campfires versions)
+        base_sig = inspect.signature(BaseCampfire.__init__)
+        base_params = base_sig.parameters
+        init_kwargs = {
+            "name": config.name,
+            "campers": campers,
+            "party_box": party_box,
+        }
+        if "mcp_protocol" in base_params:
+            init_kwargs["mcp_protocol"] = None
+        if "config" in base_params:
+            init_kwargs["config"] = {}
+        if "security_hooks" in base_params:
+            init_kwargs["security_hooks"] = security_hooks or SecurityHooks()
+        if "routing_strategy" in base_params:
+            init_kwargs["routing_strategy"] = routing_strategy
+        super().__init__(**init_kwargs)
         
         # CampfireValley specific configuration
         self.config = config

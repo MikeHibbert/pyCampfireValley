@@ -8,6 +8,13 @@ class CampfireValleyLiteGraph {
         this.nodes = {};
         this.websocket = null;
         this.isInitialized = false;
+        this.selectedNode = null;
+        this.chatByNodeId = new Map();
+        this.chatUI = null;
+        this.speechRecognition = null;
+        this.isListening = false;
+        this.backendCampfiresCache = { ts: 0, items: [] };
+        this.backendSyncPromise = null;
         
         // Initialize gamification engine
         if (typeof CampfireGameEngine !== 'undefined') {
@@ -50,6 +57,8 @@ class CampfireValleyLiteGraph {
             
             // Create default node layout
             this.createDefaultNodes();
+
+            this.setupChatUI();
             
             // Connect to WebSocket
             this.connectWebSocket();
@@ -66,9 +75,19 @@ class CampfireValleyLiteGraph {
     }
     
     createDefaultNodes() {
-        // Clear existing nodes
         this.graph.clear();
         this.nodes = {};
+
+        const rootValleyNode = LiteGraph.createNode("campfire/valley");
+        rootValleyNode.pos = [80, 220];
+        rootValleyNode.properties = rootValleyNode.properties || {};
+        rootValleyNode.properties.name = "Main Valley";
+        this.graph.add(rootValleyNode);
+        this.nodes.valley = rootValleyNode;
+
+        this.setupEventHandlers();
+        this.syncBackendCampfireNodes().catch(() => {});
+        return;
         
         // Layout configuration for DAG system and vertical UI panel
         const LAYOUT_CONFIG = {
@@ -327,23 +346,6 @@ class CampfireValleyLiteGraph {
             compliance_rate: 95
         });
 
-        // Regular campfire campers
-        dagLayout.addNode('camper1', 'campfire/camper', {
-            type: "processor",
-            current_task: "analyzing",
-            tasks_completed: 23
-        });
-        dagLayout.addNode('camper2', 'campfire/camper', {
-            type: "processor", 
-            current_task: "processing",
-            tasks_completed: 19
-        });
-        dagLayout.addNode('camper3', 'campfire/camper', {
-            type: "processor",
-            current_task: "idle", 
-            tasks_completed: 31
-        });
-
         // Define dependencies (edges) - this determines the layout
         dagLayout.addEdge('valley', 'dock');
         dagLayout.addEdge('valley', 'regularCampfire');
@@ -363,10 +365,6 @@ class CampfireValleyLiteGraph {
         dagLayout.addEdge('justice', 'detector');
         dagLayout.addEdge('justice', 'enforcer');
         dagLayout.addEdge('justice', 'governor');
-        
-        dagLayout.addEdge('regularCampfire', 'camper1');
-        dagLayout.addEdge('regularCampfire', 'camper2');
-        dagLayout.addEdge('regularCampfire', 'camper3');
 
         // Calculate optimal positions using DAG layout
         const positions = dagLayout.calculatePositions();
@@ -481,28 +479,6 @@ class CampfireValleyLiteGraph {
         this.graph.add(governorNode);
         this.nodes.governor = governorNode;
         
-        // Regular campfire campers using DAG layout
-        const camperNode1 = LiteGraph.createNode("campfire/camper");
-        camperNode1.pos = positions.get('camper1');
-        camperNode1.properties = camperNode1.properties || {};
-        Object.assign(camperNode1.properties, dagLayout.nodes.get('camper1').properties);
-        this.graph.add(camperNode1);
-        this.nodes.camper1 = camperNode1;
-        
-        const camperNode2 = LiteGraph.createNode("campfire/camper");
-        camperNode2.pos = positions.get('camper2');
-        camperNode2.properties = camperNode2.properties || {};
-        Object.assign(camperNode2.properties, dagLayout.nodes.get('camper2').properties);
-        this.graph.add(camperNode2);
-        this.nodes.camper2 = camperNode2;
-        
-        const camperNode3 = LiteGraph.createNode("campfire/camper");
-        camperNode3.pos = positions.get('camper3');
-        camperNode3.properties = camperNode3.properties || {};
-        Object.assign(camperNode3.properties, dagLayout.nodes.get('camper3').properties);
-        this.graph.add(camperNode3);
-        this.nodes.camper3 = camperNode3;
-        
         // Demo hexagonal valley nodes removed per request
         
         // Connect nodes logically
@@ -510,6 +486,9 @@ class CampfireValleyLiteGraph {
         
         // Set up event handlers
         this.setupEventHandlers();
+
+        this.syncBackendCampfireNodes().catch(() => {});
+
     }
     
     connectNodes() {
@@ -573,26 +552,38 @@ class CampfireValleyLiteGraph {
             this.nodes.justice.connect(2, this.nodes.governor, 0);
         }
         
-        // Regular Campfire -> Regular Campers
-        if (this.nodes.regularCampfire && this.nodes.camper1) {
-            this.nodes.regularCampfire.connect(0, this.nodes.camper1, 0);
-        }
-        if (this.nodes.regularCampfire && this.nodes.camper2) {
-            this.nodes.regularCampfire.connect(0, this.nodes.camper2, 0);
-        }
-        if (this.nodes.regularCampfire && this.nodes.camper3) {
-            this.nodes.regularCampfire.connect(0, this.nodes.camper3, 0);
+        if (this.nodes.regularCampfire && Array.isArray(this.nodes.backendCampers)) {
+            this.nodes.backendCampers.forEach((n) => {
+                try {
+                    this.nodes.regularCampfire.connect(0, n, 0);
+                } catch (e) {
+                }
+            });
         }
     }
     
     setupEventHandlers() {
         // Handle node selection for details display
         this.canvas.onNodeSelected = (node) => {
+            this.setSelectedNode(node || null);
             if (this.nodes.nodeDetails) {
                 this.nodes.nodeDetails.properties.node_title = node.title || "Unknown Node";
                 this.nodes.nodeDetails.properties.node_details = this.getNodeDetails(node);
                 this.nodes.nodeDetails.setDirtyCanvas(true, true);
             }
+        };
+
+        this.canvas.getExtraMenuOptions = () => {
+            return [
+                null,
+                {
+                    content: "New Campfire + Auditor",
+                    callback: () => {
+                        const pos = [this.canvas.graph_mouse[0], this.canvas.graph_mouse[1]];
+                        this.createCampfireWithAuditorAt(pos);
+                    }
+                }
+            ];
         };
         
         // Handle task control events
@@ -638,6 +629,885 @@ class CampfireValleyLiteGraph {
                 this.canvas.render_connections = showConnections;
                 // Handle other display options as needed
             };
+        }
+    }
+
+    setupChatUI() {
+        const panel = document.getElementById("chatPanel");
+        const actionBar = document.getElementById("chatActionBar");
+        const title = document.getElementById("chatTitle");
+        const freeze = document.getElementById("chatFreeze");
+        const logsBtn = document.getElementById("chatLogs");
+        const exportBtn = document.getElementById("chatExport");
+        const speakBtn = document.getElementById("chatSpeak");
+        const toolsBtn = document.getElementById("chatTools");
+        const messages = document.getElementById("chatMessages");
+        const logsPanel = document.getElementById("chatLogsPanel");
+        const input = document.getElementById("chatInput");
+        const send = document.getElementById("chatSend");
+        const mic = document.getElementById("chatMic");
+        const close = document.getElementById("chatClose");
+        if (!panel || !actionBar || !title || !freeze || !logsBtn || !exportBtn || !speakBtn || !toolsBtn || !messages || !logsPanel || !input || !send || !mic || !close) {
+            return;
+        }
+        const toolsPanel = document.createElement("div");
+        toolsPanel.id = "chatToolsPanel";
+        toolsPanel.className = "chat-tools-panel";
+        toolsPanel.innerHTML = `
+            <div class="chat-tools-row"><label>Enable Zeitgeist</label><input id="toolZeitgeistEnabled" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Web Search</label><input id="toolWebSearch" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Image OCR</label><input id="toolImageOCR" type="checkbox"/></div>
+        `;
+        document.body.appendChild(toolsPanel);
+        this.chatUI = { panel, actionBar, title, freeze, logsBtn, exportBtn, speakBtn, toolsBtn, toolsPanel, messages, logsPanel, input, send, mic, close };
+
+        close.addEventListener("click", () => {
+            this.hideChatPanel();
+        });
+
+        const sendCurrent = () => {
+            const text = (input.value || "").trim();
+            if (!text || !this.selectedNode) {
+                return;
+            }
+            input.value = "";
+            this.appendChatMessage(this.selectedNode, { role: "user", text, ts: Date.now() });
+            this.sendChatToBackend(this.selectedNode, text);
+        };
+
+        send.addEventListener("click", sendCurrent);
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                sendCurrent();
+            }
+        });
+
+        mic.addEventListener("click", async () => {
+            await this.toggleVoiceInput();
+        });
+
+        freeze.addEventListener("click", async () => {
+            await this.freezeBeliefsForSelectedNode();
+        });
+
+        logsBtn.addEventListener("click", async () => {
+            await this.toggleLogsForSelectedNode();
+        });
+
+        exportBtn.addEventListener("click", async () => {
+            await this.exportSelectedNode();
+        });
+
+        speakBtn.addEventListener("click", () => {
+            if (!this.selectedNode) {
+                return;
+            }
+            this.selectedNode.properties = this.selectedNode.properties || {};
+            const current = this.selectedNode.properties.tts_enabled;
+            const next = current === false ? true : false;
+            this.selectedNode.properties.tts_enabled = next;
+            this.updateSpeakButtonForNode(this.selectedNode);
+        });
+        toolsBtn.addEventListener("click", () => {
+            if (!this.selectedNode) return;
+            const target = this.getNodeTarget(this.selectedNode);
+            if (!target) return;
+            this.toggleToolsPanel(true);
+            this.loadToolsForCampfire(target);
+        });
+    }
+
+    setSelectedNode(node) {
+        this.selectedNode = node;
+        if (!node) {
+            this.hideChatPanel();
+            return;
+        }
+        this.showChatPanelForNode(node);
+    }
+
+    showChatPanelForNode(node) {
+        if (!this.chatUI) {
+            return;
+        }
+        const displayName = (node.properties && (node.properties.name || node.properties.id)) || node.title || "Node";
+        this.chatUI.title.textContent = displayName;
+        this.chatUI.panel.classList.remove("hidden");
+        this.chatUI.actionBar.classList.remove("hidden");
+        this.renderChatHistory(node);
+        this.chatUI.input.focus();
+        this.updateSpeakButtonForNode(node);
+        this.updateChatTitleFromBackend(node);
+    }
+
+    updateSpeakButtonForNode(node) {
+        if (!this.chatUI || !this.chatUI.speakBtn) {
+            return;
+        }
+        const enabled = !(node && node.properties && node.properties.tts_enabled === false);
+        this.chatUI.speakBtn.textContent = enabled ? "🔊 Speak: On" : "🔇 Speak: Off";
+    }
+
+    toggleToolsPanel(visible) {
+        if (!this.chatUI || !this.chatUI.toolsPanel) return;
+        if (visible) this.chatUI.toolsPanel.classList.add("visible");
+        else this.chatUI.toolsPanel.classList.remove("visible");
+    }
+
+    async loadToolsForCampfire(campfireId) {
+        try {
+            const res = await fetch(`/api/campfire/tools?campfire=${encodeURIComponent(campfireId)}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const z = (data.tools || {});
+            const enabled = !!z.enabled;
+            const ws = !!z.web_search;
+            const ocr = !!z.image_ocr;
+            document.getElementById("toolZeitgeistEnabled").checked = enabled;
+            document.getElementById("toolWebSearch").checked = ws;
+            document.getElementById("toolImageOCR").checked = ocr;
+            this.bindToolsPanelEvents(campfireId);
+        } catch (e) {
+        }
+    }
+
+    bindToolsPanelEvents(campfireId) {
+        const enabledEl = document.getElementById("toolZeitgeistEnabled");
+        const wsEl = document.getElementById("toolWebSearch");
+        const ocrEl = document.getElementById("toolImageOCR");
+        const sendUpdate = async () => {
+            const payload = {
+                campfire: campfireId,
+                zeitgeist: {
+                    enabled: !!enabledEl.checked,
+                    web_search: !!wsEl.checked,
+                    image_ocr: !!ocrEl.checked
+                }
+            };
+            try {
+                await fetch("/api/campfire/tools", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+            } catch (e) {
+            }
+        };
+        enabledEl.onchange = sendUpdate;
+        wsEl.onchange = sendUpdate;
+        ocrEl.onchange = sendUpdate;
+    }
+
+    hideChatPanel() {
+        if (!this.chatUI) {
+            return;
+        }
+        this.chatUI.panel.classList.add("hidden");
+        this.chatUI.actionBar.classList.add("hidden");
+        this.chatUI.logsPanel.classList.add("hidden");
+        this.toggleToolsPanel(false);
+    }
+
+    getChatKeyForNode(node) {
+        return String(node.id);
+    }
+
+    getNodeTarget(node) {
+        if (!node) return null;
+        if (node.properties && node.properties.target) return node.properties.target;
+        if (node.properties && node.properties.name) return node.properties.name;
+        return node.title || null;
+    }
+
+    renderChatHistory(node) {
+        if (!this.chatUI) {
+            return;
+        }
+        const key = this.getChatKeyForNode(node);
+        const history = this.chatByNodeId.get(key) || [];
+        const container = this.chatUI.messages;
+        container.textContent = "";
+        history.forEach((m) => {
+            const el = document.createElement("div");
+            el.className = `chat-message ${m.role === "user" ? "user" : "system"}`;
+            el.textContent = m.text;
+            container.appendChild(el);
+            const options = m && Array.isArray(m.options) ? m.options : null;
+            if (options && options.length) {
+                const row = document.createElement("div");
+                row.className = "chat-options";
+                const action = m.options_action || "remove";
+                options.forEach((opt) => {
+                    const name = (typeof opt === "string" ? opt : (opt && opt.name ? String(opt.name) : "")).trim();
+                    if (!name) return;
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "chat-option-btn";
+                    btn.textContent = name;
+                    btn.addEventListener("click", () => {
+                        if (action === "rename") {
+                            if (this.chatUI && this.chatUI.input) {
+                                this.chatUI.input.value = `rename camper \"${name}\" to `;
+                                this.chatUI.input.focus();
+                            }
+                            return;
+                        }
+                        const cmd = `remove camper ${name}`;
+                        this.appendChatMessage(node, { role: "user", text: cmd, ts: Date.now() });
+                        this.sendChatToBackend(node, cmd);
+                    });
+                    row.appendChild(btn);
+                });
+                container.appendChild(row);
+            }
+        });
+        container.scrollTop = container.scrollHeight;
+    }
+
+    async toggleLogsForSelectedNode() {
+        if (!this.chatUI || !this.selectedNode) {
+            return;
+        }
+        const hidden = this.chatUI.logsPanel.classList.contains("hidden");
+        if (!hidden) {
+            this.chatUI.logsPanel.classList.add("hidden");
+            return;
+        }
+        await this.loadLogsForNode(this.selectedNode);
+        this.chatUI.logsPanel.classList.remove("hidden");
+    }
+
+    async loadLogsForNode(node) {
+        if (!this.chatUI) {
+            return;
+        }
+        const target = this.getNodeTarget(node);
+        if (!target) {
+            return;
+        }
+        this.chatUI.logsPanel.textContent = "";
+        try {
+            const res = await fetch(`/api/logs/${encodeURIComponent(target)}?limit=200`);
+            if (!res.ok) {
+                const err = document.createElement("div");
+                err.className = "log-entry assistant";
+                err.textContent = `Failed to load logs (${res.status}).`;
+                this.chatUI.logsPanel.appendChild(err);
+                return;
+            }
+            const data = await res.json();
+            const entries = (data && data.entries) || [];
+            entries.forEach((e) => {
+                const role = (e.role || "assistant").toLowerCase();
+                const text = e.text || "";
+                const ts = e.ts || "";
+                const wrap = document.createElement("div");
+                wrap.className = `log-entry ${role}`;
+                const meta = document.createElement("div");
+                meta.className = "meta";
+                meta.textContent = `${ts} • ${role}`;
+                const body = document.createElement("div");
+                body.textContent = text;
+                wrap.appendChild(meta);
+                wrap.appendChild(body);
+                wrap.addEventListener("click", () => {
+                    this.chatUI.input.value = text;
+                    this.chatUI.input.focus();
+                });
+                this.chatUI.logsPanel.appendChild(wrap);
+            });
+            this.chatUI.logsPanel.scrollTop = this.chatUI.logsPanel.scrollHeight;
+        } catch (e) {
+            const err = document.createElement("div");
+            err.className = "log-entry assistant";
+            err.textContent = "Failed to load logs (backend unreachable).";
+            this.chatUI.logsPanel.appendChild(err);
+        }
+    }
+
+    appendChatMessage(node, message) {
+        const key = this.getChatKeyForNode(node);
+        const history = this.chatByNodeId.get(key) || [];
+        history.push(message);
+        this.chatByNodeId.set(key, history);
+        this.renderChatHistory(node);
+        if (message.role !== "user") {
+            this.speakIfEnabled(node, message.text);
+        }
+    }
+
+    async freezeBeliefsForSelectedNode() {
+        if (!this.chatUI || !this.selectedNode) {
+            return;
+        }
+        const node = this.selectedNode;
+        const target = this.getNodeTarget(node);
+        if (!target) {
+            return;
+        }
+        const key = this.getChatKeyForNode(node);
+        const history = this.chatByNodeId.get(key) || [];
+        this.chatUI.freeze.classList.add("busy");
+        try {
+            const res = await fetch("/api/beliefs/freeze", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    campfire: target,
+                    messages: history
+                })
+            });
+            if (!res.ok) {
+                this.appendChatMessage(node, { role: "system", text: `Freeze failed: ${res.status}`, ts: Date.now() });
+                return;
+            }
+            const data = await res.json();
+            const count = data && typeof data.count === "number" ? data.count : 0;
+            this.appendChatMessage(node, { role: "system", text: `Beliefs frozen (${count}).`, ts: Date.now() });
+        } catch (e) {
+            this.appendChatMessage(node, { role: "system", text: "Freeze failed: backend unreachable", ts: Date.now() });
+        } finally {
+            this.chatUI.freeze.classList.remove("busy");
+        }
+    }
+
+    async exportSelectedNode() {
+        if (!this.chatUI || !this.selectedNode) {
+            return;
+        }
+        const node = this.selectedNode;
+        const target = this.getNodeTarget(node);
+        if (!target) {
+            return;
+        }
+        try {
+            const res = await fetch("/api/campfire/export", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ campfire: target })
+            });
+            if (!res.ok) {
+                this.appendChatMessage(node, { role: "system", text: `Export failed: ${res.status}`, ts: Date.now() });
+                return;
+            }
+            const data = await res.json();
+            const filename = (data && data.filename) || `campfire_export_${target}.yaml`;
+            const text = (data && data.yaml) || "";
+            const blob = new Blob([text], { type: "text/yaml;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            this.appendChatMessage(node, { role: "system", text: `Exported: ${filename}`, ts: Date.now() });
+        } catch (e) {
+            this.appendChatMessage(node, { role: "system", text: "Export failed: backend unreachable", ts: Date.now() });
+        }
+    }
+
+    createCampfireWithAuditorAt(position) {
+        const base = Date.now().toString(36);
+        const campfireId = `campfire_${base}`;
+        const campfireName = `Campfire ${base}`;
+        const auditorId = `auditor_${base}`;
+        const auditorName = `${campfireName} Auditor`;
+        const campfire = this.addCampfire(campfireId, position);
+        campfire.properties.name = campfireName;
+        campfire.properties.type = "standard";
+        campfire.title = campfire.properties.name;
+
+        const auditorPos = [position[0] + 280, position[1]];
+        const auditor = this.addCamper(auditorId, auditorPos);
+        auditor.properties.name = auditorName;
+        auditor.properties.type = "auditor";
+        auditor.properties.current_task = "ready";
+        auditor.properties.role_prompt = "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. You identify which campers are needed, create them, assign them ordered tasks, and coordinate their outputs. Keep replies short and action-focused.";
+        auditor.title = "Auditor";
+
+        try {
+            campfire.connect(0, auditor, 0);
+        } catch (e) {
+        }
+
+        if (this.canvas && this.canvas.selectNodes) {
+            this.canvas.selectNodes([auditor]);
+        }
+
+        this.appendChatMessage(auditor, { role: "system", text: "Auditor created and linked. Select a node to chat.", ts: Date.now() });
+        this.ensureBackendCampfire(campfireName, "You are a helpful campfire agent. Keep responses concise and actionable.", "gemma3:4b");
+        this.ensureBackendCampfire(auditorName, auditor.properties.role_prompt, "gemma3:4b");
+    }
+
+    async ensureBackendCampfire(name, systemPrompt, model) {
+        try {
+            const res = await fetch("/api/team/add", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name,
+                    persona: {
+                        name,
+                        provider: "ollama",
+                        model: model || "gemma3:4b",
+                        system_prompt: systemPrompt || ""
+                    }
+                })
+            });
+            if (!res.ok) {
+                return;
+            }
+            await res.json();
+        } catch (e) {
+        }
+    }
+
+    async fetchBackendCampfires(force = false) {
+        const now = Date.now();
+        if (!force && now - this.backendCampfiresCache.ts < 2000) {
+            return this.backendCampfiresCache.items;
+        }
+        try {
+            const res = await fetch("/api/campfires");
+            if (!res.ok) {
+                return this.backendCampfiresCache.items;
+            }
+            const data = await res.json();
+            const items = Array.isArray(data) ? data : [];
+            this.backendCampfiresCache = { ts: now, items };
+            return items;
+        } catch (e) {
+            return this.backendCampfiresCache.items;
+        }
+    }
+
+    async updateChatTitleFromBackend(node) {
+        if (!this.chatUI || !node) {
+            return;
+        }
+        const displayName = (node.properties && (node.properties.name || node.properties.id)) || node.title || "Node";
+        const target = this.getNodeTarget(node);
+        if (!target) {
+            this.chatUI.title.textContent = displayName;
+            return;
+        }
+        if (typeof target === "string" && target.startsWith("valley:")) {
+            this.chatUI.title.textContent = `${displayName} • remote`;
+            return;
+        }
+        const campfires = await this.fetchBackendCampfires(false);
+        const found = campfires.find((c) => c && c.id === target);
+        if (!found) {
+            this.chatUI.title.textContent = `${displayName} • not provisioned`;
+            return;
+        }
+        const type = found.type || "Campfire";
+        const running = found.running ? "running" : "stopped";
+        this.chatUI.title.textContent = `${displayName} • ${type} • ${running}`;
+    }
+
+    async ensureBackendPresentForNode(node) {
+        const target = this.getNodeTarget(node);
+        if (!target) {
+            return;
+        }
+        if (typeof target === "string" && target.startsWith("valley:")) {
+            return;
+        }
+        const campfires = await this.fetchBackendCampfires(true);
+        const exists = campfires.some((c) => c && c.id === target);
+        if (exists) {
+            return;
+        }
+        const systemPrompt = (node.properties && node.properties.role_prompt) || `You are ${target}.`;
+        await this.ensureBackendCampfire(target, systemPrompt, "gemma3:4b");
+        await this.fetchBackendCampfires(true);
+    }
+
+    async syncRemoteValleyNodes(anchorX, anchorY) {
+        if (!this.graph) {
+            return;
+        }
+        try {
+            const res = await fetch("/api/dock/valleys");
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            const valleys = (data && data.valleys) || [];
+            if (!Array.isArray(valleys)) {
+                return;
+            }
+
+            const existingNodes = Array.isArray(this.graph._nodes) ? [...this.graph._nodes] : [];
+            existingNodes.forEach((n) => {
+                if (n && n.properties && n.properties.remote === true) {
+                    try {
+                        this.graph.remove(n);
+                    } catch (e) {
+                    }
+                }
+            });
+
+            const startX = (typeof anchorX === "number" ? anchorX : 900);
+            const startY = (typeof anchorY === "number" ? anchorY : 100);
+            const valleySpacingY = 260;
+            const campfireOffsetX = 320;
+            const campfireSpacingY = 180;
+
+            valleys.forEach((v, idx) => {
+                const name = v && v.name ? String(v.name) : null;
+                if (!name) return;
+                const valleyNode = LiteGraph.createNode("campfire/valley");
+                valleyNode.pos = [startX, startY + (idx * valleySpacingY)];
+                valleyNode.properties = valleyNode.properties || {};
+                valleyNode.properties.remote = true;
+                valleyNode.properties.name = name;
+                valleyNode.title = name;
+                this.graph.add(valleyNode);
+
+                const exposed = Array.isArray(v.exposed_campfires) ? v.exposed_campfires : [];
+                exposed.forEach((cf, j) => {
+                    const cfName = cf ? String(cf) : null;
+                    if (!cfName) return;
+                    const campfireNode = LiteGraph.createNode("campfire/campfire");
+                    campfireNode.pos = [valleyNode.pos[0] + campfireOffsetX, valleyNode.pos[1] + (j * campfireSpacingY)];
+                    campfireNode.properties = campfireNode.properties || {};
+                    campfireNode.properties.remote = true;
+                    campfireNode.properties.name = cfName;
+                    campfireNode.properties.target = `valley:${name}/${cfName}`;
+                    campfireNode.title = cfName;
+                    this.graph.add(campfireNode);
+                    try {
+                        valleyNode.connect(1, campfireNode, 0);
+                    } catch (e) {
+                    }
+                });
+
+                if (this.nodes.valley) {
+                    try {
+                        this.nodes.valley.connect(1, valleyNode, 0);
+                    } catch (e) {
+                    }
+                }
+            });
+        } catch (e) {
+        }
+    }
+
+    async syncBackendCampfireNodes() {
+        if (!this.graph) {
+            return;
+        }
+        if (this.backendSyncPromise) {
+            return await this.backendSyncPromise;
+        }
+        this.backendSyncPromise = (async () => {
+        let campfires = await this.fetchBackendCampfires(true);
+        const existingNodes = Array.isArray(this.graph._nodes) ? [...this.graph._nodes] : [];
+        existingNodes.forEach((n) => {
+            if (n && n.properties && n.properties.backend === true) {
+                try {
+                    this.graph.remove(n);
+                } catch (e) {
+                }
+            }
+        });
+        this.nodes.backendCampers = [];
+
+        const campfireRecords = Array.isArray(campfires) ? campfires : [];
+        const byId = new Map();
+        campfireRecords.forEach((c) => {
+            if (c && c.id) byId.set(String(c.id), c);
+        });
+        const parents = new Map();
+        campfireRecords.forEach((c) => {
+            const id = c && c.id ? String(c.id) : null;
+            const parent = c && c.parent ? String(c.parent) : null;
+            if (id && parent) parents.set(id, parent);
+        });
+        if (this.nodes.valley && this.nodes.valley.properties) {
+            this.nodes.valley.properties.total_campfires = campfireRecords.length;
+        }
+
+        const base = this.nodes.regularCampfire && Array.isArray(this.nodes.regularCampfire.pos)
+            ? this.nodes.regularCampfire.pos
+            : (this.nodes.valley && Array.isArray(this.nodes.valley.pos) ? this.nodes.valley.pos : [400, 200]);
+        const startX = base[0] + 340;
+        const startY = base[1] - 140;
+        const campfireSpacingY = 220;
+        const auditorOffsetX = 280;
+        const auditorOffsetY = 90;
+        const childOffsetX = 280;
+        const childSpacingY = 140;
+
+        const allIds = [...campfireRecords]
+            .map((c) => (c && c.id ? String(c.id) : null))
+            .filter(Boolean);
+
+        const primaryCampfires = [...campfireRecords]
+            .filter((c) => c && c.id)
+            .map((c) => ({ id: String(c.id), type: c.type, running: c.running }))
+            .filter((c) => c.id.toLowerCase() !== "auditor" && !c.id.toLowerCase().endsWith(" auditor"))
+            .filter((c) => !parents.has(c.id))
+            .sort((a, b) => a.id.localeCompare(b.id));
+
+        for (const c of primaryCampfires) {
+            const auditorName = `${c.id} Auditor`;
+            if (!allIds.includes(auditorName)) {
+                await this.ensureBackendCampfire(
+                    auditorName,
+                    "You are the Auditor for this Campfire. Help the user construct the campfire, add campers, refine prompts, and confirm actions.",
+                    "gemma3:4b"
+                );
+            }
+        }
+
+        campfires = await this.fetchBackendCampfires(true);
+
+        const campfireNodeById = new Map();
+        primaryCampfires.forEach((c, idx) => {
+            const campfireNode = LiteGraph.createNode("campfire/campfire");
+            campfireNode.pos = [startX, startY + (idx * campfireSpacingY)];
+            campfireNode.properties = campfireNode.properties || {};
+            campfireNode.properties.backend = true;
+            campfireNode.properties.name = c.id;
+            campfireNode.properties.target = c.id;
+            campfireNode.properties.id = c.id;
+            campfireNode.properties.backend_type = c.type || "Campfire";
+            campfireNode.title = c.id;
+            this.graph.add(campfireNode);
+            this.nodes.backendCampers.push(campfireNode);
+            campfireNodeById.set(c.id, campfireNode);
+
+            const auditorName = `${c.id} Auditor`;
+            const auditor = LiteGraph.createNode("campfire/camper");
+            auditor.pos = [campfireNode.pos[0] + auditorOffsetX, campfireNode.pos[1] + auditorOffsetY];
+            auditor.properties = auditor.properties || {};
+            auditor.properties.backend = true;
+            auditor.properties.name = "Auditor";
+            auditor.properties.target = auditorName;
+            auditor.properties.type = "auditor";
+            auditor.properties.role_prompt = "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. You identify which campers are needed, create them, assign them ordered tasks, and coordinate their outputs. Ask clarifying questions when needed.";
+            auditor.title = "Auditor";
+            this.graph.add(auditor);
+            try {
+                campfireNode.connect(0, auditor, 0);
+            } catch (e) {
+            }
+        });
+
+        const childCampfires = (Array.isArray(campfires) ? campfires : [])
+            .filter((c) => c && c.id && c.parent)
+            .map((c) => ({ id: String(c.id), parent: String(c.parent), type: c.type, running: c.running }))
+            .filter((c) => c.id.toLowerCase() !== "auditor" && !c.id.toLowerCase().endsWith(" auditor"))
+            .sort((a, b) => a.id.localeCompare(b.id));
+        const childrenByParent = new Map();
+        childCampfires.forEach((c) => {
+            if (!childrenByParent.has(c.parent)) childrenByParent.set(c.parent, []);
+            childrenByParent.get(c.parent).push(c);
+        });
+        childrenByParent.forEach((children, parentId) => {
+            const parentNode = campfireNodeById.get(parentId);
+            if (!parentNode) return;
+            children.forEach((child, idx) => {
+                const camperNode = LiteGraph.createNode("campfire/camper");
+                camperNode.pos = [parentNode.pos[0] + childOffsetX, parentNode.pos[1] + (idx * childSpacingY) + 10];
+                camperNode.properties = camperNode.properties || {};
+                camperNode.properties.backend = true;
+                camperNode.properties.name = child.id;
+                camperNode.properties.target = child.id;
+                camperNode.properties.id = child.id;
+                camperNode.properties.backend_type = child.type || "Campfire";
+                camperNode.title = child.id;
+                this.graph.add(camperNode);
+                try {
+                    parentNode.connect(0, camperNode, 0);
+                } catch (e) {
+                }
+            });
+        });
+
+        if (this.nodes.valley && Array.isArray(this.nodes.backendCampers)) {
+            this.nodes.backendCampers.forEach((n) => {
+                if (n && n.type === "campfire/campfire") {
+                    try {
+                        this.nodes.valley.connect(1, n, 0);
+                    } catch (e) {
+                    }
+                }
+            });
+        }
+        await this.syncRemoteValleyNodes(startX + 720, startY);
+        if (this.canvas) {
+            this.canvas.setDirty(true, true);
+        }
+        })();
+        try {
+            return await this.backendSyncPromise;
+        } finally {
+            this.backendSyncPromise = null;
+        }
+    }
+
+    async sendChatToBackend(node, text) {
+        const target = this.getNodeTarget(node);
+        if (!target) {
+            return;
+        }
+        const isRemote = (typeof target === "string") && target.startsWith("valley:");
+        const sendOnce = async () => {
+            return await fetch("/api/voice/ingest", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    campfire: target,
+                    text
+                })
+            });
+        };
+        try {
+            await this.ensureBackendPresentForNode(node);
+            let res = await sendOnce();
+            if (!res.ok && !isRemote) {
+                const bodyText = await res.text();
+                const looksMissing = res.status === 500 && /campfire.+not found/i.test(bodyText);
+                if (looksMissing) {
+                    const systemPrompt = (node.properties && node.properties.role_prompt) || `You are ${target}.`;
+                    await this.ensureBackendCampfire(target, systemPrompt, "gemma3:4b");
+                    res = await sendOnce();
+                }
+            }
+            if (!res.ok) {
+                this.appendChatMessage(node, { role: "system", text: `Error: ${res.status}`, ts: Date.now() });
+                return;
+            }
+            const data = await res.json();
+            const response = data && data.response;
+            let msg = { role: "system", text: "(no response)", ts: Date.now() };
+            if (response && typeof response.llm_response === "string") {
+                msg.text = response.llm_response;
+            } else if (response && typeof response.text === "string") {
+                msg.text = response.text;
+            } else if (response && typeof response === "string") {
+                msg.text = response;
+            } else if (response != null) {
+                msg.text = JSON.stringify(response);
+            }
+            if (response && Array.isArray(response.options)) {
+                msg.options = response.options;
+            }
+            if (response && typeof response.options_action === "string") {
+                msg.options_action = response.options_action;
+            }
+            if (response && typeof response.rename_from === "string") {
+                msg.rename_from = response.rename_from;
+            }
+            this.appendChatMessage(node, msg);
+            this.updateChatTitleFromBackend(node);
+            const created = response && response.created;
+            const removed = response && response.removed;
+            if ((Array.isArray(created) && created.length > 0) || (Array.isArray(removed) && removed.length > 0)) {
+                setTimeout(() => {
+                    try {
+                        this.syncBackendCampfireNodes();
+                    } catch (e) {
+                    }
+                }, 250);
+            }
+        } catch (e) {
+            this.appendChatMessage(node, { role: "system", text: "Error: failed to reach backend", ts: Date.now() });
+        }
+    }
+
+    async toggleVoiceInput() {
+        if (!this.chatUI) {
+            return;
+        }
+        if (this.isListening) {
+            try {
+                this.speechRecognition && this.speechRecognition.stop && this.speechRecognition.stop();
+            } catch (e) {
+            }
+            return;
+        }
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            if (this.selectedNode) {
+                this.appendChatMessage(this.selectedNode, { role: "system", text: "Voice input not supported in this browser.", ts: Date.now() });
+            }
+            return;
+        }
+        if (!this.speechRecognition) {
+            const rec = new SpeechRecognition();
+            rec.continuous = false;
+            rec.interimResults = false;
+            rec.lang = "en-US";
+            rec.onstart = () => {
+                this.isListening = true;
+                this.chatUI.mic.classList.add("listening");
+            };
+            rec.onend = () => {
+                this.isListening = false;
+                this.chatUI.mic.classList.remove("listening");
+            };
+            rec.onerror = () => {
+                this.isListening = false;
+                this.chatUI.mic.classList.remove("listening");
+            };
+            rec.onresult = (event) => {
+                try {
+                    const transcript = event.results && event.results[0] && event.results[0][0] ? event.results[0][0].transcript : "";
+                    const text = (transcript || "").trim();
+                    if (!text || !this.selectedNode) {
+                        return;
+                    }
+                    this.chatUI.input.value = text;
+                    this.chatUI.send.click();
+                } catch (e) {
+                }
+            };
+            this.speechRecognition = rec;
+        }
+        try {
+            this.speechRecognition.start();
+        } catch (e) {
+        }
+    }
+
+    async startVoiceForNode(node) {
+        this.setSelectedNode(node || null);
+        if (!node) {
+            return;
+        }
+        await this.toggleVoiceInput();
+    }
+
+    speakIfEnabled(node, text) {
+        if (!node || !text) {
+            return;
+        }
+        if (node.properties && node.properties.tts_enabled === false) {
+            return;
+        }
+        const speaks = node.type === "campfire/campfire" || node.type === "campfire/camper" || (node.properties && node.properties.type === "auditor");
+        if (!speaks) {
+            return;
+        }
+        if (!window.speechSynthesis) {
+            return;
+        }
+        try {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(utterance);
+        } catch (e) {
         }
     }
     

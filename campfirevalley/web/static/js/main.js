@@ -121,6 +121,109 @@ function setupHeaderButtons() {
             }
         });
     }
+
+    const saveValleyBtn = document.getElementById('saveValley');
+    if (saveValleyBtn) {
+        saveValleyBtn.addEventListener('click', async function() {
+            const lite = window.campfireValleyLiteGraph;
+            if (!lite || !lite.graph) return;
+            try {
+                const graph = lite.graph.serialize();
+                const res = await fetch("/api/valley/save", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ graph })
+                });
+                if (!res.ok) throw new Error(String(res.status));
+                const data = await res.json();
+                saveValleyBtn.textContent = `✅ Saved`;
+                setTimeout(() => {
+                    saveValleyBtn.textContent = '💾 Save Valley';
+                }, 2000);
+                console.log("Valley saved:", data.filename);
+            } catch (e) {
+                console.error("Failed to save valley:", e);
+                saveValleyBtn.textContent = '❌ Error';
+                setTimeout(() => {
+                    saveValleyBtn.textContent = '💾 Save Valley';
+                }, 2000);
+            }
+        });
+    }
+
+    const loadValleyBtn = document.getElementById('loadValley');
+    if (loadValleyBtn) {
+        loadValleyBtn.addEventListener('click', async function() {
+            const lite = window.campfireValleyLiteGraph;
+            if (!lite || !lite.graph) return;
+            try {
+                const listRes = await fetch("/api/valley/snapshots");
+                if (!listRes.ok) throw new Error(String(listRes.status));
+                const listData = await listRes.json();
+                const files = (listData && listData.snapshots) || [];
+                const choice = window.prompt("Enter snapshot filename to load:\n" + files.join("\n"));
+                if (!choice) return;
+                const res = await fetch("/api/valley/load", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ filename: choice })
+                });
+                if (!res.ok) throw new Error(String(res.status));
+                const data = await res.json();
+                if (data && data.graph) {
+                    lite.graph.configure(data.graph);
+                }
+                loadValleyBtn.textContent = `✅ Loaded`;
+                setTimeout(() => {
+                    loadValleyBtn.textContent = '📁 Load Valley';
+                }, 2000);
+                console.log("Valley loaded:", data.restored);
+            } catch (e) {
+                console.error("Failed to load valley:", e);
+                loadValleyBtn.textContent = '❌ Error';
+                setTimeout(() => {
+                    loadValleyBtn.textContent = '📁 Load Valley';
+                }, 2000);
+            }
+        });
+    }
+
+    const importCampfireBtn = document.getElementById('importCampfire');
+    if (importCampfireBtn) {
+        importCampfireBtn.addEventListener('click', function() {
+            const input = document.createElement("input");
+            input.type = "file";
+            input.accept = ".yaml,.yml";
+            input.addEventListener("change", async () => {
+                const file = input.files && input.files[0];
+                if (!file) return;
+                try {
+                    const yamlText = await file.text();
+                    const res = await fetch("/api/campfire/import", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ yaml: yamlText })
+                    });
+                    if (!res.ok) throw new Error(String(res.status));
+                    await res.json();
+                    importCampfireBtn.textContent = '✅ Imported';
+                    setTimeout(() => {
+                        importCampfireBtn.textContent = '📥 Import Campfire';
+                    }, 2000);
+                    if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.syncBackendCampfireNodes) {
+                        window.campfireValleyLiteGraph.syncBackendCampfireNodes();
+                    }
+                } catch (e) {
+                    console.error("Failed to import campfire:", e);
+                    importCampfireBtn.textContent = '❌ Error';
+                    setTimeout(() => {
+                        importCampfireBtn.textContent = '📥 Import Campfire';
+                    }, 2000);
+                }
+            });
+            input.click();
+        });
+    }
 }
 
 // Global functions for external access

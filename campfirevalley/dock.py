@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 import time
 import random
-from .interfaces import IDock, IValley, IMCPBroker, IPartyBox, IFederationManager, IVALICoordinator
+from .interfaces import IDock, IValley, IMCPBroker, IPartyBox
 from .models import Torch, DockMode, FederationMembership
 
 
@@ -21,9 +21,9 @@ class Dock(IDock):
     Enhanced with federation support and VALI coordination.
     """
     
-    def __init__(self, valley: IValley, mcp_broker: IMCPBroker, party_box: IPartyBox, 
-                 federation_manager: Optional[IFederationManager] = None,
-                 vali_coordinator: Optional[IVALICoordinator] = None):
+    def __init__(self, valley: IValley, mcp_broker: IMCPBroker, party_box: IPartyBox,
+                 federation_manager: Optional[Any] = None,
+                 vali_coordinator: Optional[Any] = None):
         """
         Initialize a Dock instance.
         
@@ -271,7 +271,7 @@ class Dock(IDock):
                 logger.warning(f"Error including federation info in discovery: {e}")
         
         # Include VALI services if coordinator is available
-        if self.vali_coordinator:
+        if self.vali_coordinator and hasattr(self.vali_coordinator, "get_available_services"):
             try:
                 services = await self.vali_coordinator.get_available_services()
                 discovery_info["vali_services"] = [service.service_type for service in services]
@@ -443,7 +443,22 @@ class Dock(IDock):
             campfires = self.valley.get_campfires()
             if campfire_name in campfires:
                 campfire = campfires[campfire_name]
-                await campfire.process_torch(torch)
+                resp = None
+                if hasattr(self.valley, "process_service_call"):
+                    try:
+                        resp = await self.valley.process_service_call(campfire_name, torch)
+                    except Exception:
+                        resp = None
+                if resp is None:
+                    resp = await campfire.process_torch(torch)
+                reply_channel = (torch.metadata or {}).get("reply_channel") if hasattr(torch, "metadata") else None
+                if reply_channel and resp is not None:
+                    payload = getattr(resp, "data", None)
+                    if payload is None and isinstance(resp, dict):
+                        payload = resp
+                    if payload is None:
+                        payload = {"ok": True}
+                    await self.mcp_broker.publish(reply_channel, payload)
             else:
                 logger.warning(f"Campfire '{campfire_name}' not found for torch {torch.id}")
                 
@@ -584,7 +599,10 @@ class Dock(IDock):
         # In public mode, assume reachable
         if self.dock_mode == DockMode.PUBLIC:
             return True
-        
+
+        if self.mcp_broker and hasattr(self.mcp_broker, "is_connected") and self.mcp_broker.is_connected():
+            return True
+
         return False
     
     async def _determine_routing_method(self, valley_name: str) -> str:
@@ -600,11 +618,14 @@ class Dock(IDock):
                 return "federation"
         
         # Check if VALI coordinator can handle routing
-        if self.vali_coordinator:
-            services = await self.vali_coordinator.get_available_services()
-            for service in services:
-                if service.service_type == "routing" and valley_name in service.metadata.get("supported_valleys", []):
-                    return "vali"
+        if self.vali_coordinator and hasattr(self.vali_coordinator, "get_available_services"):
+            try:
+                services = await self.vali_coordinator.get_available_services()
+                for service in services:
+                    if service.service_type == "routing" and valley_name in service.metadata.get("supported_valleys", []):
+                        return "vali"
+            except Exception:
+                pass
         
         # Default to direct MCP broker communication
         return "direct"
@@ -763,8 +784,10 @@ class Dock(IDock):
                 logger.warning("Torch missing ID")
                 return False
             
-            if not torch.content and not (hasattr(torch, 'attachments') and torch.attachments):
-                logger.warning(f"Torch {torch.id} has no content or attachments")
+            has_payload = bool(getattr(torch, "content", None)) or bool(getattr(torch, "data", None))
+            has_attachments = bool(getattr(torch, "attachments", None))
+            if not has_payload and not has_attachments:
+                logger.warning(f"Torch {torch.id} has no payload or attachments")
                 return False
             
             # Check for required metadata

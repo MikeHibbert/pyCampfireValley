@@ -414,12 +414,13 @@ class FederationMembership(BaseModel):
     last_seen: datetime = Field(default_factory=datetime.utcnow)
     status: str = Field(default="active", description="Membership status: active, inactive, suspended")
     capabilities: List[str] = Field(default_factory=list, description="Services this valley provides")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata for federation/discovery")
     
     @field_validator('status')
     @classmethod
     def validate_status(cls, v):
         """Validate membership status"""
-        valid_statuses = ["active", "inactive", "suspended"]
+        valid_statuses = ["active", "inactive", "suspended", "discovered"]
         if v not in valid_statuses:
             raise ValueError(f"Status must be one of: {valid_statuses}")
         return v

@@ -1,6 +1,6 @@
 # Core dependencies for CampfireValley library
 # Base campfires framework
-campfires>=0.4.0
+campfires>=0.4.3
 
 # Core dependencies
 pydantic>=2.0.0
@@ -39,3 +39,6 @@ pytest-cov>=4.0.0
 black>=23.0.0
 flake8>=6.0.0
 mypy>=1.0.0
+
+chromadb>=0.5.0
+sentence-transformers>=2.6.0
