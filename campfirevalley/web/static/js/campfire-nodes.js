@@ -1420,6 +1420,11 @@ JusticeCampfireNode.prototype.onDrawBackground = function(ctx) {
 function CampfireNode() {
     this.addInput("valley_connection", "campfire");
     this.addOutput("camper_connection", "camper");
+    this.addOutput("", "camper");
+    this.addOutput("", "camper");
+    this.addOutput("", "camper");
+    this.addOutput("", "camper");
+    this.addOutput("", "camper");
     this.addProperty("name", "Campfire");
     this.addProperty("type", "standard");
     this.addProperty("status", "active");
@@ -1919,6 +1924,11 @@ GovernorCamperNode.prototype.onDrawBackground = function(ctx) {
 // Generic Camper Node - for regular campfire campers
 function CamperNode() {
     this.addInput("campfire_connection", "camper");
+    this.addInput("", "camper");
+    this.addInput("", "camper");
+    this.addInput("", "camper");
+    this.addInput("", "camper");
+    this.addInput("", "camper");
     this.addProperty("name", "Camper");
     this.addProperty("type", "worker");
     this.addProperty("status", "active");
@@ -3637,7 +3647,11 @@ const HexNodeBaseMixin = {
         if (t.startsWith("campfire/valley")) return "#2ECC71";
         if (t.startsWith("campfire/dock")) return "#1E90FF";
         if (t === "campfire/campfire" || /_campfire$/.test(t)) return "#FF9800";
-        if (t === "campfire/camper" || /_camper$/.test(t)) return "#FFD700";
+        if (t === "campfire/camper" || /_camper$/.test(t)) {
+            const kind = (this.properties && (this.properties.type || this.properties.kind)) || "";
+            if (String(kind).toLowerCase() === "auditor") return "#8b5cf6";
+            return "#FFD700";
+        }
         const status = (this.properties && this.properties.status) || "idle";
         switch (status) {
             case "active": return "#3a6ea1";
@@ -3653,10 +3667,18 @@ const HexNodeBaseMixin = {
         const w = this.size[0], h = this.size[1];
         const centerX = w / 2, centerY = h / 2;
         const radius = Math.min(w, h) * 0.4;
-        const anglesInput = [Math.PI, (2 * Math.PI) / 3, (4 * Math.PI) / 3];
-        const anglesOutput = [0, (5 * Math.PI) / 3, Math.PI / 3];
-        const angles = is_input ? anglesInput : anglesOutput;
-        const angle = angles[slot_number % angles.length];
+        const t = (this.type || "").toLowerCase();
+        const isCampfireOrCamper = (t === "campfire/campfire" || t === "campfire/camper" || /_campfire$/.test(t) || /_camper$/.test(t));
+        let angle = 0;
+        if (isCampfireOrCamper) {
+            const angles = [-Math.PI / 2, -Math.PI / 6, Math.PI / 6, Math.PI / 2, (5 * Math.PI) / 6, (-5 * Math.PI) / 6];
+            angle = angles[slot_number % angles.length];
+        } else {
+            const anglesInput = [Math.PI, (2 * Math.PI) / 3, (4 * Math.PI) / 3];
+            const anglesOutput = [0, (5 * Math.PI) / 3, Math.PI / 3];
+            const angles = is_input ? anglesInput : anglesOutput;
+            angle = angles[slot_number % angles.length];
+        }
         out[0] = this.pos[0] + centerX + radius * Math.cos(angle);
         out[1] = this.pos[1] + centerY + radius * Math.sin(angle);
         return out;

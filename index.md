@@ -38,6 +38,7 @@ docker-compose up -d
 - **[Demo Guide](DEMO_GUIDE.md)** - Step-by-step demo execution instructions
 - **[Deployment Guide](DEPLOYMENT.md)** - Production deployment with Docker
 - **[Troubleshooting](TROUBLESHOOTING.md)** - Common issues and solutions
+- **[Web UI Guide](docs/web-ui.md)** - LiteGraph UI, snapshots, layout, and Auditor commands
 
 ### Key Features
 

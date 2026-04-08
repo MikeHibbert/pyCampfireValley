@@ -42,12 +42,214 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function setupHeaderButtons() {
+        const showPicker = (opts) => {
+        const title = (opts && opts.title) || "Select";
+            const items = Array.isArray(opts && opts.items) ? opts.items : [];
+        const placeholder = (opts && opts.placeholder) || "Search…";
+        const initial = (opts && opts.initial) || "";
+            const enableDelete = !!(opts && opts.enableDelete);
+        return new Promise((resolve) => {
+            const overlay = document.createElement("div");
+            overlay.className = "cv-modal-overlay";
+            overlay.tabIndex = -1;
+            const modal = document.createElement("div");
+            modal.className = "cv-modal";
+            const header = document.createElement("div");
+            header.className = "cv-modal-header";
+            const hTitle = document.createElement("div");
+            hTitle.className = "cv-modal-title";
+            hTitle.textContent = title;
+            const closeBtn = document.createElement("button");
+            closeBtn.className = "cv-modal-close";
+            closeBtn.type = "button";
+            closeBtn.textContent = "×";
+            header.appendChild(hTitle);
+            header.appendChild(closeBtn);
+            const body = document.createElement("div");
+            body.className = "cv-modal-body";
+            const search = document.createElement("input");
+            search.className = "cv-modal-search";
+            search.type = "text";
+            search.placeholder = placeholder;
+            search.value = initial;
+            const list = document.createElement("div");
+            list.className = "cv-modal-list";
+            const footer = document.createElement("div");
+            footer.className = "cv-modal-footer";
+            const cancel = document.createElement("button");
+            cancel.className = "cv-modal-btn";
+            cancel.type = "button";
+            cancel.textContent = "Cancel";
+            const ok = document.createElement("button");
+            ok.className = "cv-modal-btn primary";
+            ok.type = "button";
+            ok.textContent = "Load";
+                const del = document.createElement("button");
+                del.className = "cv-modal-btn";
+                del.type = "button";
+                del.textContent = "Delete";
+                if (enableDelete) footer.appendChild(del);
+            footer.appendChild(cancel);
+            footer.appendChild(ok);
+            body.appendChild(search);
+            body.appendChild(list);
+            modal.appendChild(header);
+            modal.appendChild(body);
+            modal.appendChild(footer);
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            let current = "";
+            let filtered = [];
+            let activeIndex = -1;
+            const cleanup = (val) => {
+                try {
+                    document.body.removeChild(overlay);
+                } catch (e) {
+                }
+                resolve(val);
+            };
+            const setActive = (idx) => {
+                activeIndex = idx;
+                const rows = list.querySelectorAll(".cv-modal-item");
+                rows.forEach((r, i) => {
+                    if (i === idx) r.classList.add("active"); else r.classList.remove("active");
+                });
+            };
+            const nameOf = (it) => {
+                if (typeof it === "string") return it;
+                if (it && typeof it === "object") return it.name || "";
+                return "";
+            };
+            const labelOf = (it) => {
+                if (typeof it === "string") return it;
+                if (it && typeof it === "object") {
+                    const n = it.name || "";
+                    const m = it.mtime ? ` • ${new Date(it.mtime).toLocaleString()}` : "";
+                    const sz = (typeof it.size === "number") ? ` • ${(it.size/1024).toFixed(1)} KB` : "";
+                    return n + m + sz;
+                }
+                return "";
+            };
+            const render = () => {
+                const q = (search.value || "").toLowerCase().trim();
+                filtered = items.filter((x) => nameOf(x).toLowerCase().includes(q));
+                list.textContent = "";
+                filtered.forEach((entry, idx) => {
+                    const name = nameOf(entry);
+                    const row = document.createElement("div");
+                    row.className = "cv-modal-item";
+                    row.title = String(name);
+                    row.textContent = labelOf(entry);
+                    row.addEventListener("click", () => {
+                        current = String(name);
+                        setActive(idx);
+                    });
+                    row.addEventListener("dblclick", () => cleanup(String(name)));
+                    list.appendChild(row);
+                });
+                if (filtered.length === 0) {
+                    const empty = document.createElement("div");
+                    empty.className = "cv-modal-empty";
+                    empty.textContent = "No matches";
+                    list.appendChild(empty);
+                    current = "";
+                    setActive(-1);
+                    ok.disabled = true;
+                    if (enableDelete) del.disabled = true;
+                    return;
+                }
+                ok.disabled = false;
+                if (enableDelete) del.disabled = false;
+                if (!current) {
+                    current = String(nameOf(filtered[0]));
+                    setActive(0);
+                } else {
+                    const i = filtered.findIndex((x) => String(nameOf(x)) === current);
+                    if (i >= 0) setActive(i);
+                    else {
+                        current = String(nameOf(filtered[0]));
+                        setActive(0);
+                    }
+                }
+            };
+            const onKey = (ev) => {
+                if (ev.key === "Escape") {
+                    ev.preventDefault();
+                    cleanup(null);
+                    return;
+                }
+                if (ev.key === "Enter") {
+                    ev.preventDefault();
+                    cleanup(current || null);
+                    return;
+                }
+                if (ev.key === "ArrowDown") {
+                    ev.preventDefault();
+                    if (!filtered.length) return;
+                    const next = Math.min(filtered.length - 1, (activeIndex < 0 ? 0 : activeIndex + 1));
+                    current = String(filtered[next]);
+                    setActive(next);
+                    return;
+                }
+                if (ev.key === "ArrowUp") {
+                    ev.preventDefault();
+                    if (!filtered.length) return;
+                    const next = Math.max(0, (activeIndex < 0 ? 0 : activeIndex - 1));
+                    current = String(filtered[next]);
+                    setActive(next);
+                    return;
+                }
+            };
+            overlay.addEventListener("keydown", onKey);
+            search.addEventListener("keydown", onKey);
+            list.addEventListener("keydown", onKey);
+            search.addEventListener("input", render);
+            closeBtn.addEventListener("click", () => cleanup(null));
+            cancel.addEventListener("click", () => cleanup(null));
+            ok.addEventListener("click", () => cleanup(current || null));
+            if (enableDelete) {
+                del.addEventListener("click", async () => {
+                    const name = current || "";
+                    if (!name) return;
+                    try {
+                        await fetch("/api/valley/delete_snapshot", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ filename: name })
+                        });
+                        const idx = items.findIndex((x) => String(nameOf(x)) === name);
+                        if (idx >= 0) items.splice(idx, 1);
+                        current = "";
+                        render();
+                    } catch (e) {
+                    }
+                });
+            }
+            overlay.addEventListener("mousedown", (ev) => {
+                if (ev.target === overlay) cleanup(null);
+            });
+            render();
+            setTimeout(() => {
+                try {
+                    search.focus();
+                    search.select();
+                } catch (e) {
+                }
+            }, 0);
+        });
+    };
+
     // Reset Layout button
     const resetLayoutBtn = document.getElementById('resetLayout');
     if (resetLayoutBtn) {
         resetLayoutBtn.addEventListener('click', function() {
-            if (window.campfireValleyLiteGraph && window.campfireValleyLiteGraph.isInitialized) {
-                window.campfireValleyLiteGraph.createDefaultNodes();
+            const lite = window.campfireValleyLiteGraph;
+            if (!lite || !lite.isInitialized) return;
+            if (typeof lite.autoArrangeRadial === "function") {
+                lite.autoArrangeRadial();
+                console.log("Auto-arranged layout (radial)");
+            } else {
+                lite.createDefaultNodes();
                 console.log("Layout reset to default");
             }
         });
@@ -161,17 +363,28 @@ function setupHeaderButtons() {
                 if (!listRes.ok) throw new Error(String(listRes.status));
                 const listData = await listRes.json();
                 const files = (listData && listData.snapshots) || [];
-                const choice = window.prompt("Enter snapshot filename to load:\n" + files.join("\n"));
+                const sorted = Array.isArray(files) ? files : [];
+                const choice = await showPicker({
+                    title: "Load Valley Snapshot",
+                    items: sorted,
+                    placeholder: "Filter snapshots…",
+                    initial: (sorted[0] && (sorted[0].name || sorted[0])) || "",
+                    enableDelete: true
+                });
                 if (!choice) return;
                 const res = await fetch("/api/valley/load", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ filename: choice })
+                    body: JSON.stringify({ filename: (choice.name || choice) })
                 });
                 if (!res.ok) throw new Error(String(res.status));
                 const data = await res.json();
                 if (data && data.graph) {
                     lite.graph.configure(data.graph);
+                    if (typeof lite.autoArrangeRadial === "function") {
+                        setTimeout(() => lite.autoArrangeRadial(), 50);
+                        setTimeout(() => lite.autoArrangeRadial(), 350);
+                    }
                 }
                 loadValleyBtn.textContent = `✅ Loaded`;
                 setTimeout(() => {

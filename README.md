@@ -99,9 +99,19 @@ The CampfireValley server includes:
 
 - **Web Interface**: LiteGraph-based visual campfire management at http://localhost:8000
   - UI header layout tuning: see [docs/ui-header-layout.md](docs/ui-header-layout.md)
+  - Web UI guide (snapshots, layout, Auditor commands): see [docs/web-ui.md](docs/web-ui.md)
 - **Valley Management**: Core campfire orchestration and routing
 - **Redis**: Inter-campfire communication and caching
 - **Monitoring**: Real-time metrics and health monitoring
+
+### Web UI Highlights
+
+- **Snapshot UX**: searchable/clickable snapshot picker (no manual typing) with delete support
+- **Chat UX**: markdown-rendered chat (code blocks, lists, links) for readable responses
+- **Layout**: one-click radial auto-arrange (Valley → Campfires → Campers) with hex-terminal-aware anchors
+- **Auditor**:
+  - Answers status/settings questions deterministically (no surprise team mutations)
+  - Supports reordering workflow steps via natural language (e.g. “move Intake Camper to first step…”)
 
 ## 📋 Valley Configuration with Manifests
 

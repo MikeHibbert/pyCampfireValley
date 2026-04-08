@@ -138,6 +138,14 @@ class LLMCampfire(Campfire):
         try:
             # Get the system prompt from configuration
             system_prompt = self.config.config.get('prompts', {}).get('system', '')
+            try:
+                override = None
+                if hasattr(torch, "data") and isinstance(torch.data, dict):
+                    override = torch.data.get("system_prompt_override")
+                if isinstance(override, str) and override.strip():
+                    system_prompt = override.strip()
+            except Exception:
+                pass
             llm_block = (self.config.config or {}).get("llm") or {}
             llm_provider = (llm_block.get("provider") or "").strip().lower()
             selected_model = (llm_block.get("model") or "").strip() or None

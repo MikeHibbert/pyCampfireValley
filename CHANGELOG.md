@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+- Web UI: searchable/clickable Valley snapshot picker with delete support
+- Web UI: markdown rendering for chat responses (lists, code blocks, links)
+- Web UI: radial auto-arrange (Valley → Campfires → Campers) using hex-terminal anchors
+- Web UI: nearest-terminal connection routing for campfire ↔ camper links
+- Auditor: natural language workflow reordering (“move X to first step …”)
+- API: `POST /api/auditors/cleanup` to remove legacy `* Auditor` backend campfires
+
+### Changed
+- API: `/api/valley/snapshots` returns snapshot metadata (name/mtime/size) sorted newest-first
+- API: `/api/valley/details` separates backend campfires vs backend campers
+- API: `/api/campfires` hides legacy `* Auditor` by default (opt-in via `include_auditors=true`)
+- Auditor: status/settings questions answer deterministically without mutating team state
+- Snapshot load: rebuilds camper→campfire mapping from saved graph and clears stale workflow/schedule state
+
+### Fixed
+- Web UI: node deselection behavior no longer collapses panels on mouse-up
+- Monitoring: operation duration metrics use ms rounding to reduce flaky tests
+
 ## [1.2.0] - 2025-10-22
 - No functional/code changes since 1.1.1.
 - Housekeeping: align versions to 1.2.0 across project, runtime, and Docker tags.

@@ -555,7 +555,7 @@ class CampfireValleyLiteGraph {
         if (this.nodes.regularCampfire && Array.isArray(this.nodes.backendCampers)) {
             this.nodes.backendCampers.forEach((n) => {
                 try {
-                    this.nodes.regularCampfire.connect(0, n, 0);
+                    this._connectNearestCampfireCamper(this.nodes.regularCampfire, n);
                 } catch (e) {
                 }
             });
@@ -570,6 +570,13 @@ class CampfireValleyLiteGraph {
                 this.nodes.nodeDetails.properties.node_title = node.title || "Unknown Node";
                 this.nodes.nodeDetails.properties.node_details = this.getNodeDetails(node);
                 this.nodes.nodeDetails.setDirtyCanvas(true, true);
+            }
+        };
+
+        this.canvas.onNodeDeselected = () => {
+            const selected = (this.canvas && this.canvas.selected_nodes) || {};
+            if (!selected || Object.keys(selected).length === 0) {
+                this.setSelectedNode(null);
             }
         };
 
@@ -647,6 +654,7 @@ class CampfireValleyLiteGraph {
         const send = document.getElementById("chatSend");
         const mic = document.getElementById("chatMic");
         const close = document.getElementById("chatClose");
+        const inputRow = panel.querySelector(".chat-input-row");
         if (!panel || !actionBar || !title || !freeze || !logsBtn || !exportBtn || !speakBtn || !toolsBtn || !messages || !logsPanel || !input || !send || !mic || !close) {
             return;
         }
@@ -660,7 +668,7 @@ class CampfireValleyLiteGraph {
             <div class="chat-tools-row"><label>Ollama Model</label><select id="toolModelSelect"></select></div>
         `;
         document.body.appendChild(toolsPanel);
-        this.chatUI = { panel, actionBar, title, freeze, logsBtn, exportBtn, speakBtn, toolsBtn, toolsPanel, messages, logsPanel, input, send, mic, close };
+        this.chatUI = { panel, actionBar, title, freeze, logsBtn, exportBtn, speakBtn, toolsBtn, toolsPanel, messages, logsPanel, inputRow, input, send, mic, close };
 
         close.addEventListener("click", () => {
             this.hideChatPanel();
@@ -714,6 +722,11 @@ class CampfireValleyLiteGraph {
             if (!this.selectedNode) return;
             const target = this.getNodeTarget(this.selectedNode);
             if (!target) return;
+            const isVisible = !!(this.chatUI && this.chatUI.toolsPanel && this.chatUI.toolsPanel.classList.contains("visible"));
+            if (isVisible) {
+                this.toggleToolsPanel(false);
+                return;
+            }
             this.toggleToolsPanel(true);
             this.loadToolsForCampfire(target);
         });
@@ -736,10 +749,237 @@ class CampfireValleyLiteGraph {
         this.chatUI.title.textContent = displayName;
         this.chatUI.panel.classList.remove("hidden");
         this.chatUI.actionBar.classList.remove("hidden");
-        this.renderChatHistory(node);
-        this.chatUI.input.focus();
-        this.updateSpeakButtonForNode(node);
-        this.updateChatTitleFromBackend(node);
+        if (node.type === "campfire/campfire") {
+            this.renderCampfireDetails(node);
+        } else if (node.type === "campfire/valley") {
+            this.renderValleyDetails(node);
+        } else {
+            if (this.chatUI.inputRow) this.chatUI.inputRow.style.display = "";
+            this.renderChatHistory(node);
+            this.chatUI.input.focus();
+            this.updateSpeakButtonForNode(node);
+            this.updateChatTitleFromBackend(node);
+        }
+    }
+
+    _escapeHtml(s) {
+        const t = String(s == null ? "" : s);
+        return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+
+    _markdownToHtml(text) {
+        const raw = String(text == null ? "" : text);
+        const blocks = [];
+        let src = raw.replace(/\r\n/g, "\n");
+        src = src.replace(/```([a-zA-Z0-9_-]+)?\n([\s\S]*?)```/g, (_m, lang, code) => {
+            const i = blocks.length;
+            const l = (lang || "").trim();
+            const c = this._escapeHtml(code || "");
+            const html = `<pre class="md-pre"><code class="md-code${l ? " language-" + this._escapeHtml(l) : ""}">${c}</code></pre>`;
+            blocks.push(html);
+            return `@@BLOCK_${i}@@`;
+        });
+        const lines = src.split("\n");
+        let out = "";
+        let listMode = null;
+        const closeList = () => {
+            if (listMode === "ul") out += "</ul>";
+            if (listMode === "ol") out += "</ol>";
+            listMode = null;
+        };
+        const inline = (s) => {
+            let x = this._escapeHtml(s);
+            x = x.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, t, u) => `<a href="${this._escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${this._escapeHtml(t)}</a>`);
+            x = x.replace(/`([^`]+)`/g, (_m, c) => `<code class="md-inline">${this._escapeHtml(c)}</code>`);
+            x = x.replace(/\*\*([^*]+)\*\*/g, (_m, b) => `<strong>${this._escapeHtml(b)}</strong>`);
+            return x;
+        };
+        for (const line of lines) {
+            const l = line || "";
+            const mH = l.match(/^(#{1,6})\s+(.*)$/);
+            if (mH) {
+                closeList();
+                const level = mH[1].length;
+                out += `<div class="md-h md-h${level}">${inline(mH[2] || "")}</div>`;
+                continue;
+            }
+            const mUl = l.match(/^\s*[-*]\s+(.*)$/);
+            if (mUl) {
+                if (listMode !== "ul") {
+                    closeList();
+                    listMode = "ul";
+                    out += "<ul class=\"md-ul\">";
+                }
+                out += `<li>${inline(mUl[1] || "")}</li>`;
+                continue;
+            }
+            const mOl = l.match(/^\s*\d+\.\s+(.*)$/);
+            if (mOl) {
+                if (listMode !== "ol") {
+                    closeList();
+                    listMode = "ol";
+                    out += "<ol class=\"md-ol\">";
+                }
+                out += `<li>${inline(mOl[1] || "")}</li>`;
+                continue;
+            }
+            const mQ = l.match(/^\s*>\s+(.*)$/);
+            if (mQ) {
+                closeList();
+                out += `<blockquote class="md-quote">${inline(mQ[1] || "")}</blockquote>`;
+                continue;
+            }
+            if (!l.trim()) {
+                closeList();
+                out += "<div class=\"md-sp\"></div>";
+                continue;
+            }
+            closeList();
+            out += `<div class="md-p">${inline(l)}</div>`;
+        }
+        closeList();
+        out = out.replace(/@@BLOCK_(\d+)@@/g, (_m, idx) => blocks[Number(idx)] || "");
+        return out;
+    }
+
+    async renderCampfireDetails(node) {
+        if (!this.chatUI) return;
+        if (this.chatUI.inputRow) this.chatUI.inputRow.style.display = "none";
+        this.chatUI.logsPanel.classList.add("hidden");
+        this.toggleToolsPanel(false);
+        const target = this.getNodeTarget(node);
+        if (!target) return;
+        this.chatUI.messages.innerHTML = `<div class="chat-details">Loading campfire details…</div>`;
+        try {
+            const res = await fetch(`/api/campfire/details?campfire=${encodeURIComponent(target)}`);
+            if (!res.ok) {
+                this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load: ${res.status}</div>`;
+                return;
+            }
+            const data = await res.json();
+            const pb = (data && data.party_box) || {};
+            const cats = (pb && pb.categories) || {};
+            const catLines = Object.keys(cats).map((k) => {
+                const c = cats[k] || {};
+                const count = typeof c.count === "number" ? c.count : 0;
+                const items = (c.items || []).slice(0, 10).map((x) => `<li>${this._escapeHtml(x)}</li>`).join("");
+                return `<div class="chat-details-block"><div class="chat-details-h">Party Box: ${this._escapeHtml(k)} (${count})</div><ul class="chat-details-list">${items}</ul></div>`;
+            }).join("");
+            const llm = (data && data.llm) || {};
+            const tools = (data && data.tools) || {};
+            const workflow = (data && data.workflow) || {};
+            const schedule = (data && data.schedule) || {};
+            const campers = (data && data.campers) || [];
+            const body = `
+                <div class="chat-details">
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Campfire</div>
+                        <div class="chat-details-kv"><span>Name</span><span>${this._escapeHtml(target)}</span></div>
+                        <div class="chat-details-kv"><span>Type</span><span>${this._escapeHtml(data.type || "")}</span></div>
+                        <div class="chat-details-kv"><span>Running</span><span>${this._escapeHtml(String(!!data.running))}</span></div>
+                        <div class="chat-details-kv"><span>LLM</span><span>${this._escapeHtml((llm.provider || "ollama") + " / " + (llm.model || "(default)"))}</span></div>
+                        <div class="chat-details-kv"><span>Zeitgeist</span><span>${this._escapeHtml(String(!!tools.enabled))}</span></div>
+                        <div class="chat-details-kv"><span>Web Search</span><span>${this._escapeHtml(String(!!tools.web_search))}</span></div>
+                        <div class="chat-details-kv"><span>Image OCR</span><span>${this._escapeHtml(String(!!tools.image_ocr))}</span></div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Campers</div>
+                        <div class="chat-details-text">${this._escapeHtml((campers || []).join(", ") || "(none)")}</div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Workflow</div>
+                        <pre class="chat-details-pre">${this._escapeHtml(JSON.stringify(workflow || {}, null, 2))}</pre>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Schedule</div>
+                        <pre class="chat-details-pre">${this._escapeHtml(JSON.stringify(schedule || {}, null, 2))}</pre>
+                    </div>
+                    ${catLines}
+                </div>
+            `;
+            this.chatUI.messages.innerHTML = body;
+        } catch (e) {
+            this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load campfire details.</div>`;
+        }
+    }
+
+    async renderValleyDetails(node) {
+        if (!this.chatUI) return;
+        if (this.chatUI.inputRow) this.chatUI.inputRow.style.display = "none";
+        this.chatUI.logsPanel.classList.add("hidden");
+        this.toggleToolsPanel(false);
+        this.chatUI.messages.innerHTML = `<div class="chat-details">Loading valley details…</div>`;
+        try {
+            const res = await fetch(`/api/valley/details`);
+            if (!res.ok) {
+                this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load: ${res.status}</div>`;
+                return;
+            }
+            const data = await res.json();
+            const v = (data && data.valley) || {};
+            const dock = (data && data.dock) || [];
+            const schedules = (data && data.schedules) || [];
+            let graphCampfireCount = 0;
+            try {
+                graphCampfireCount = (this.graph && this.graph._nodes ? this.graph._nodes.filter((n) => n && n.type === "campfire/campfire").length : 0);
+            } catch (e) {
+                graphCampfireCount = 0;
+            }
+            const backendCampfires = (v.campfires || []);
+            const backendCampers = (v.campers || []);
+            const auditorCampfires = (v.auditor_campfires || []);
+            const body = `
+                <div class="chat-details">
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Valley</div>
+                        <div class="chat-details-kv"><span>Name</span><span>${this._escapeHtml(v.name || "")}</span></div>
+                        <div class="chat-details-kv"><span>Graph Campfires</span><span>${this._escapeHtml(String(graphCampfireCount))}</span></div>
+                        <div class="chat-details-kv"><span>Backend Campfires</span><span>${this._escapeHtml(String(v.campfire_total || backendCampfires.length || 0))}</span></div>
+                        <div class="chat-details-kv"><span>Backend Campers</span><span>${this._escapeHtml(String(v.camper_total || backendCampers.length || 0))}</span></div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Backend Campfire Names</div>
+                        <div class="chat-details-text">${this._escapeHtml((backendCampfires || []).join(", ") || "(none)")}</div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Backend Camper Names</div>
+                        <div class="chat-details-text">${this._escapeHtml((backendCampers || []).join(", ") || "(none)")}</div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Legacy Auditor Campfires</div>
+                        <div class="chat-details-text">${this._escapeHtml((auditorCampfires || []).join(", ") || "(none)")}</div>
+                        <div class="chat-details-actions"><button id="cleanupAuditorsBtn" type="button">Cleanup Legacy Auditors</button></div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Dock Valleys</div>
+                        <pre class="chat-details-pre">${this._escapeHtml(JSON.stringify(dock || [], null, 2))}</pre>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Schedules</div>
+                        <pre class="chat-details-pre">${this._escapeHtml(JSON.stringify(schedules || [], null, 2))}</pre>
+                    </div>
+                </div>
+            `;
+            this.chatUI.messages.innerHTML = body;
+            const btn = document.getElementById("cleanupAuditorsBtn");
+            if (btn) {
+                btn.disabled = !(auditorCampfires && auditorCampfires.length);
+                btn.onclick = async () => {
+                    try {
+                        btn.disabled = true;
+                        await fetch("/api/auditors/cleanup", { method: "POST" });
+                    } catch (e) {
+                    }
+                    this.renderValleyDetails(node);
+                    try {
+                        this.syncBackendCampfireNodes();
+                    } catch (e) {
+                    }
+                };
+            }
+        } catch (e) {
+            this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load valley details.</div>`;
+        }
     }
 
     updateSpeakButtonForNode(node) {
@@ -754,6 +994,261 @@ class CampfireValleyLiteGraph {
         if (!this.chatUI || !this.chatUI.toolsPanel) return;
         if (visible) this.chatUI.toolsPanel.classList.add("visible");
         else this.chatUI.toolsPanel.classList.remove("visible");
+    }
+
+    _nodeCenter(node) {
+        const x = Array.isArray(node.pos) ? node.pos[0] : 0;
+        const y = Array.isArray(node.pos) ? node.pos[1] : 0;
+        const w = (node.size && node.size[0]) ? node.size[0] : 160;
+        const h = (node.size && node.size[1]) ? node.size[1] : 120;
+        return [x + w / 2, y + h / 2];
+    }
+
+    _ensureCampfireCamperSlots() {
+        if (!this.graph || !Array.isArray(this.graph._nodes)) return;
+        this.graph._nodes.forEach((n) => {
+            if (!n) return;
+            if (n.type === "campfire/campfire") {
+                const outs = Array.isArray(n.outputs) ? n.outputs : [];
+                const need = 6 - outs.length;
+                for (let i = 0; i < need; i++) {
+                    try {
+                        n.addOutput("", "camper");
+                    } catch (e) {
+                    }
+                }
+                try {
+                    const o = Array.isArray(n.outputs) ? n.outputs : [];
+                    for (let i = 1; i < o.length; i++) {
+                        if (o[i]) o[i].name = "";
+                    }
+                } catch (e) {
+                }
+            }
+            if (n.type === "campfire/camper") {
+                const ins = Array.isArray(n.inputs) ? n.inputs : [];
+                const need = 6 - ins.length;
+                for (let i = 0; i < need; i++) {
+                    try {
+                        n.addInput("", "camper");
+                    } catch (e) {
+                    }
+                }
+                try {
+                    const it = Array.isArray(n.inputs) ? n.inputs : [];
+                    for (let i = 1; i < it.length; i++) {
+                        if (it[i]) it[i].name = "";
+                    }
+                } catch (e) {
+                }
+            }
+        });
+    }
+
+    _connectNearestCampfireCamper(campfireNode, camperNode) {
+        if (!campfireNode || !camperNode) return false;
+        const outSlots = [];
+        const inSlots = [];
+        const outs = Array.isArray(campfireNode.outputs) ? campfireNode.outputs : [];
+        const ins = Array.isArray(camperNode.inputs) ? camperNode.inputs : [];
+        for (let i = 0; i < outs.length; i++) {
+            const t = outs[i] && outs[i].type;
+            if (!t || t === "camper") outSlots.push(i);
+        }
+        for (let i = 0; i < ins.length; i++) {
+            const t = ins[i] && ins[i].type;
+            if (!t || t === "camper") inSlots.push(i);
+        }
+        if (!outSlots.length) outSlots.push(0);
+        if (!inSlots.length) inSlots.push(0);
+        let best = null;
+        for (const o of outSlots) {
+            let op = null;
+            try {
+                op = campfireNode.getConnectionPos ? campfireNode.getConnectionPos(false, o) : null;
+            } catch (e) {
+                op = null;
+            }
+            if (!op) op = this._nodeCenter(campfireNode);
+            for (const t of inSlots) {
+                let tp = null;
+                try {
+                    tp = camperNode.getConnectionPos ? camperNode.getConnectionPos(true, t) : null;
+                } catch (e) {
+                    tp = null;
+                }
+                if (!tp) tp = this._nodeCenter(camperNode);
+                const dx = op[0] - tp[0];
+                const dy = op[1] - tp[1];
+                const d2 = dx * dx + dy * dy;
+                if (!best || d2 < best.d2) best = { o, t, d2 };
+            }
+        }
+        if (!best) return false;
+        try {
+            return !!campfireNode.connect(best.o, camperNode, best.t);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    _rerouteCampfireCamperLinksNearest() {
+        if (!this.graph || !this.graph.links) return;
+        this._ensureCampfireCamperSlots();
+        const linkIds = Object.keys(this.graph.links);
+        const toReconnect = [];
+        for (const id of linkIds) {
+            const link = this.graph.links[id];
+            if (!link) continue;
+            const origin = this.graph.getNodeById ? this.graph.getNodeById(link.origin_id) : null;
+            const target = this.graph.getNodeById ? this.graph.getNodeById(link.target_id) : null;
+            if (!origin || !target) continue;
+            if (origin.type !== "campfire/campfire") continue;
+            if (target.type !== "campfire/camper") continue;
+            toReconnect.push({ id: link.id || id, origin, target });
+        }
+        for (const r of toReconnect) {
+            try {
+                this.graph.removeLink(r.id);
+            } catch (e) {
+            }
+            this._connectNearestCampfireCamper(r.origin, r.target);
+        }
+    }
+
+    _layoutPositionsAround(center, count, baseRadius = 220, ringPad = 140) {
+        const [cx, cy] = center;
+        const slotsPerRing = 6;
+        const out = [];
+        for (let i = 0; i < count; i++) {
+            const ring = Math.floor(i / slotsPerRing);
+            const idxInRing = i % slotsPerRing;
+            const angleDeg = 60 * idxInRing - 90; // top first
+            const angle = angleDeg * Math.PI / 180;
+            const r = baseRadius + ring * ringPad;
+            const x = Math.round(cx + r * Math.cos(angle));
+            const y = Math.round(cy + r * Math.sin(angle));
+            out.push([x, y]);
+        }
+        return out;
+    }
+
+    _layoutHexTerminalsAround(node, count, minRadius = 260, ringPad = 220, rotationDeg = 0) {
+        const center = this._nodeCenter(node);
+        const [cx, cy] = center;
+        const w = (node.size && node.size[0]) ? node.size[0] : 160;
+        const h = (node.size && node.size[1]) ? node.size[1] : 120;
+        const r0 = Math.max(minRadius, Math.max(w, h) * 0.55);
+        const angles = [0, 60, 120, 180, 240, 300].map((a) => (a + rotationDeg) * Math.PI / 180);
+        const out = [];
+        for (let i = 0; i < count; i++) {
+            const ring = Math.floor(i / 6);
+            const idx = i % 6;
+            const r = r0 + ring * ringPad;
+            const a = angles[idx];
+            out.push([Math.round(cx + r * Math.cos(a)), Math.round(cy + r * Math.sin(a))]);
+        }
+        return out;
+    }
+
+    _avoidOverlap(pos, existing, minDist = 80) {
+        let [x, y] = pos;
+        for (let tries = 0; tries < 8; tries++) {
+            let ok = true;
+            for (const n of existing) {
+                if (!n || !Array.isArray(n.pos)) continue;
+                const c = this._nodeCenter(n);
+                const dx = x - c[0];
+                const dy = y - c[1];
+                const d2 = dx * dx + dy * dy;
+                if (d2 < (minDist * minDist)) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) return [x, y];
+            x += 30 * Math.cos(tries * Math.PI / 3);
+            y += 30 * Math.sin(tries * Math.PI / 3);
+        }
+        return [x, y];
+    }
+
+    _placeChildrenRadially(parentNode, childNodes) {
+        if (!parentNode || !Array.isArray(childNodes) || childNodes.length === 0) return;
+        let maxChild = 180;
+        try {
+            childNodes.forEach((n) => {
+                const w = (n.size && n.size[0]) ? n.size[0] : 160;
+                const h = (n.size && n.size[1]) ? n.size[1] : 120;
+                maxChild = Math.max(maxChild, w, h);
+            });
+        } catch (e) {
+        }
+        const minRadius = Math.round(Math.max(maxChild * 1.35, 340));
+        const ringPad = Math.round(Math.max(maxChild * 1.15, 280));
+        const positions = this._layoutHexTerminalsAround(parentNode, childNodes.length, minRadius, ringPad, 0);
+        const existing = (this.graph && Array.isArray(this.graph._nodes)) ? this.graph._nodes : [];
+        childNodes.forEach((n, i) => {
+            const p = this._avoidOverlap(positions[i], existing, Math.max(110, Math.floor(maxChild * 0.55)));
+            const w = (n.size && n.size[0]) ? n.size[0] : 160;
+            const h = (n.size && n.size[1]) ? n.size[1] : 120;
+            n.pos = [p[0] - w / 2, p[1] - h / 2];
+        });
+    }
+
+    _graphChildrenFor(parentNode) {
+        const kids = [];
+        if (!parentNode || !this.graph) return kids;
+        const links = this.graph.links || {};
+        for (const k in links) {
+            const link = links[k];
+            if (!link) continue;
+            if (String(link.origin_id) !== String(parentNode.id)) continue;
+            const childId = link.target_id;
+            const child = this.graph.getNodeById ? this.graph.getNodeById(childId) : null;
+            if (!child) continue;
+            if (child.type && child.type.indexOf("campfire/camper") === 0) kids.push(child);
+        }
+        return kids;
+    }
+
+    autoArrangeRadial() {
+        if (!this.graph) return;
+        this._ensureCampfireCamperSlots();
+        const nodes = Array.isArray(this.graph._nodes) ? this.graph._nodes : [];
+        const valley = nodes.find((n) => n && n.type === "campfire/valley") || null;
+        const center = valley ? this._nodeCenter(valley) : [400, 220];
+        const campfires = nodes.filter((n) => n && n.type === "campfire/campfire");
+        let maxCampfire = 220;
+        try {
+            campfires.forEach((n) => {
+                const w = (n.size && n.size[0]) ? n.size[0] : 160;
+                const h = (n.size && n.size[1]) ? n.size[1] : 120;
+                maxCampfire = Math.max(maxCampfire, w, h);
+            });
+        } catch (e) {
+        }
+        let cfMinRadius = Math.round(Math.max(maxCampfire * 1.7, 520));
+        let cfRingPad = Math.round(Math.max(maxCampfire * 1.25, 360));
+        if (campfires.length === 1) {
+            cfMinRadius += 220;
+        }
+        const positions = valley ? this._layoutHexTerminalsAround(valley, campfires.length, cfMinRadius, cfRingPad, 0) : this._layoutPositionsAround(center, campfires.length, 420, 240);
+        campfires.forEach((cf, i) => {
+            const w = (cf.size && cf.size[0]) ? cf.size[0] : 160;
+            const h = (cf.size && cf.size[1]) ? cf.size[1] : 120;
+            const p = positions[i];
+            cf.pos = [p[0] - w / 2, p[1] - h / 2];
+        });
+        campfires.forEach((cf) => {
+            const kids = this._graphChildrenFor(cf);
+            this._placeChildrenRadially(cf, kids);
+        });
+        try {
+            this._rerouteCampfireCamperLinksNearest();
+        } catch (e) {
+        }
+        if (this.canvas) this.canvas.setDirty(true, true);
     }
 
     async loadToolsForCampfire(campfireId) {
@@ -865,6 +1360,7 @@ class CampfireValleyLiteGraph {
         this.chatUI.panel.classList.add("hidden");
         this.chatUI.actionBar.classList.add("hidden");
         this.chatUI.logsPanel.classList.add("hidden");
+        if (this.chatUI.inputRow) this.chatUI.inputRow.style.display = "";
         this.toggleToolsPanel(false);
     }
 
@@ -890,7 +1386,7 @@ class CampfireValleyLiteGraph {
         history.forEach((m) => {
             const el = document.createElement("div");
             el.className = `chat-message ${m.role === "user" ? "user" : "system"}`;
-            el.textContent = m.text;
+            el.innerHTML = this._markdownToHtml(m.text);
             container.appendChild(el);
             const options = m && Array.isArray(m.options) ? m.options : null;
             if (options && options.length) {
@@ -1073,7 +1569,6 @@ class CampfireValleyLiteGraph {
         const campfireId = `campfire_${base}`;
         const campfireName = `Campfire ${base}`;
         const auditorId = `auditor_${base}`;
-        const auditorName = `${campfireName} Auditor`;
         const campfire = this.addCampfire(campfireId, position);
         campfire.properties.name = campfireName;
         campfire.properties.type = "standard";
@@ -1081,14 +1576,17 @@ class CampfireValleyLiteGraph {
 
         const auditorPos = [position[0] + 280, position[1]];
         const auditor = this.addCamper(auditorId, auditorPos);
-        auditor.properties.name = auditorName;
+        auditor.properties.name = "Auditor";
         auditor.properties.type = "auditor";
+        auditor.properties.target = campfireName;
+        auditor.properties.auditor_mode = true;
         auditor.properties.current_task = "ready";
         auditor.properties.role_prompt = "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. You identify which campers are needed, create them, assign them ordered tasks, and coordinate their outputs. Keep replies short and action-focused.";
         auditor.title = "Auditor";
 
         try {
-            campfire.connect(0, auditor, 0);
+            this._ensureCampfireCamperSlots();
+            this._connectNearestCampfireCamper(campfire, auditor);
         } catch (e) {
         }
 
@@ -1098,7 +1596,6 @@ class CampfireValleyLiteGraph {
 
         this.appendChatMessage(auditor, { role: "system", text: "Auditor created and linked. Select a node to chat.", ts: Date.now() });
         this.ensureBackendCampfire(campfireName, "You are a helpful campfire agent. Keep responses concise and actionable.", "gemma3:4b");
-        this.ensureBackendCampfire(auditorName, auditor.properties.role_prompt, "gemma3:4b");
     }
 
     async ensureBackendCampfire(name, systemPrompt, model) {
@@ -1148,6 +1645,10 @@ class CampfireValleyLiteGraph {
             return;
         }
         const displayName = (node.properties && (node.properties.name || node.properties.id)) || node.title || "Node";
+        if (node.properties && node.properties.type === "auditor") {
+            this.chatUI.title.textContent = displayName;
+            return;
+        }
         const target = this.getNodeTarget(node);
         if (!target) {
             this.chatUI.title.textContent = displayName;
@@ -1174,6 +1675,9 @@ class CampfireValleyLiteGraph {
             return;
         }
         if (typeof target === "string" && target.startsWith("valley:")) {
+            return;
+        }
+        if (node && node.properties && node.properties.type === "auditor") {
             return;
         }
         const campfires = await this.fetchBackendCampfires(true);
@@ -1314,47 +1818,70 @@ class CampfireValleyLiteGraph {
             .filter((c) => !parents.has(c.id))
             .sort((a, b) => a.id.localeCompare(b.id));
 
-        for (const c of primaryCampfires) {
-            const auditorName = `${c.id} Auditor`;
-            if (!allIds.includes(auditorName)) {
-                await this.ensureBackendCampfire(
-                    auditorName,
-                    "You are the Auditor for this Campfire. Help the user construct the campfire, add campers, refine prompts, and confirm actions.",
-                    "gemma3:4b"
-                );
-            }
-        }
-
-        campfires = await this.fetchBackendCampfires(true);
-
         const campfireNodeById = new Map();
         primaryCampfires.forEach((c, idx) => {
-            const campfireNode = LiteGraph.createNode("campfire/campfire");
-            campfireNode.pos = [startX, startY + (idx * campfireSpacingY)];
-            campfireNode.properties = campfireNode.properties || {};
-            campfireNode.properties.backend = true;
-            campfireNode.properties.name = c.id;
-            campfireNode.properties.target = c.id;
-            campfireNode.properties.id = c.id;
-            campfireNode.properties.backend_type = c.type || "Campfire";
-            campfireNode.title = c.id;
-            this.graph.add(campfireNode);
-            this.nodes.backendCampers.push(campfireNode);
+            let campfireNode = null;
+            try {
+                campfireNode = existingNodes.find((n) => {
+                    if (!n || n.type !== "campfire/campfire") return false;
+                    if (n.properties && n.properties.backend === true) return false;
+                    const t = (n.properties && (n.properties.target || n.properties.name)) || n.title || "";
+                    return String(t) === String(c.id);
+                }) || null;
+            } catch (e) {
+                campfireNode = null;
+            }
+            if (!campfireNode && primaryCampfires.length === 1) {
+                try {
+                    campfireNode = existingNodes.find((n) => n && n.type === "campfire/campfire" && !(n.properties && n.properties.backend === true)) || null;
+                } catch (e) {
+                    campfireNode = null;
+                }
+            }
+            if (!campfireNode) {
+                campfireNode = LiteGraph.createNode("campfire/campfire");
+                campfireNode.pos = [startX, startY + (idx * campfireSpacingY)];
+                campfireNode.properties = campfireNode.properties || {};
+                campfireNode.properties.backend = true;
+                campfireNode.properties.name = c.id;
+                campfireNode.properties.target = c.id;
+                campfireNode.properties.id = c.id;
+                campfireNode.properties.backend_type = c.type || "Campfire";
+                campfireNode.title = c.id;
+                this.graph.add(campfireNode);
+                this.nodes.backendCampers.push(campfireNode);
+            } else {
+                campfireNode.properties = campfireNode.properties || {};
+                campfireNode.properties.target = c.id;
+                campfireNode.properties.id = c.id;
+                campfireNode.properties.backend_type = c.type || "Campfire";
+                campfireNode.title = c.id;
+            }
             campfireNodeById.set(c.id, campfireNode);
 
-            const auditorName = `${c.id} Auditor`;
             const auditor = LiteGraph.createNode("campfire/camper");
-            auditor.pos = [campfireNode.pos[0] + auditorOffsetX, campfireNode.pos[1] + auditorOffsetY];
+            // Position auditor at first radial slot (convert center -> top-left)
+            try {
+                const center = this._nodeCenter(campfireNode);
+                const p = this._layoutPositionsAround(center, 1, 200, 140)[0];
+                const a = this._avoidOverlap(p, existingNodes);
+                const aw = (auditor.size && auditor.size[0]) ? auditor.size[0] : 160;
+                const ah = (auditor.size && auditor.size[1]) ? auditor.size[1] : 120;
+                auditor.pos = [a[0] - aw / 2, a[1] - ah / 2];
+            } catch (e) {
+                auditor.pos = [campfireNode.pos[0] + auditorOffsetX, campfireNode.pos[1] + auditorOffsetY];
+            }
             auditor.properties = auditor.properties || {};
             auditor.properties.backend = true;
             auditor.properties.name = "Auditor";
-            auditor.properties.target = auditorName;
+            auditor.properties.target = c.id;
             auditor.properties.type = "auditor";
+            auditor.properties.auditor_mode = true;
             auditor.properties.role_prompt = "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. You identify which campers are needed, create them, assign them ordered tasks, and coordinate their outputs. Ask clarifying questions when needed.";
             auditor.title = "Auditor";
             this.graph.add(auditor);
             try {
-                campfireNode.connect(0, auditor, 0);
+                this._connectNearestCampfireCamper(campfireNode, auditor);
             } catch (e) {
             }
         });
@@ -1372,6 +1899,7 @@ class CampfireValleyLiteGraph {
         childrenByParent.forEach((children, parentId) => {
             const parentNode = campfireNodeById.get(parentId);
             if (!parentNode) return;
+            const created = [];
             children.forEach((child, idx) => {
                 const camperNode = LiteGraph.createNode("campfire/camper");
                 camperNode.pos = [parentNode.pos[0] + childOffsetX, parentNode.pos[1] + (idx * childSpacingY) + 10];
@@ -1383,11 +1911,16 @@ class CampfireValleyLiteGraph {
                 camperNode.properties.backend_type = child.type || "Campfire";
                 camperNode.title = child.id;
                 this.graph.add(camperNode);
+                created.push(camperNode);
                 try {
-                    parentNode.connect(0, camperNode, 0);
+                    this._connectNearestCampfireCamper(parentNode, camperNode);
                 } catch (e) {
                 }
             });
+            try {
+                this._placeChildrenRadially(parentNode, created);
+            } catch (e) {
+            }
         });
 
         if (this.nodes.valley && Array.isArray(this.nodes.backendCampers)) {
@@ -1418,20 +1951,23 @@ class CampfireValleyLiteGraph {
             return;
         }
         const isRemote = (typeof target === "string") && target.startsWith("valley:");
+        const isAuditor = !!(node && node.properties && node.properties.type === "auditor");
         const sendOnce = async () => {
             return await fetch("/api/voice/ingest", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     campfire: target,
-                    text
+                    text,
+                    role_prompt: isAuditor ? (node.properties.role_prompt || "") : "",
+                    auditor_mode: isAuditor ? true : false
                 })
             });
         };
         try {
             await this.ensureBackendPresentForNode(node);
             let res = await sendOnce();
-            if (!res.ok && !isRemote) {
+            if (!res.ok && !isRemote && !isAuditor) {
                 const bodyText = await res.text();
                 const looksMissing = res.status === 500 && /campfire.+not found/i.test(bodyText);
                 if (looksMissing) {

@@ -192,6 +192,25 @@ payload = {
 }
 ```
 
+## Web UI Issues
+
+### Issue: Auditor reports workflow/execution order that doesn't match the graph
+
+**Symptoms:**
+- Auditor says the workflow contains campers that are not visible on the canvas
+- “execution order” includes stale steps from a previous session
+
+**Root Cause:**
+- Workflow/schedule state is persisted on disk and can be out of sync with a newly loaded snapshot if not reset.
+
+**Solution:**
+- Load a valley snapshot from the Web UI and re-check workflow; snapshot load clears stale workflow/schedule state and rebuilds camper→campfire mappings from the saved graph links.
+- If needed, you can also run:
+  - `clear workflow`
+  - `clear schedule`
+  in the Auditor chat for the affected campfire.
+
+
 ### Issue: Connection Timeouts
 
 **Symptoms:**

@@ -493,14 +493,14 @@ def _move_beliefs_embeddings(old_name: str, new_name: str) -> None:
 def _auditor_orchestrator_instruction() -> str:
     return (
         "You are the Campfire Auditor and Orchestrator.\n"
-        "You do not solve the user's domain problem.\n"
-        "Your job is ONLY to: (1) decide which campers should exist, (2) define them, "
-        "(3) propose an ordered task plan assigning tasks to campers, and (4) briefly explain what will run next.\n"
-        "Return ONLY valid JSON with keys:\n"
+        "If the user asks about current campfire status/settings (workflow/execution order, schedule, tools, model, campers), answer directly in plain text.\n"
+        "Only produce a JSON plan if the user explicitly asks to change the team/workflow/schedule or to create a plan.\n"
+        "Never create or manage auditors as separate campers.\n"
+        "When producing a JSON plan, return ONLY valid JSON with keys:\n"
         "- campers_to_create: array of {name, persona, model, system_prompt, rag_template}\n"
         "- task_plan: array of {camper, task}\n"
         "- message_to_user: string\n"
-        "Do not include any extra text outside the JSON."
+        "Do not include any extra text outside the JSON when returning a plan."
     )
 
 
@@ -523,6 +523,93 @@ def _extract_first_json_object(text: str) -> Optional[dict]:
         return parsed if isinstance(parsed, dict) else None
     except Exception:
         return None
+
+
+graph_node_context: Dict[str, Dict[str, Any]] = {"campfires": {}, "campers": {}}
+
+
+def _node_label_from_graph_node(n: Any) -> str:
+    if not isinstance(n, dict):
+        return ""
+    props = n.get("properties") or {}
+    for k in ("target", "name", "id"):
+        v = props.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    t = n.get("title")
+    if isinstance(t, str) and t.strip():
+        return t.strip()
+    return ""
+
+
+def _node_center_from_graph_node(n: Any) -> Optional[tuple[float, float]]:
+    if not isinstance(n, dict):
+        return None
+    pos = n.get("pos")
+    size = n.get("size")
+    if not (isinstance(pos, list) and len(pos) >= 2):
+        return None
+    x, y = float(pos[0]), float(pos[1])
+    w, h = 160.0, 120.0
+    if isinstance(size, list) and len(size) >= 2:
+        try:
+            w, h = float(size[0]), float(size[1])
+        except Exception:
+            w, h = 160.0, 120.0
+    return (x + w / 2.0, y + h / 2.0)
+
+
+def _refresh_graph_context_from_snapshot(graph: Any) -> None:
+    global graph_node_context
+    graph_node_context = {"campfires": {}, "campers": {}}
+    if not isinstance(graph, dict):
+        return
+    nodes = graph.get("nodes") or []
+    if not isinstance(nodes, list):
+        return
+    by_id: Dict[str, dict] = {}
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        nid = n.get("id")
+        if nid is None:
+            continue
+        by_id[str(nid)] = n
+        ntype = (n.get("type") or "").strip()
+        label = _node_label_from_graph_node(n)
+        center = _node_center_from_graph_node(n)
+        if ntype == "campfire/campfire" and label and center:
+            graph_node_context["campfires"][label] = {"center": center}
+        if ntype == "campfire/camper" and label and center:
+            graph_node_context["campers"][label] = {"center": center}
+    links = graph.get("links") or []
+    inferred: Dict[str, str] = {}
+    if isinstance(links, list):
+        for lk in links:
+            origin_id = None
+            target_id = None
+            if isinstance(lk, list) and len(lk) >= 5:
+                origin_id = lk[1]
+                target_id = lk[3]
+            elif isinstance(lk, dict):
+                origin_id = lk.get("origin_id")
+                target_id = lk.get("target_id")
+            if origin_id is None or target_id is None:
+                continue
+            o = by_id.get(str(origin_id))
+            t = by_id.get(str(target_id))
+            if not o or not t:
+                continue
+            if (o.get("type") or "") != "campfire/campfire":
+                continue
+            if (t.get("type") or "") != "campfire/camper":
+                continue
+            campfire_name = _node_label_from_graph_node(o)
+            camper_name = _node_label_from_graph_node(t)
+            if campfire_name and camper_name and camper_name != campfire_name:
+                inferred[camper_name] = campfire_name
+    for camper, parent in inferred.items():
+        campfire_parent[camper] = parent
 
 
 def _default_llm_provider() -> str:
@@ -577,6 +664,85 @@ def _parse_add_camper_command(text: str) -> Optional[str]:
     if m3:
         name = (m3.group(1) or "").strip().strip("\"'").strip()
         return name if name else None
+    return ""
+
+
+def _normalize_label(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _match_camper_label(raw: str, campers: List[str]) -> Optional[str]:
+    r = (raw or "").strip()
+    if not r:
+        return None
+    nr = _normalize_label(r)
+    if not nr:
+        return None
+    exact = {c: _normalize_label(c) for c in campers}
+    for c, nc in exact.items():
+        if nc == nr:
+            return c
+    for c, nc in exact.items():
+        if nr and (nr in nc or nc in nr):
+            return c
+    return None
+
+
+def _ordinal_to_index(token: str) -> Optional[int]:
+    t = (token or "").strip().lower()
+    if not t:
+        return None
+    words = {
+        "first": 1,
+        "second": 2,
+        "third": 3,
+        "fourth": 4,
+        "fifth": 5,
+        "sixth": 6,
+        "seventh": 7,
+        "eighth": 8,
+        "ninth": 9,
+        "tenth": 10,
+    }
+    if t in words:
+        return words[t] - 1
+    m = re.match(r"^(\d+)", t)
+    if m:
+        try:
+            n = int(m.group(1))
+            return max(0, n - 1)
+        except Exception:
+            return None
+    return None
+
+
+def _parse_reorder_steps(text: str, campers: List[str]) -> List[tuple[str, int]]:
+    if not text or not isinstance(text, str):
+        return []
+    t = text.strip()
+    parts = re.split(r"\bthen\b", t, flags=re.IGNORECASE)
+    moves: List[tuple[str, int]] = []
+    for p in parts:
+        seg = p.strip().strip(",")
+        if not seg:
+            continue
+        m = re.search(
+            r"(?:move|put|place|set)?\s*(.+?)\s+(?:to|as)?\s*(?:the\s+)?((?:\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s*(?:step)?\b",
+            seg,
+            re.IGNORECASE,
+        )
+        if not m:
+            continue
+        raw_name = (m.group(1) or "").strip().strip("\"'").strip()
+        ord_token = (m.group(2) or "").strip()
+        idx = _ordinal_to_index(ord_token)
+        if idx is None:
+            continue
+        match = _match_camper_label(raw_name, campers)
+        if not match:
+            continue
+        moves.append((match, idx))
+    return moves
     return ""
 
 
@@ -913,13 +1079,15 @@ async def campfire_action(campfire_id: str, action: Dict):
 
 
 @app.get("/api/campfires")
-async def get_campfires():
+async def get_campfires(include_auditors: bool = False):
     """Get list of all campfires"""
     if not current_valley:
         return []
     
     campfires = []
     for campfire_name, cf in current_valley.campfires.items():
+        if not include_auditors and str(campfire_name).endswith(" Auditor"):
+            continue
         campfires.append({
             "id": campfire_name,
             "type": cf.__class__.__name__,
@@ -1012,6 +1180,127 @@ async def list_ollama_models():
         raise HTTPException(status_code=502, detail=f"Failed to query Ollama: {e}")
 
 
+async def _party_box_summary() -> Dict[str, Any]:
+    pb = getattr(current_valley, "party_box", None) if current_valley else None
+    if not pb or not getattr(pb, "list_attachments", None):
+        return {"enabled": False, "categories": {}}
+    categories = ["incoming", "outgoing", "quarantine", "attachments"]
+    out: Dict[str, Any] = {"enabled": True, "categories": {}}
+    for c in categories:
+        try:
+            items = await pb.list_attachments(category=c)
+        except Exception:
+            items = []
+        if not isinstance(items, list):
+            items = []
+        items = [str(x) for x in items if x is not None]
+        out["categories"][c] = {"count": len(items), "items": items[:50]}
+    return out
+
+
+@app.get("/api/campfire/details")
+async def get_campfire_details(campfire: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    name = (campfire or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    cf = current_valley.campfires.get(name)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    cfg_dump = cfg.model_dump(by_alias=True) if isinstance(cfg, CampfireConfig) else (cfg if isinstance(cfg, dict) else None)
+    llm = {}
+    tools = {}
+    if isinstance(cfg, CampfireConfig):
+        conf = cfg.config or {}
+        llm = conf.get("llm") or {}
+        tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+    elif isinstance(cfg, dict):
+        conf = cfg.get("config") or {}
+        llm = conf.get("llm") or {}
+        tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+    workflow = current_valley.get_workflow(name) if getattr(current_valley, "get_workflow", None) else None
+    schedule = current_valley.get_schedule(name) if getattr(current_valley, "get_schedule", None) else None
+    party_box = await _party_box_summary()
+    campers = sorted([c for c, p in campfire_parent.items() if p == name])
+    return {
+        "status": "ok",
+        "campfire": name,
+        "type": cf.__class__.__name__,
+        "running": getattr(cf, "_running", False),
+        "camper_count": len(getattr(cf, "campers", [])),
+        "campers": campers,
+        "llm": llm,
+        "tools": tools,
+        "workflow": workflow,
+        "schedule": schedule,
+        "party_box": party_box,
+        "config": cfg_dump,
+    }
+
+
+@app.get("/api/valley/details")
+async def get_valley_details():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    all_names = sorted(list(current_valley.campfires.keys()))
+    auditor_campfires = [c for c in all_names if str(c).endswith(" Auditor")]
+    campers = []
+    for n in all_names:
+        s = str(n)
+        if s in campfire_parent:
+            campers.append(s)
+            continue
+        if s.lower().endswith(" camper"):
+            campers.append(s)
+            continue
+    campers = sorted(set(campers))
+    campfires = [c for c in all_names if str(c) not in set(campers) and str(c) not in set(auditor_campfires)]
+    status = {
+        "name": current_valley.name,
+        "campfire_total": len(campfires),
+        "camper_total": len(campers),
+        "campfires": campfires,
+        "campers": campers,
+        "auditor_campfires": auditor_campfires,
+    }
+    try:
+        dock_resp = await get_dock_valleys()
+    except Exception:
+        dock_resp = {"valleys": []}
+    try:
+        sched = await list_schedules()
+    except Exception:
+        sched = {"schedules": []}
+    party_box = await _party_box_summary()
+    return {"status": "ok", "valley": status, "dock": dock_resp.get("valleys") or [], "schedules": sched.get("schedules") or [], "party_box": party_box}
+
+
+@app.post("/api/auditors/cleanup")
+async def cleanup_legacy_auditor_campfires():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    removed: List[str] = []
+    for name in list(current_valley.campfires.keys()):
+        if not str(name).endswith(" Auditor"):
+            continue
+        try:
+            await current_valley.deprovision_campfire(name)
+            removed.append(str(name))
+        except Exception:
+            continue
+        try:
+            campfire_parent.pop(str(name), None)
+        except Exception:
+            pass
+        try:
+            _cleanup_campfire_artifacts(str(name))
+        except Exception:
+            pass
+    return {"status": "ok", "removed": removed}
+
+
 @app.get("/api/campfire/llm")
 async def get_campfire_llm(campfire: str):
     if not current_valley:
@@ -1077,6 +1366,8 @@ async def voice_ingest(payload: dict = Body(...)):
     text = payload.get("text", "")
     campfire = payload.get("campfire")
     token = payload.get("admin_token")
+    role_prompt = payload.get("role_prompt") or ""
+    auditor_mode = bool(payload.get("auditor_mode"))
     # Fallback: if text is missing or looks like a placeholder, transcribe audio
     placeholder = (text or "").strip().lower()
     force_stt = (not text) or (placeholder in {"voice sample", "(no content)", "sample"})
@@ -1139,10 +1430,69 @@ async def voice_ingest(payload: dict = Body(...)):
         if response_text:
             _append_log(target, "assistant", str(response_text))
         return {"status": "ok", "campfire": target, "response": msg}
-    if _is_auditor_target(target):
-        parent = _parent_from_auditor_name(target)
+    if auditor_mode or _is_auditor_target(target):
+        parent = str(target) if auditor_mode else (campfire_parent.get(target) or _parent_from_auditor_name(target))
         cmd = (content or "").strip()
         low = cmd.lower()
+        allow_actions = any(
+            low.startswith(p)
+            for p in (
+                "add camper",
+                "create camper",
+                "move ",
+                "reorder ",
+                "swap ",
+                "remove camper",
+                "rename camper",
+                "set workflow",
+                "clear workflow",
+                "set schedule",
+                "clear schedule",
+            )
+        )
+        if parent and ("move " in low or "reorder" in low or "swap" in low):
+            campers = [c for c in _campers_for_parent(parent) if c and c != parent]
+            moves = _parse_reorder_steps(cmd, campers)
+            if moves:
+                wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
+                task_by_camper: Dict[str, str] = {}
+                if isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                    for s in wf.get("steps") or []:
+                        if not isinstance(s, dict):
+                            continue
+                        nm = (s.get("camper") or "").strip()
+                        tk = (s.get("task") or "").strip()
+                        if nm and tk:
+                            task_by_camper[nm] = tk
+
+                def _angle_for(camper_name: str) -> float:
+                    cctx = graph_node_context.get("campers", {}).get(camper_name, {})
+                    pctx = graph_node_context.get("campfires", {}).get(parent, {})
+                    cc = cctx.get("center")
+                    pc = pctx.get("center")
+                    if not (isinstance(cc, (list, tuple)) and len(cc) == 2 and isinstance(pc, (list, tuple)) and len(pc) == 2):
+                        return 0.0
+                    dx = float(cc[0]) - float(pc[0])
+                    dy = float(cc[1]) - float(pc[1])
+                    a = math.atan2(dy, dx)
+                    a = a + (math.pi / 2.0)
+                    if a < 0:
+                        a += 2.0 * math.pi
+                    return a
+
+                base_order = sorted(campers, key=_angle_for) if campers else []
+                for name, idx in moves:
+                    if name in base_order:
+                        base_order.remove(name)
+                    idx = max(0, min(idx, len(base_order)))
+                    base_order.insert(idx, name)
+                steps = [{"camper": n, "task": task_by_camper.get(n) or "Execute"} for n in base_order]
+                ok = current_valley.set_workflow(parent, steps) if getattr(current_valley, "set_workflow", None) else False
+                msg = "Workflow updated." if ok else "Failed to update workflow."
+                if ok:
+                    msg += "\n\nNew execution order:\n" + "\n".join([f"{i+1}. {n}" for i, n in enumerate(base_order)])
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": ok, "workflow": current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None}}
         if parent and low.startswith("show workflow"):
             wf = None
             if getattr(current_valley, "get_workflow", None):
@@ -1156,6 +1506,47 @@ async def voice_ingest(payload: dict = Body(...)):
                 msg = f"Workflow for '{parent}': " + " -> ".join([str(s.get("camper")) for s in steps if isinstance(s, dict) and s.get("camper")])
             _append_log(target, "assistant", msg)
             return {"status": "ok", "campfire": target, "response": {"text": msg, "workflow": wf}}
+        if parent and ("execution order" in low or "run order" in low or ("workflow" in low and not any(x in low for x in ("show workflow", "set workflow", "clear workflow")))):
+            wf = None
+            if getattr(current_valley, "get_workflow", None):
+                wf = current_valley.get_workflow(parent)
+            campers = [c for c in _campers_for_parent(parent) if c and c != parent]
+            wf_campers = []
+            if isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                for s in wf.get("steps") or []:
+                    if isinstance(s, dict) and s.get("camper"):
+                        wf_campers.append(str(s.get("camper")))
+            wf_is_valid = bool(wf_campers) and all(c in campers for c in wf_campers)
+
+            if wf_is_valid:
+                steps = []
+                for i, s in enumerate(wf.get("steps") or [], start=1):
+                    if isinstance(s, dict):
+                        nm = s.get("camper") or s.get("name") or s.get("id") or ""
+                        st = s.get("task") or s.get("instruction") or s.get("action") or ""
+                        steps.append(f"{i}. {nm}: {st}".strip())
+                    else:
+                        steps.append(f"{i}. {s}")
+                msg = "Execution order (workflow):\n" + ("\n".join(steps) if steps else "(empty)")
+            else:
+                def _angle_for(camper_name: str) -> float:
+                    cctx = graph_node_context.get("campers", {}).get(camper_name, {})
+                    pctx = graph_node_context.get("campfires", {}).get(parent, {})
+                    cc = cctx.get("center")
+                    pc = pctx.get("center")
+                    if not (isinstance(cc, (list, tuple)) and len(cc) == 2 and isinstance(pc, (list, tuple)) and len(pc) == 2):
+                        return 0.0
+                    dx = float(cc[0]) - float(pc[0])
+                    dy = float(cc[1]) - float(pc[1])
+                    a = math.atan2(dy, dx)
+                    a = a + (math.pi / 2.0)
+                    if a < 0:
+                        a += 2.0 * math.pi
+                    return a
+                ordered = sorted(campers, key=_angle_for) if campers else []
+                msg = "Execution order (visual):\n" + ("\n".join([f"{i+1}. {n}" for i, n in enumerate(ordered)]) if ordered else "(no campers linked)")
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "workflow": wf, "campers": campers}}
         if parent and low.startswith("clear workflow"):
             ok = False
             if getattr(current_valley, "clear_workflow", None):
@@ -1208,6 +1599,48 @@ async def voice_ingest(payload: dict = Body(...)):
             msg = f"Schedule enabled for '{parent}' every {interval}s." if ok else f"Failed to set schedule for '{parent}'."
             _append_log(target, "assistant", msg)
             return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": ok, "schedule": schedule}}
+
+        if parent and (("process" in low) or any(k in low for k in ("settings", "environment", "config", "configuration", "tools", "zeitgeist", "web search", "image ocr", "ocr", "llm", "model"))):
+            effective = parent if parent in current_valley.campfires else None
+            if not effective:
+                non_auditors = [c for c in current_valley.campfires.keys() if not str(c).endswith(" Auditor")]
+                effective = non_auditors[0] if non_auditors else None
+            cf = current_valley.campfires.get(effective) if effective else None
+            llm = {}
+            tools = {}
+            if cf and getattr(cf, "config", None):
+                cfg = cf.config
+                if isinstance(cfg, CampfireConfig):
+                    conf = cfg.config or {}
+                elif isinstance(cfg, dict):
+                    conf = cfg.get("config") or {}
+                else:
+                    conf = {}
+                llm = conf.get("llm") or {}
+                tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+            campers = [c for c in _campers_for_parent(parent) if c and c != parent]
+            wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
+            sched = current_valley.get_schedule(parent) if getattr(current_valley, "get_schedule", None) else None
+            if isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                filtered_steps = []
+                for s in wf.get("steps") or []:
+                    if not isinstance(s, dict):
+                        continue
+                    nm = s.get("camper")
+                    if nm and str(nm) in campers:
+                        filtered_steps.append(s)
+                wf = dict(wf)
+                wf["steps"] = filtered_steps
+            msg = (
+                f"Campfire: {parent}\n"
+                f"LLM: {(llm.get('provider') or 'ollama')} / {(llm.get('model') or '(default)')}\n"
+                f"Zeitgeist: enabled={bool(tools.get('enabled'))}, web_search={bool(tools.get('web_search'))}, image_ocr={bool(tools.get('image_ocr'))}\n"
+                f"Campers ({len(campers)}): " + (", ".join(campers) if campers else "(none)") + "\n"
+                f"Workflow: " + (json.dumps(wf, indent=2) if wf else "(none)") + "\n"
+                f"Schedule: " + (json.dumps(sched, indent=2) if sched else "(none)")
+            )
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg}}
 
         requested_rename = _parse_rename_camper_command(content)
         if requested_rename is not None and parent:
@@ -1278,17 +1711,10 @@ async def voice_ingest(payload: dict = Body(...)):
                         updated_steps.append(s)
                 current_valley.set_workflow(parent, updated_steps)
 
-            old_auditor = f"{old_name} Auditor"
             try:
                 await current_valley.deprovision_campfire(old_name)
             except Exception:
                 pass
-            try:
-                if old_auditor in current_valley.campfires:
-                    await current_valley.deprovision_campfire(old_auditor)
-            except Exception:
-                pass
-            _cleanup_campfire_artifacts(old_auditor)
 
             msg = f"Renamed camper '{old_name}' to '{new_name}'."
             _append_log(target, "assistant", msg)
@@ -1307,17 +1733,10 @@ async def voice_ingest(payload: dict = Body(...)):
                 _append_log(target, "assistant", msg)
                 return {"status": "ok", "campfire": target, "response": {"text": msg, "options": options, "options_action": "remove"}}
 
-            auditor_name = f"{name} Auditor"
             removed = []
             try:
                 await current_valley.deprovision_campfire(name)
                 removed.append(name)
-            except Exception:
-                pass
-            try:
-                if auditor_name in current_valley.campfires:
-                    await current_valley.deprovision_campfire(auditor_name)
-                    removed.append(auditor_name)
             except Exception:
                 pass
 
@@ -1327,7 +1746,6 @@ async def voice_ingest(payload: dict = Body(...)):
                 pass
 
             _cleanup_campfire_artifacts(name)
-            _cleanup_campfire_artifacts(auditor_name)
 
             msg = f"Removed camper '{name}' from '{parent}'."
             _append_log(target, "assistant", msg)
@@ -1363,22 +1781,26 @@ async def voice_ingest(payload: dict = Body(...)):
             _append_log(target, "assistant", msg)
             return {"status": "ok", "campfire": target, "response": {"text": msg, "created": [name] if ok else [], "parent": parent}}
 
-        if target not in current_valley.campfires:
-            cfg = {
-                "llm": {
-                    "provider": "ollama",
-                    "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
-                    "model": "gemma3:4b",
-                },
-                "prompts": {"system": "You are an Auditor and Orchestrator. You coordinate other campers. You do not solve the user's domain problem."},
-                "persona": {"name": target, "provider": "ollama", "model": "gemma3:4b"},
-                "rag": {"documents": _default_rag_documents(str(target), "orchestrator")},
-            }
-            await current_valley.provision_campfire(CampfireConfig(name=target, type="LLMCampfire", config=cfg))
+        effective = parent if parent in current_valley.campfires else None
+        if not effective:
+            non_auditors = [c for c in current_valley.campfires.keys() if not str(c).endswith(" Auditor")]
+            effective = non_auditors[0] if non_auditors else None
+        if not effective:
+            return {"status": "ok", "campfire": target, "response": {"text": "No campfire available."}}
 
-        combined = f"{_auditor_orchestrator_instruction()}\n\nUser request:\n{content.strip()}"
-        result = await current_valley.send_voice_text(target, combined, admin)
-        response = (result or {}).get("response")
+        auditor_system = ""
+        if isinstance(role_prompt, str) and role_prompt.strip():
+            auditor_system = role_prompt.strip() + "\n\n"
+        auditor_system = auditor_system + _auditor_orchestrator_instruction()
+
+        torch_dict = make_voice_torch(current_valley.name, effective, str(content).strip(), admin)
+        if isinstance(torch_dict.get("data"), dict):
+            torch_dict["data"]["system_prompt_override"] = auditor_system
+            torch_dict["data"]["auditor_target"] = target
+        torch = Torch(**torch_dict)
+        resp = await current_valley.process_torch(torch)
+        response = resp.data if resp and hasattr(resp, "data") else None
+        result = {"status": "ok", "campfire": target, "response": response}
         response_text = None
         if isinstance(response, dict):
             response_text = response.get("llm_response") or response.get("text")
@@ -1386,6 +1808,9 @@ async def voice_ingest(payload: dict = Body(...)):
             response_text = response
         if response_text:
             _append_log(target, "assistant", str(response_text))
+
+        if auditor_mode and not allow_actions:
+            return result
 
         plan = _extract_first_json_object(str(response_text or ""))
         if not plan:
@@ -1403,6 +1828,9 @@ async def voice_ingest(payload: dict = Body(...)):
                     continue
                 name = (raw.get("name") or "").strip()
                 if not name:
+                    continue
+                low_name = name.lower()
+                if low_name == "auditor" or low_name.endswith(" auditor"):
                     continue
                 if name in current_valley.campfires:
                     continue
@@ -1650,8 +2078,19 @@ async def import_campfire(payload: dict = Body(...)):
 async def list_snapshots():
     cfg_dir = _get_config_dir()
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    files = sorted([p.name for p in cfg_dir.glob("*.yaml")], reverse=True)
-    return {"status": "ok", "snapshots": files}
+    items = []
+    for p in cfg_dir.glob("*.yaml"):
+        try:
+            st = p.stat()
+            items.append({
+                "name": p.name,
+                "size": st.st_size,
+                "mtime": datetime.utcfromtimestamp(st.st_mtime).isoformat() + "Z",
+            })
+        except Exception:
+            items.append({"name": p.name, "size": None, "mtime": None})
+    items.sort(key=lambda x: (x.get("mtime") or "", x.get("name") or ""), reverse=True)
+    return {"status": "ok", "snapshots": items}
 
 
 @app.post("/api/valley/save")
@@ -1727,7 +2166,46 @@ async def load_valley(payload: dict = Body(...)):
         if ok:
             restored.append(cfg.name)
 
+    try:
+        campfire_parent.clear()
+        _refresh_graph_context_from_snapshot(graph)
+    except Exception:
+        pass
+
+    try:
+        for name in restored:
+            try:
+                if getattr(current_valley, "clear_schedule", None):
+                    current_valley.clear_schedule(name)
+            except Exception:
+                pass
+            try:
+                if getattr(current_valley, "clear_workflow", None):
+                    current_valley.clear_workflow(name)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return {"status": "ok", "restored": restored, "graph": graph}
+
+
+@app.post("/api/valley/delete_snapshot")
+async def delete_snapshot(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    filename = (payload.get("filename") or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    cfg_dir = _get_config_dir()
+    path = cfg_dir / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    try:
+        path.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+    return {"status": "ok", "removed": filename}
 
 
 @app.post("/api/beliefs/freeze")

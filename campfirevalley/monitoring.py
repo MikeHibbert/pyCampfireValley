@@ -9,6 +9,7 @@ import time
 import json
 import logging
 import asyncio
+import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Callable, Union
 from enum import Enum
@@ -239,11 +240,11 @@ class PerformanceMonitor:
         try:
             result = await func(*args, **kwargs) if asyncio.iscoroutinefunction(func) else func(*args, **kwargs)
         except Exception:
-            duration_ms = (time.perf_counter() - start) * 1000.0
+            duration_ms = math.ceil((time.perf_counter() - start) * 1000.0)
             pm = PerformanceMetrics(operation=operation, duration=duration_ms, success=False)
             await self.record_performance_metrics(pm)
             raise
-        duration_ms = (time.perf_counter() - start) * 1000.0
+        duration_ms = math.ceil((time.perf_counter() - start) * 1000.0)
         pm = PerformanceMetrics(operation=operation, duration=duration_ms, success=True)
         await self.record_performance_metrics(pm)
         return result
