@@ -691,6 +691,39 @@ Send speech-to-text results into running campfires for interactive dialogue and 
 
 This endpoint accepts transcribed text from any STT system (local or external). Future adapters can integrate directly with providers.
 
+## Web UI Features
+
+The LiteGraph web UI (http://localhost:8000) includes a chat panel per node with a small action bar:
+
+- **🧰 Tools panel**
+  - Toggle Zeitgeist features per campfire/camper:
+    - Enable Zeitgeist
+    - Web Search (injects web results + excerpts into the prompt)
+    - Image OCR (uses an Ollama multimodal model to extract text from image URLs)
+  - **Select Ollama model** (per campfire/camper):
+    - The UI queries Ollama for available models and lets you choose one
+    - This selection is persisted in the campfire config YAML and used for future requests
+- **🔒 Freeze Beliefs**
+  - Extracts compact “belief” statements from the node’s chat history and stores them in the embeddings database
+  - Beliefs are injected back into future prompts as a short “You remember…” prefix
+- **📜 Logs**
+  - Shows the persisted JSONL log for the selected campfire/camper
+- **⬇ Export**
+  - Exports the selected campfire (config + logs + beliefs) as YAML
+- **📥 Import Campfire**
+  - Imports a previously exported campfire YAML into the running valley
+- **💾 Save Valley / 📁 Load Valley**
+  - Saves and restores a snapshot containing the full node graph plus campfire configurations
+
+### API Notes
+
+- List Ollama models:
+  - `GET /api/ollama/models`
+- Set per-campfire LLM model:
+  - `POST /api/campfire/llm` body: `{ "campfire": "Name", "provider": "ollama", "model": "llama3.2:latest" }`
+- Freeze beliefs:
+  - `POST /api/beliefs/freeze`
+
 ### Local Parakeet STT (Default Fallback)
 
 By default, Campfire Valley uses a local Parakeet STT engine as the fallback:

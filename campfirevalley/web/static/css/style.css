@@ -859,6 +859,16 @@ body {
     width: 18px;
     height: 18px;
 }
+
+.chat-tools-row select {
+    flex: 1;
+    background: #333;
+    color: #fff;
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
 .chat-header {
     display: flex;
     align-items: center;

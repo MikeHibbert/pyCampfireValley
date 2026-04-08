@@ -16,6 +16,7 @@ from .campfire import Campfire
 from .interfaces import IMCPBroker
 from .models import Torch, CampfireConfig
 from .monitoring import get_monitoring_system, LogLevel, AlertSeverity
+from .zeitgeist_runtime import build_zeitgeist_context
 
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,9 @@ class LLMCampfire(Campfire):
         try:
             # Get the system prompt from configuration
             system_prompt = self.config.config.get('prompts', {}).get('system', '')
+            llm_block = (self.config.config or {}).get("llm") or {}
+            llm_provider = (llm_block.get("provider") or "").strip().lower()
+            selected_model = (llm_block.get("model") or "").strip() or None
             
             # Prepare the prompt with torch data (prefer 'content' or 'text')
             torch_data = torch.data.get('content') or torch.data.get('text') or str(torch.data)
@@ -161,19 +165,31 @@ class LLMCampfire(Campfire):
                 rag_prefix = f"Reference:\n{rag_lines}\n\n"
             tools_block = (self.config.config or {}).get("tools") or {}
             zeit = tools_block.get("zeitgeist") or {}
-            zeit_prefix = ""
+            zeit_feats = []
             if zeit.get("enabled"):
-                feats = []
                 if zeit.get("web_search"):
-                    feats.append("web_search")
+                    zeit_feats.append("web_search")
                 if zeit.get("image_ocr"):
-                    feats.append("image_ocr")
-                if feats:
-                    zeit_prefix = f"External tools enabled via Zeitgeist: {', '.join(feats)}.\n\n"
-            prompt = f"{belief_prefix}{rag_prefix}{zeit_prefix}{system_prompt}\n\nUser Request: {torch_data}"
+                    zeit_feats.append("image_ocr")
+            zeit_cap = ""
+            if zeit_feats:
+                zeit_cap = f"External tools available via Zeitgeist: {', '.join(zeit_feats)}.\n"
+            zeit_context = ""
+            try:
+                zeit_cfg = dict(zeit) if isinstance(zeit, dict) else {}
+                if zeit_cfg.get("image_ocr") and llm_provider == "ollama" and selected_model:
+                    zeit_cfg["ollama_model"] = selected_model
+                    zeit_cfg["ollama_host"] = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+                zeit_context = await build_zeitgeist_context(torch_data, zeit_cfg)
+            except Exception:
+                zeit_context = ""
+            if zeit_context:
+                zeit_cap = (zeit_cap + "\n") if zeit_cap else ""
+                zeit_cap = zeit_cap + "If Zeitgeist context is present, treat it as the source of truth and do not invent facts.\n"
+            prompt = f"{belief_prefix}{rag_prefix}{zeit_cap}{zeit_context}{system_prompt}\n\nUser Request: {torch_data}"
             
             # Process with LLM
-            response = await self.process_torch_with_llm(torch, prompt)
+            response = await self.process_torch_with_llm(torch, prompt, model=selected_model)
             
             if response:
                 logger.info(f"Successfully processed torch {torch.torch_id} with LLM")
@@ -212,6 +228,7 @@ class LLMCampfire(Campfire):
                 prompt=context_prompt,
                 model=model
             )
+            response = await self._maybe_run_zeitgeist_tools(torch, prompt, response, model=model)
             
             # Update torch with LLM response
             if response:
@@ -228,6 +245,80 @@ class LLMCampfire(Campfire):
         except Exception as e:
             logger.error(f"Error processing torch {torch.id} with LLM: {e}")
             return None
+
+    def _extract_tool_code_calls(self, text: str) -> List[Dict[str, str]]:
+        if not text or not isinstance(text, str):
+            return []
+        m = re.search(r"```tool_code\\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+        if not m:
+            return []
+        body = (m.group(1) or "").strip()
+        calls: List[Dict[str, str]] = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            low = line.lower()
+            if "web_search" in low:
+                q = None
+                mm = re.search(r"query\\s*=\\s*['\"]([^'\"]+)['\"]", line, re.IGNORECASE)
+                if mm:
+                    q = mm.group(1)
+                if q is None:
+                    mm = re.search(r"web_search\\s+['\"]([^'\"]+)['\"]", line, re.IGNORECASE)
+                    if mm:
+                        q = mm.group(1)
+                if q is None:
+                    mm = re.search(r"['\"]([^'\"]+)['\"]", line)
+                    if mm:
+                        q = mm.group(1)
+                if q:
+                    calls.append({"tool": "web_search", "arg": q})
+                continue
+            if "fetch_url" in low:
+                u = None
+                mm = re.search(r"url\\s*=\\s*['\"]([^'\"]+)['\"]", line, re.IGNORECASE)
+                if mm:
+                    u = mm.group(1)
+                if u is None:
+                    mm = re.search(r"['\"]([^'\"]+)['\"]", line)
+                    if mm:
+                        u = mm.group(1)
+                if u:
+                    calls.append({"tool": "fetch_url", "arg": u})
+        return calls[:3]
+
+    async def _maybe_run_zeitgeist_tools(self, torch: Torch, base_prompt: str, response: Optional[str], model: Optional[str] = None) -> Optional[str]:
+        if not response or not isinstance(response, str):
+            return response
+        tools_block = (self.config.config or {}).get("tools") or {}
+        zeit = tools_block.get("zeitgeist") or {}
+        if not zeit.get("enabled"):
+            return response
+        if not zeit.get("web_search"):
+            return response
+        calls = self._extract_tool_code_calls(response)
+        if not calls:
+            return response
+        out_blocks: List[str] = []
+        for c in calls:
+            if c.get("tool") == "web_search":
+                ctx = await build_zeitgeist_context(c.get("arg") or "", {"enabled": True, "web_search": True})
+                if ctx:
+                    out_blocks.append(ctx.strip())
+            if c.get("tool") == "fetch_url":
+                ctx = await build_zeitgeist_context(c.get("arg") or "", {"enabled": True, "web_search": True})
+                if ctx:
+                    out_blocks.append(ctx.strip())
+        if not out_blocks:
+            return response
+        tool_out = "\n\n".join(out_blocks)
+        prompt = f"{base_prompt}\n\nZeitgeist tool output:\n{tool_out}\n\nAnswer the user request using the tool output where relevant."
+        context_prompt = self._prepare_context_prompt(torch, prompt)
+        try:
+            return await self._llm_camper.process_with_llm(prompt=context_prompt, model=model)
+        except Exception:
+            return response
     
     def _prepare_context_prompt(self, torch: Torch, prompt: str) -> str:
         """

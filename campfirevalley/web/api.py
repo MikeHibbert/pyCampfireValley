@@ -17,6 +17,7 @@ import yaml
 import re
 import math
 import uuid
+import httpx
 
 # Prometheus metrics
 from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
@@ -116,7 +117,21 @@ app.add_middleware(
 
 # Get the correct static files path
 static_path = os.path.join(os.path.dirname(__file__), "static")
-app.mount("/static", StaticFiles(directory=static_path), name="static")
+
+
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        resp = await super().get_response(path, scope)
+        try:
+            resp.headers["Cache-Control"] = "no-store, max-age=0"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+        except Exception:
+            pass
+        return resp
+
+
+app.mount("/static", NoCacheStaticFiles(directory=static_path), name="static")
 
 # WebSocket manager
 manager = WebSocketManager()
@@ -972,6 +987,87 @@ async def set_campfire_tools(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to persist tools: {e}")
     return {"status": "ok", "campfire": campfire, "tools": zeitgeist}
+
+
+@app.get("/api/ollama/models")
+async def list_ollama_models():
+    host = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{host}/api/tags")
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Ollama returned {r.status_code}")
+        data = r.json()
+        models = []
+        for m in (data.get("models") or []):
+            name = (m.get("name") if isinstance(m, dict) else None) or ""
+            name = str(name).strip()
+            if name:
+                models.append(name)
+        models = sorted(set(models))
+        return {"status": "ok", "models": models}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to query Ollama: {e}")
+
+
+@app.get("/api/campfire/llm")
+async def get_campfire_llm(campfire: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    cf = current_valley.campfires.get(campfire)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    if isinstance(cfg, CampfireConfig):
+        conf = cfg.config or {}
+        llm = conf.get("llm") or {}
+    elif isinstance(cfg, dict):
+        conf = cfg.get("config") or {}
+        llm = conf.get("llm") or {}
+    else:
+        llm = {}
+    provider = (llm.get("provider") or "").strip() or "ollama"
+    model = (llm.get("model") or "").strip() or None
+    return {"status": "ok", "campfire": campfire, "provider": provider, "model": model}
+
+
+@app.post("/api/campfire/llm")
+async def set_campfire_llm(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    campfire = (payload.get("campfire") or "").strip()
+    provider = (payload.get("provider") or "ollama").strip().lower()
+    model = (payload.get("model") or "").strip()
+    if not campfire or not model:
+        raise HTTPException(status_code=400, detail="Missing campfire or model")
+    if provider != "ollama":
+        raise HTTPException(status_code=400, detail="Only ollama provider is supported in the UI currently")
+    cf = current_valley.campfires.get(campfire)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    if isinstance(cfg, CampfireConfig):
+        cfg.config = cfg.config or {}
+        cfg.config["llm"] = cfg.config.get("llm") or {}
+        cfg.config["llm"]["provider"] = provider
+        cfg.config["llm"]["model"] = model
+        to_save = cfg
+    elif isinstance(cfg, dict):
+        cfg.setdefault("config", {})
+        cfg["config"].setdefault("llm", {})
+        cfg["config"]["llm"]["provider"] = provider
+        cfg["config"]["llm"]["model"] = model
+        to_save = CampfireConfig(name=campfire, type=cfg.get("type") or "LLMCampfire", config=cfg.get("config") or {})
+    else:
+        raise HTTPException(status_code=400, detail="Campfire config not editable")
+    path = _get_config_dir() / f"campfire_{_slugify(campfire)}.yaml"
+    try:
+        ConfigManager.save_campfire_config(to_save, str(path))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist llm config: {e}")
+    return {"status": "ok", "campfire": campfire, "provider": provider, "model": model}
 
 
 @app.post("/api/voice/ingest")

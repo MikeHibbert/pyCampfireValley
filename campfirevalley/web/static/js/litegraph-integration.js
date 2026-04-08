@@ -657,6 +657,7 @@ class CampfireValleyLiteGraph {
             <div class="chat-tools-row"><label>Enable Zeitgeist</label><input id="toolZeitgeistEnabled" type="checkbox"/></div>
             <div class="chat-tools-row"><label>Web Search</label><input id="toolWebSearch" type="checkbox"/></div>
             <div class="chat-tools-row"><label>Image OCR</label><input id="toolImageOCR" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Ollama Model</label><select id="toolModelSelect"></select></div>
         `;
         document.body.appendChild(toolsPanel);
         this.chatUI = { panel, actionBar, title, freeze, logsBtn, exportBtn, speakBtn, toolsBtn, toolsPanel, messages, logsPanel, input, send, mic, close };
@@ -768,8 +769,66 @@ class CampfireValleyLiteGraph {
             document.getElementById("toolWebSearch").checked = ws;
             document.getElementById("toolImageOCR").checked = ocr;
             this.bindToolsPanelEvents(campfireId);
+            await this.loadLlmModelForCampfire(campfireId);
         } catch (e) {
         }
+    }
+
+    async loadLlmModelForCampfire(campfireId) {
+        const sel = document.getElementById("toolModelSelect");
+        if (!sel) return;
+        let currentModel = "";
+        let provider = "ollama";
+        try {
+            const r = await fetch(`/api/campfire/llm?campfire=${encodeURIComponent(campfireId)}`);
+            if (r.ok) {
+                const d = await r.json();
+                provider = (d && d.provider) || "ollama";
+                currentModel = (d && d.model) || "";
+            }
+        } catch (e) {
+        }
+        let models = [];
+        try {
+            const r = await fetch(`/api/ollama/models`);
+            if (r.ok) {
+                const d = await r.json();
+                models = (d && d.models) || [];
+            }
+        } catch (e) {
+        }
+        sel.textContent = "";
+        const opt0 = document.createElement("option");
+        opt0.value = "";
+        opt0.textContent = "(default)";
+        sel.appendChild(opt0);
+        (models || []).forEach((m) => {
+            if (typeof m !== "string") return;
+            const mm = m.trim();
+            if (!mm) return;
+            const o = document.createElement("option");
+            o.value = mm;
+            o.textContent = mm;
+            sel.appendChild(o);
+        });
+        sel.disabled = String(provider).toLowerCase() !== "ollama";
+        if (currentModel) {
+            sel.value = currentModel;
+        } else {
+            sel.value = "";
+        }
+        sel.onchange = async () => {
+            const v = (sel.value || "").trim();
+            if (!v) return;
+            try {
+                await fetch("/api/campfire/llm", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ campfire: campfireId, provider: "ollama", model: v })
+                });
+            } catch (e) {
+            }
+        };
     }
 
     bindToolsPanelEvents(campfireId) {
