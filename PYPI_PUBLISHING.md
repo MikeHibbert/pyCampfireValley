@@ -45,24 +45,24 @@ python -m twine check dist/*
 
 ```bash
 # Upload to TestPyPI first
-twine upload --repository testpypi dist/campfirevalley-1.2.1*
+twine upload --repository testpypi dist/campfirevalley-1.2.2*
 
 # Test installation from TestPyPI
-pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ campfirevalley==1.2.1
+pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ campfirevalley==1.2.2
 ```
 
 ### Step 3: Upload to Production PyPI
 
 ```bash
 # Upload to production PyPI
-twine upload dist/campfirevalley-1.2.1*
+twine upload dist/campfirevalley-1.2.2*
 ```
 
 ### Step 4: Verify Installation
 
 ```bash
 # Install from PyPI
-pip install campfirevalley==1.2.1
+pip install campfirevalley==1.2.2
 
 # Test the installation
 python -c "import campfirevalley; print(campfirevalley.__version__)"
@@ -72,17 +72,17 @@ campfirevalley --help
 ## Package Information
 
 - **Package Name**: `campfirevalley`
-- **Version**: `1.2.1`
+- **Version**: `1.2.2`
 - **Description**: A distributed AI agent orchestration platform with visual LiteGraph interface
 - **Author**: Mike Hibbert
 - **License**: MIT
 - **Python Support**: 3.8+
 
-## Key Features in v1.2.1
+## Key Features in v1.2.2
 
-- Gateway CLI onboarding (`campfirevalley onboard`) and PID-tracked daemon helpers (`campfirevalley daemon run|status`)
-- Voice ingestion endpoint (`POST /api/voice/ingest`) with admin token gating
-- Local Parakeet STT fallback for audio transcription (`audio_base64` / `audio_url`)
+- Workflow orchestration improvements: deterministic auditing and end-of-workflow final reporting
+- Web UI: Stop Audio button for TTS interruption
+- Discord bot: chunking + full-report attachment for long outputs
 
 ## Files Included in Package
 
@@ -117,13 +117,13 @@ campfirevalley --help
 twine check dist/*
 
 # Upload with verbose output
-twine upload --verbose dist/campfirevalley-1.2.1*
+twine upload --verbose dist/campfirevalley-1.2.2*
 
 # Upload only if doesn't exist
-twine upload --skip-existing dist/campfirevalley-1.2.1*
+twine upload --skip-existing dist/campfirevalley-1.2.2*
 
 # Upload to specific repository
-twine upload --repository testpypi dist/campfirevalley-1.2.1*
+twine upload --repository testpypi dist/campfirevalley-1.2.2*
 ```
 
 ## Security Notes

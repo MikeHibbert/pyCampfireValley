@@ -7,23 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- (none)
+
+### Changed
+- (none)
+
+### Fixed
+- (none)
+
+## [1.2.2] - 2026-04-13
+### Added
 - Web UI: searchable/clickable Valley snapshot picker with delete support
 - Web UI: markdown rendering for chat responses (lists, code blocks, links)
 - Web UI: radial auto-arrange (Valley → Campfires → Campers) using hex-terminal anchors
 - Web UI: nearest-terminal connection routing for campfire ↔ camper links
 - Auditor: natural language workflow reordering (“move X to first step …”)
 - API: `POST /api/auditors/cleanup` to remove legacy `* Auditor` backend campfires
+- Chat: ⏹️ Stop Audio button to interrupt browser text-to-speech
+- Workflow: final report enforcement with “Role Contributions” appendix for synthesis verification
 
 ### Changed
 - API: `/api/valley/snapshots` returns snapshot metadata (name/mtime/size) sorted newest-first
 - API: `/api/valley/details` separates backend campfires vs backend campers
 - API: `/api/campfires` hides legacy `* Auditor` by default (opt-in via `include_auditors=true`)
 - Auditor: status/settings questions answer deterministically without mutating team state
-- Snapshot load: rebuilds camper→campfire mapping from saved graph and clears stale workflow/schedule state
+- Snapshot load: rebuilds camper→campfire mapping from saved graph
+- Discord bot: final responses post as new messages with chunking + full-report attachment
+- Discord bot: waits for workflow payload on reply channel (ignores non-workflow messages)
 
 ### Fixed
-- Web UI: node deselection behavior no longer collapses panels on mouse-up
-- Monitoring: operation duration metrics use ms rounding to reduce flaky tests
+- Auditor: `self audit` reliability for time windows and correlation-id audits
+- Workflow persistence: prevents workflow state from being incorrectly treated as missing when graph links are absent
+- Workflow: ensures the Discord reply is only published once the workflow finishes (no intermediate step response publishing)
 
 ## [1.2.0] - 2025-10-22
 - No functional/code changes since 1.1.1.
