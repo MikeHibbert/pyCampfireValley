@@ -42,3 +42,6 @@ mypy>=1.0.0
 
 chromadb>=0.5.0
 sentence-transformers>=2.6.0
+discord.py>=2.3.2
+PyMuPDF>=1.24.0
+python-docx>=1.1.2

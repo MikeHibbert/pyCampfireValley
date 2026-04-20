@@ -108,10 +108,22 @@ The CampfireValley server includes:
 
 - **Snapshot UX**: searchable/clickable snapshot picker (no manual typing) with delete support
 - **Chat UX**: markdown-rendered chat (code blocks, lists, links) for readable responses
+- **Chat TTS**: ⏹️ Stop Audio button to interrupt in-progress text-to-speech
 - **Layout**: one-click radial auto-arrange (Valley → Campfires → Campers) with hex-terminal-aware anchors
 - **Auditor**:
   - Answers status/settings questions deterministically (no surprise team mutations)
   - Supports reordering workflow steps via natural language (e.g. “move Intake Camper to first step…”)
+  - Supports `self audit` and `self audit cid:<correlation_id>` to verify that campers ran in order
+  - Enforces synthesis in the final step via a required `Role Contributions` appendix in the final report
+
+### Discord Bot (Optional)
+
+The Docker stack includes an optional Discord bot service (`campfire-discord-bot`) that:
+
+- Listens in `DISCORD_CHANNEL`
+- Sends the request to `valley:<VALLEY_IDENTIFIER>/<CAMPFIRE_IDENTIFIER>`
+- Posts the final report as a reply (chunked into multiple messages when needed)
+- Attaches a full `.md` report if the output is longer than the configured message limit
 
 ## 📋 Valley Configuration with Manifests
 

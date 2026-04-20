@@ -139,11 +139,19 @@ class Campfire(BaseCampfire, ICampfire):
         # Monitor performance
         with self.monitoring.monitor_performance("campfire", "process_torch"):
             try:
+                corr = None
+                try:
+                    if hasattr(torch, "metadata") and isinstance(torch.metadata, dict):
+                        corr = (torch.metadata.get("correlation_id") or "").strip() or None
+                except Exception:
+                    corr = None
+                corr = corr or getattr(torch, "torch_id", None)
                 await self.monitoring.log(
                     LogLevel.INFO,
                     f"Processing torch {torch.id}",
                     f"campfire.{self.config.name}",
-                    context={"torch_id": torch.id, "sender": torch.sender_valley}
+                    context={"torch_id": torch.id, "sender": torch.sender_valley},
+                    correlation_id=corr
                 )
                 
                 # Execute campfire steps in order
@@ -158,6 +166,13 @@ class Campfire(BaseCampfire, ICampfire):
                 
                 # If there's a result, create response torch
                 if result:
+                    await self.monitoring.log(
+                        LogLevel.INFO,
+                        f"Processed torch {torch.id} successfully",
+                        f"campfire.{self.config.name}",
+                        context={"torch_id": torch.id, "status": "success"},
+                        correlation_id=corr
+                    )
                     response_torch = Torch(
                         claim="response_torch",
                         source_campfire=self.config.name,
@@ -180,7 +195,8 @@ class Campfire(BaseCampfire, ICampfire):
                     LogLevel.ERROR,
                     f"Error processing torch {torch.id}: {str(e)}",
                     f"campfire.{self.config.name}",
-                    context={"torch_id": torch.id, "error": str(e)}
+                    context={"torch_id": torch.id, "error": str(e)},
+                    correlation_id=corr
                 )
                 
                 await self.monitoring.send_alert(

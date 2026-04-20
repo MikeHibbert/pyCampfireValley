@@ -16,6 +16,7 @@ services:
       - CAMPFIRE_VALLEY_ENV=docker
       - CAMPFIRE_VALLEY_HOST=0.0.0.0
       - CAMPFIRE_VALLEY_PORT=8000
+      - DOCK_MODE=public
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
@@ -23,6 +24,9 @@ services:
       - CONFIG_DIR=/app/data/configs
       - EMBEDDINGS_DIR=/app/data/embeddings
       - LOGS_DIR=/app/data/logs
+      - ENABLE_DOCK_ON_START=true
+      - VALLEY_IDENTIFIER=${VALLEY_IDENTIFIER:-}
+      - CAMPFIRE_IDENTIFIER=${CAMPFIRE_IDENTIFIER:-}
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs
@@ -48,6 +52,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  campfire-discord-bot:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+      args:
+        USE_LOCAL_CAMPFIRES: "false"
+        USE_GIT_CAMPFIRES: "true"
+    container_name: campfire-discord-bot
+    user: "0:0"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - DISCORD_CHANNEL=${DISCORD_CHANNEL:-contract-review}
+      - VALLEY_IDENTIFIER=${VALLEY_IDENTIFIER:-}
+      - CAMPFIRE_IDENTIFIER=${CAMPFIRE_IDENTIFIER:-contract-review-campfire}
+    networks:
+      - campfire-network
+    depends_on:
+      - redis
+      - campfire-valley
+    restart: unless-stopped
+    command: python inspiration/discord_bot.py
+
   campfire-valley-remote:
     build:
       context: .
@@ -70,8 +97,8 @@ services:
       - EMBEDDINGS_DIR=/app/data/embeddings
       - LOGS_DIR=/app/data/logs
       - VALLEY_NAME=Remote Valley
-      - ENABLE_DOCK_ON_START=true
-      - DOCK_MODE=public
+      - ENABLE_DOCK_ON_START=false
+      - DOCK_MODE=private
     volumes:
       - ./config:/app/config:ro
       - valley_data_remote:/app/persistent_data

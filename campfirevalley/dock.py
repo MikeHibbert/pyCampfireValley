@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 import time
 import random
 from .interfaces import IDock, IValley, IMCPBroker, IPartyBox
-from .models import Torch, DockMode, FederationMembership
+from .models import Torch, DockMode, FederationMembership, CampfireConfig
 
 
 logger = logging.getLogger(__name__)
@@ -240,13 +240,20 @@ class Dock(IDock):
             return  # No discovery in private mode
         
         valley_config = self.valley.get_config()
+        valley_id = ""
+        try:
+            env = getattr(valley_config, "env", None) or {}
+            valley_id = (env.get("valley_id") or "").strip()
+        except Exception:
+            valley_id = ""
         
         discovery_info = {
             "valley_name": valley_config.name,
+            "valley_id": valley_id,
             "dock_mode": self.dock_mode.value,
             "status": "active" if self._running else "inactive",
             "alias": valley_config.name,  # Could be different from name
-            "public_address": f"valley:{valley_config.name}",
+            "public_address": f"valley:{valley_id or valley_config.name}",
             "timestamp": asyncio.get_event_loop().time(),
             "protocol_version": "1.0"
         }
@@ -340,11 +347,21 @@ class Dock(IDock):
         """Subscribe to dock-related MCP channels"""
         valley_config = self.valley.get_config()
         valley_name = valley_config.name
+        valley_id = ""
+        try:
+            env = getattr(valley_config, "env", None) or {}
+            valley_id = (env.get("valley_id") or "").strip()
+        except Exception:
+            valley_id = ""
         
         # Subscribe to incoming torch channel
         incoming_channel = f"valley:{valley_name}/dock/incoming"
         await self.mcp_broker.subscribe(incoming_channel, self._handle_incoming_message)
         self._subscriptions[incoming_channel] = True
+        if valley_id and valley_id != valley_name:
+            incoming_channel_id = f"valley:{valley_id}/dock/incoming"
+            await self.mcp_broker.subscribe(incoming_channel_id, self._handle_incoming_message)
+            self._subscriptions[incoming_channel_id] = True
         
         # Subscribe to discovery channel if not in private mode
         if self.dock_mode != DockMode.PRIVATE:
@@ -387,6 +404,7 @@ class Dock(IDock):
                 membership.metadata = {
                     "dock_mode": message.get("dock_mode", "unknown"),
                     "public_address": message.get("public_address", f"valley:{valley_name}"),
+                    "valley_id": message.get("valley_id") or "",
                     "protocol_version": message.get("protocol_version", "unknown"),
                     "exposed_campfires": message.get("exposed_campfires", []),
                     "vali_services": message.get("vali_services", []),
@@ -441,21 +459,29 @@ class Dock(IDock):
             
             # Get campfire from valley
             campfires = self.valley.get_campfires()
-            if campfire_name in campfires:
-                campfire = campfires[campfire_name]
+            resolved_name = campfire_name
+            if resolved_name not in campfires:
+                resolved_name = self._resolve_campfire_by_identifier(campfires, campfire_name) or campfire_name
+            if resolved_name in campfires:
+                campfire = campfires[resolved_name]
                 resp = None
                 if hasattr(self.valley, "process_service_call"):
                     try:
-                        resp = await self.valley.process_service_call(campfire_name, torch)
-                    except Exception:
+                        resp = await self.valley.process_service_call(resolved_name, torch)
+                    except Exception as e:
+                        logger.error(f"process_service_call failed for campfire '{resolved_name}' torch {torch.id}: {e}")
                         resp = None
                 if resp is None:
+                    logger.warning(f"process_service_call returned None for campfire '{resolved_name}' torch {torch.id}; falling back to direct campfire processing")
                     resp = await campfire.process_torch(torch)
+                
                 reply_channel = (torch.metadata or {}).get("reply_channel") if hasattr(torch, "metadata") else None
                 if reply_channel and resp is not None:
                     payload = getattr(resp, "data", None)
                     if payload is None and isinstance(resp, dict):
                         payload = resp
+                    elif payload is None and hasattr(resp, "dict"):
+                        payload = resp.dict()
                     if payload is None:
                         payload = {"ok": True}
                     await self.mcp_broker.publish(reply_channel, payload)
@@ -464,6 +490,29 @@ class Dock(IDock):
                 
         except Exception as e:
             logger.error(f"Error routing torch {torch.id}: {e}")
+
+    def _resolve_campfire_by_identifier(self, campfires: Dict[str, Any], identifier: str) -> Optional[str]:
+        ident = (identifier or "").strip()
+        if not ident:
+            return None
+        matches: List[str] = []
+        for name, cf in (campfires or {}).items():
+            cfg = getattr(cf, "config", None)
+            conf: Dict[str, Any] = {}
+            if isinstance(cfg, CampfireConfig):
+                conf = cfg.config or {}
+            elif isinstance(cfg, dict):
+                conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+            dock = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
+            v = dock.get("identifier") if isinstance(dock, dict) else None
+            v = (str(v).strip() if v is not None else "")
+            if v and v == ident:
+                matches.append(str(name))
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning(f"Multiple campfires share identifier '{ident}': {matches}. Using '{matches[0]}'.")
+        return matches[0]
     
     async def _package_torch(self, torch: Torch) -> Torch:
         """Package torch with Party Box attachments"""
@@ -554,6 +603,16 @@ class Dock(IDock):
         try:
             if not self.federation_manager:
                 return
+            local_ids: List[str] = []
+            try:
+                cfg = self.valley.get_config()
+                local_ids.append(str(cfg.name))
+                env = getattr(cfg, "env", None) or {}
+                vid = (env.get("valley_id") or "").strip()
+                if vid:
+                    local_ids.append(vid)
+            except Exception:
+                local_ids = [self.valley.get_config().name]
             
             # Get all federation memberships
             federations = await self.federation_manager.get_all_federations()
@@ -562,7 +621,7 @@ class Dock(IDock):
                 # Discover valleys in each federation
                 valleys = await self.federation_manager.discover_valleys(federation.federation_name)
                 for valley in valleys:
-                    if valley.valley_id != self.valley.get_config().name:  # Don't include ourselves
+                    if str(getattr(valley, "valley_id", "")) not in set(local_ids):  # Don't include ourselves
                         self._known_valleys[valley.valley_id] = valley
             
             logger.info(f"Discovered {len(self._known_valleys)} valleys through federation")
@@ -583,6 +642,14 @@ class Dock(IDock):
     async def _is_valley_reachable(self, valley_name: str) -> bool:
         """Check if a valley is reachable through any available method"""
         # Check if it's our own valley
+        try:
+            cfg = self.valley.get_config()
+            local_env = getattr(cfg, "env", None) or {}
+            local_id = (local_env.get("valley_id") or "").strip()
+            if valley_name in {cfg.name, local_id}:
+                return True
+        except Exception:
+            pass
         if valley_name == self.valley.get_config().name:
             return True
         

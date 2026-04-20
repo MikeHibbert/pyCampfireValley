@@ -201,14 +201,40 @@ payload = {
 - “execution order” includes stale steps from a previous session
 
 **Root Cause:**
-- Workflow/schedule state is persisted on disk and can be out of sync with a newly loaded snapshot if not reset.
+- Workflow/schedule state is persisted on disk and is independent from the saved graph snapshot. If you reorder steps or change tasks, that persists across restarts until you explicitly change it again.
 
 **Solution:**
-- Load a valley snapshot from the Web UI and re-check workflow; snapshot load clears stale workflow/schedule state and rebuilds camper→campfire mappings from the saved graph links.
-- If needed, you can also run:
+- Use the Auditor chat to inspect and correct the persisted state:
   - `clear workflow`
   - `clear schedule`
+  - `set workflow {"steps":[...]}`
+  - `set schedule ...`
   in the Auditor chat for the affected campfire.
+
+### Issue: Discord shows an “early” reply or a generic reply without workflow synthesis
+
+**Symptoms:**
+- Discord shows a response that appears before the workflow finishes, or looks like a single-model generic answer
+- `self audit` shows the workflow is still running or completed later than the Discord timestamp
+
+**Root Cause:**
+- Discord “placeholder” messages can be edited later, which keeps the original timestamp.
+- If multiple Valley services subscribe to the same `valley:<VALLEY_IDENTIFIER>/dock/incoming` Redis channel, a fast responder can publish a non-workflow reply before the workflow completes.
+
+**Solution:**
+- Ensure only one service is listening to the dock incoming channel for your `VALLEY_IDENTIFIER`.
+- Prefer Discord replies that include a workflow payload (`ok` + `results` + `text`) and ignore non-workflow replies.
+
+### Issue: Discord reply is truncated
+
+**Symptoms:**
+- Only the first part of a long contract review is shown
+
+**Root Cause:**
+- Discord has message length limits; long reports must be chunked into multiple messages or attached as a file.
+
+**Solution:**
+- Configure the Discord bot to post multiple parts and attach a full `.md` report when needed.
 
 
 ### Issue: Connection Timeouts

@@ -42,6 +42,18 @@ The Docker setup includes:
 - `OPENROUTER_API_KEY`: Your OpenRouter API key for cloud-based LLMs
 - `OLLAMA_HOST`: Host for local Ollama instance (default: http://host.docker.internal:11434)
 - `CAMPFIRE_VALLEY_LOG_LEVEL`: Logging level (default: INFO)
+- `VALLEY_IDENTIFIER`: Unique valley id used for MCP routing (must match between services)
+- `CAMPFIRE_IDENTIFIER`: Dock identifier for the campfire Discord should address (default: `contract-review-campfire`)
+- `DISCORD_BOT_TOKEN`: Discord bot token (required for the Discord bot service)
+- `DISCORD_CHANNEL`: Discord channel name to listen to (default: `contract-review`)
+
+### Discord Bot
+
+If `campfire-discord-bot` is enabled in `docker-compose.yml`, the bot will:
+
+- Post a placeholder “Boat arriving…” message immediately
+- Post the final report as one or more reply messages
+- Attach the full report as a `.md` file when the output is longer than the configured message limit
 
 ### Using Local Ollama
 
@@ -106,19 +118,15 @@ For detailed manifest configuration options, see the main README.md file.
 
 ## Monitoring and Observability
 
-### Web Interface (Port 8080)
-- **Dashboard**: Overview of all campfire processes
-- **Real-time Logs**: Live log streaming from campfires
-- **Metrics**: Performance and activity metrics
-- **Process Management**: Start/stop/restart campfires
+### Web Interface (Port 8000)
+- Access the Web UI on: http://localhost:8000
 
 ### Prometheus Metrics (Port 9090)
 - Access Prometheus at: http://localhost:9090
 - Metrics include campfire activity, processing times, and system health
 
 ### Health Checks
-- Application health: http://localhost:8080/health
-- Detailed status: http://localhost:8080/status
+- Application health: http://localhost:8000/
 
 ## Example Valley Workflow
 

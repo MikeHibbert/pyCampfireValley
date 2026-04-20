@@ -7,11 +7,13 @@ import logging
 import os
 import re
 import math
+import time
 from typing import Optional, List, Dict, Any, Union
 from campfires import LLMCamperMixin
 from campfires.core.openrouter import OpenRouterConfig, ChatMessage
 from campfires.core.ollama import OllamaConfig, OllamaClient
 import logging
+import httpx
 from .campfire import Campfire
 from .interfaces import IMCPBroker
 from .models import Torch, CampfireConfig
@@ -22,6 +24,35 @@ from .zeitgeist_runtime import build_zeitgeist_context
 logger = logging.getLogger(__name__)
 
 _beliefs_collection = None
+_OLLAMA_MODELS_CACHE: Dict[str, Any] = {"ts": 0.0, "models": set()}
+
+
+async def _get_ollama_model_names(base_url: str) -> set[str]:
+    now = time.time()
+    ts = float(_OLLAMA_MODELS_CACHE.get("ts") or 0.0)
+    cached = _OLLAMA_MODELS_CACHE.get("models")
+    if isinstance(cached, set) and cached and (now - ts) < 60.0:
+        return cached
+    url = (base_url or "").rstrip("/") + "/api/tags"
+    models: set[str] = set()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(url)
+            if r.status_code == 200:
+                data = r.json() if r.content else {}
+                items = data.get("models") if isinstance(data, dict) else None
+                if isinstance(items, list):
+                    for it in items:
+                        if isinstance(it, dict):
+                            name = (it.get("name") or "").strip()
+                            if name:
+                                models.add(name)
+    except Exception:
+        models = set()
+    if models:
+        _OLLAMA_MODELS_CACHE["ts"] = now
+        _OLLAMA_MODELS_CACHE["models"] = models
+    return models
 
 
 def _hash_embed(texts: List[str], dims: int = 384) -> List[List[float]]:
@@ -136,6 +167,24 @@ class LLMCampfire(Campfire):
         logger.info(f"Processing torch {torch.torch_id} with LLM in campfire '{self.config.name}'")
         
         try:
+            monitoring = get_monitoring_system()
+            corr = None
+            try:
+                if hasattr(torch, "metadata") and isinstance(torch.metadata, dict):
+                    corr = (torch.metadata.get("correlation_id") or "").strip() or None
+            except Exception:
+                corr = None
+            corr = corr or getattr(torch, "torch_id", None)
+            try:
+                await monitoring.log(
+                    LogLevel.INFO,
+                    f"LLM start for torch {torch.torch_id}",
+                    f"campfire.{self.config.name}",
+                    context={"claim": getattr(torch, "claim", ""), "channel": getattr(torch, "channel", "")},
+                    correlation_id=corr,
+                )
+            except Exception:
+                pass
             # Get the system prompt from configuration
             system_prompt = self.config.config.get('prompts', {}).get('system', '')
             try:
@@ -149,6 +198,25 @@ class LLMCampfire(Campfire):
             llm_block = (self.config.config or {}).get("llm") or {}
             llm_provider = (llm_block.get("provider") or "").strip().lower()
             selected_model = (llm_block.get("model") or "").strip() or None
+            if llm_provider == "ollama":
+                base_url = (llm_block.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")).strip()
+                fallback_model = "gemma3:4b"
+                if not selected_model:
+                    selected_model = fallback_model
+                else:
+                    models = await _get_ollama_model_names(base_url)
+                    if models and selected_model not in models:
+                        try:
+                            await monitoring.log(
+                                LogLevel.WARNING,
+                                f"Configured ollama model '{selected_model}' not available; using '{fallback_model}'",
+                                f"campfire.{self.config.name}",
+                                context={"configured_model": selected_model, "fallback_model": fallback_model},
+                                correlation_id=corr,
+                            )
+                        except Exception:
+                            pass
+                        selected_model = fallback_model
             
             # Prepare the prompt with torch data (prefer 'content' or 'text')
             torch_data = torch.data.get('content') or torch.data.get('text') or str(torch.data)
@@ -201,13 +269,51 @@ class LLMCampfire(Campfire):
             
             if response:
                 logger.info(f"Successfully processed torch {torch.torch_id} with LLM")
+                try:
+                    await monitoring.log(
+                        LogLevel.INFO,
+                        f"LLM completed for torch {torch.torch_id}",
+                        f"campfire.{self.config.name}",
+                        context={"model": selected_model or (self.llm_config.default_model if hasattr(self.llm_config, 'default_model') else "")},
+                        correlation_id=corr,
+                    )
+                except Exception:
+                    pass
                 return response
             else:
                 logger.warning(f"LLM processing returned no response for torch {torch.torch_id}")
+                try:
+                    await monitoring.log(
+                        LogLevel.WARNING,
+                        f"LLM returned no response for torch {torch.torch_id}",
+                        f"campfire.{self.config.name}",
+                        context={"model": selected_model or (self.llm_config.default_model if hasattr(self.llm_config, 'default_model') else "")},
+                        correlation_id=corr,
+                    )
+                except Exception:
+                    pass
                 return None
                 
         except Exception as e:
             logger.error(f"Error processing torch {torch.torch_id} with LLM: {e}")
+            try:
+                monitoring = get_monitoring_system()
+                corr = None
+                try:
+                    if hasattr(torch, "metadata") and isinstance(torch.metadata, dict):
+                        corr = (torch.metadata.get("correlation_id") or "").strip() or None
+                except Exception:
+                    corr = None
+                corr = corr or getattr(torch, "torch_id", None)
+                await monitoring.log(
+                    LogLevel.ERROR,
+                    f"LLM error for torch {torch.torch_id}: {e}",
+                    f"campfire.{self.config.name}",
+                    context={"error": str(e)},
+                    correlation_id=corr,
+                )
+            except Exception:
+                pass
             return None
     
     async def process_torch_with_llm(self, torch: Torch, prompt: str, 
@@ -232,17 +338,57 @@ class LLMCampfire(Campfire):
             context_prompt = self._prepare_context_prompt(torch, prompt)
             
             # Process with LLM
+            used_model = model
             response = await self._llm_camper.process_with_llm(
                 prompt=context_prompt,
-                model=model
+                model=used_model
             )
+            if response is None:
+                try:
+                    llm_cfg = self.config.config.get("llm") if isinstance(self.config.config, dict) else {}
+                    provider = (llm_cfg.get("provider") or "").strip().lower() or "ollama"
+                except Exception:
+                    provider = "ollama"
+                fallback_model = "gemma3:4b"
+                if provider == "ollama" and used_model and used_model != fallback_model:
+                    try:
+                        monitoring = get_monitoring_system()
+                        corr = None
+                        try:
+                            if hasattr(torch, "metadata") and isinstance(torch.metadata, dict):
+                                corr = (torch.metadata.get("correlation_id") or "").strip() or None
+                        except Exception:
+                            corr = None
+                        corr = corr or getattr(torch, "torch_id", None)
+                        await monitoring.log(
+                            LogLevel.WARNING,
+                            f"LLM returned no response for model '{used_model}', retrying with fallback '{fallback_model}'",
+                            f"campfire.{self.config.name}",
+                            context={"model": used_model, "fallback": fallback_model},
+                            correlation_id=corr,
+                        )
+                    except Exception:
+                        pass
+                    used_model = fallback_model
+                    response = await self._llm_camper.process_with_llm(prompt=context_prompt, model=used_model)
             response = await self._maybe_run_zeitgeist_tools(torch, prompt, response, model=model)
             
             # Update torch with LLM response
             if response:
                 torch.data['llm_response'] = response
-                torch.data['llm_model'] = model or getattr(self.llm_config, 'default_model', 'llama3:latest')
+                torch.data['llm_model'] = used_model or getattr(self.llm_config, 'default_model', 'llama3:latest')
                 torch.metadata['processed_by_llm'] = True
+                try:
+                    monitoring = get_monitoring_system()
+                    await monitoring.log(
+                        LogLevel.INFO,
+                        f"LLM produced response for torch {torch.torch_id}",
+                        f"campfire.{self.config.name}",
+                        context={"chars": len(str(response))},
+                        correlation_id=corr,
+                    )
+                except Exception:
+                    pass
                 
                 logger.info(f"Torch {torch.id} processed with LLM successfully")
                 return torch

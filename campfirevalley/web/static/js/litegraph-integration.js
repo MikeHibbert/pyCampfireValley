@@ -647,6 +647,7 @@ class CampfireValleyLiteGraph {
         const logsBtn = document.getElementById("chatLogs");
         const exportBtn = document.getElementById("chatExport");
         const speakBtn = document.getElementById("chatSpeak");
+        const stopSpeakBtn = document.getElementById("chatStopSpeak");
         const toolsBtn = document.getElementById("chatTools");
         const messages = document.getElementById("chatMessages");
         const logsPanel = document.getElementById("chatLogsPanel");
@@ -655,7 +656,7 @@ class CampfireValleyLiteGraph {
         const mic = document.getElementById("chatMic");
         const close = document.getElementById("chatClose");
         const inputRow = panel.querySelector(".chat-input-row");
-        if (!panel || !actionBar || !title || !freeze || !logsBtn || !exportBtn || !speakBtn || !toolsBtn || !messages || !logsPanel || !input || !send || !mic || !close) {
+        if (!panel || !actionBar || !title || !freeze || !logsBtn || !exportBtn || !speakBtn || !stopSpeakBtn || !toolsBtn || !messages || !logsPanel || !input || !send || !mic || !close) {
             return;
         }
         const toolsPanel = document.createElement("div");
@@ -668,7 +669,7 @@ class CampfireValleyLiteGraph {
             <div class="chat-tools-row"><label>Ollama Model</label><select id="toolModelSelect"></select></div>
         `;
         document.body.appendChild(toolsPanel);
-        this.chatUI = { panel, actionBar, title, freeze, logsBtn, exportBtn, speakBtn, toolsBtn, toolsPanel, messages, logsPanel, inputRow, input, send, mic, close };
+        this.chatUI = { panel, actionBar, title, freeze, logsBtn, exportBtn, speakBtn, stopSpeakBtn, toolsBtn, toolsPanel, messages, logsPanel, inputRow, input, send, mic, close };
 
         close.addEventListener("click", () => {
             this.hideChatPanel();
@@ -718,8 +719,18 @@ class CampfireValleyLiteGraph {
             this.selectedNode.properties.tts_enabled = next;
             this.updateSpeakButtonForNode(this.selectedNode);
         });
+
+        stopSpeakBtn.addEventListener("click", () => {
+            if (window.speechSynthesis) {
+                window.speechSynthesis.cancel();
+            }
+        });
+
         toolsBtn.addEventListener("click", () => {
             if (!this.selectedNode) return;
+            if (!this._nodeCanConfigureCamperTools(this.selectedNode)) {
+                return;
+            }
             const target = this.getNodeTarget(this.selectedNode);
             if (!target) return;
             const isVisible = !!(this.chatUI && this.chatUI.toolsPanel && this.chatUI.toolsPanel.classList.contains("visible"));
@@ -749,6 +760,7 @@ class CampfireValleyLiteGraph {
         this.chatUI.title.textContent = displayName;
         this.chatUI.panel.classList.remove("hidden");
         this.chatUI.actionBar.classList.remove("hidden");
+        this.updateToolsButtonForNode(node);
         if (node.type === "campfire/campfire") {
             this.renderCampfireDetails(node);
         } else if (node.type === "campfire/valley") {
@@ -866,7 +878,7 @@ class CampfireValleyLiteGraph {
                 return `<div class="chat-details-block"><div class="chat-details-h">Party Box: ${this._escapeHtml(k)} (${count})</div><ul class="chat-details-list">${items}</ul></div>`;
             }).join("");
             const llm = (data && data.llm) || {};
-            const tools = (data && data.tools) || {};
+            const dock = (data && data.dock) || {};
             const workflow = (data && data.workflow) || {};
             const schedule = (data && data.schedule) || {};
             const campers = (data && data.campers) || [];
@@ -878,9 +890,12 @@ class CampfireValleyLiteGraph {
                         <div class="chat-details-kv"><span>Type</span><span>${this._escapeHtml(data.type || "")}</span></div>
                         <div class="chat-details-kv"><span>Running</span><span>${this._escapeHtml(String(!!data.running))}</span></div>
                         <div class="chat-details-kv"><span>LLM</span><span>${this._escapeHtml((llm.provider || "ollama") + " / " + (llm.model || "(default)"))}</span></div>
-                        <div class="chat-details-kv"><span>Zeitgeist</span><span>${this._escapeHtml(String(!!tools.enabled))}</span></div>
-                        <div class="chat-details-kv"><span>Web Search</span><span>${this._escapeHtml(String(!!tools.web_search))}</span></div>
-                        <div class="chat-details-kv"><span>Image OCR</span><span>${this._escapeHtml(String(!!tools.image_ocr))}</span></div>
+                        <div class="chat-details-kv"><span>Dock Identifier</span><span>${this._escapeHtml(dock.identifier || "")}</span></div>
+                        <div class="chat-details-kv"><span>Dock Address</span><span>${this._escapeHtml(dock.address || "")}</span></div>
+                        <div class="chat-details-actions">
+                            <input id="campfireDockIdentifierInput" class="chat-input" type="text" placeholder="Set Dock Identifier (optional)" value="${this._escapeHtml(dock.identifier || "")}" autocomplete="off" />
+                            <button id="campfireDockIdentifierSave" type="button">Save</button>
+                        </div>
                     </div>
                     <div class="chat-details-block">
                         <div class="chat-details-h">Campers</div>
@@ -898,6 +913,30 @@ class CampfireValleyLiteGraph {
                 </div>
             `;
             this.chatUI.messages.innerHTML = body;
+            const input = document.getElementById("campfireDockIdentifierInput");
+            const btn = document.getElementById("campfireDockIdentifierSave");
+            if (btn && input) {
+                btn.onclick = async () => {
+                    const v = String(input.value || "").trim();
+                    btn.disabled = true;
+                    try {
+                        await fetch("/api/campfire/identifier", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ campfire: target, identifier: v })
+                        });
+                    } catch (e) {
+                    }
+                    btn.disabled = false;
+                    this.renderCampfireDetails(node);
+                };
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        btn.click();
+                    }
+                });
+            }
         } catch (e) {
             this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load campfire details.</div>`;
         }
@@ -917,6 +956,15 @@ class CampfireValleyLiteGraph {
             }
             const data = await res.json();
             const v = (data && data.valley) || {};
+            let valleyId = v.identifier || "";
+            try {
+                const idRes = await fetch(`/api/valley/identifier`);
+                if (idRes.ok) {
+                    const idData = await idRes.json();
+                    if (idData && idData.identifier) valleyId = idData.identifier;
+                }
+            } catch (e) {
+            }
             const dock = (data && data.dock) || [];
             const schedules = (data && data.schedules) || [];
             let graphCampfireCount = 0;
@@ -933,6 +981,12 @@ class CampfireValleyLiteGraph {
                     <div class="chat-details-block">
                         <div class="chat-details-h">Valley</div>
                         <div class="chat-details-kv"><span>Name</span><span>${this._escapeHtml(v.name || "")}</span></div>
+                        <div class="chat-details-kv"><span>Identifier</span><span>${this._escapeHtml(valleyId || "")}</span></div>
+                        <div class="chat-details-kv"><span>Address</span><span>${this._escapeHtml(valleyId ? ("valley:" + valleyId) : "")}</span></div>
+                        <div class="chat-details-actions">
+                            <input id="valleyIdentifierInput" class="chat-input" type="text" placeholder="Set Valley UUID" value="${this._escapeHtml(valleyId || "")}" autocomplete="off" />
+                            <button id="valleyIdentifierSave" type="button">Save</button>
+                        </div>
                         <div class="chat-details-kv"><span>Graph Campfires</span><span>${this._escapeHtml(String(graphCampfireCount))}</span></div>
                         <div class="chat-details-kv"><span>Backend Campfires</span><span>${this._escapeHtml(String(v.campfire_total || backendCampfires.length || 0))}</span></div>
                         <div class="chat-details-kv"><span>Backend Campers</span><span>${this._escapeHtml(String(v.camper_total || backendCampers.length || 0))}</span></div>
@@ -977,6 +1031,30 @@ class CampfireValleyLiteGraph {
                     }
                 };
             }
+            const idInput = document.getElementById("valleyIdentifierInput");
+            const idSave = document.getElementById("valleyIdentifierSave");
+            if (idInput && idSave) {
+                idSave.onclick = async () => {
+                    const v = String(idInput.value || "").trim();
+                    idSave.disabled = true;
+                    try {
+                        await fetch("/api/valley/identifier", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ identifier: v })
+                        });
+                    } catch (e) {
+                    }
+                    idSave.disabled = false;
+                    this.renderValleyDetails(node);
+                };
+                idInput.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        idSave.click();
+                    }
+                });
+            }
         } catch (e) {
             this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load valley details.</div>`;
         }
@@ -988,6 +1066,24 @@ class CampfireValleyLiteGraph {
         }
         const enabled = !(node && node.properties && node.properties.tts_enabled === false);
         this.chatUI.speakBtn.textContent = enabled ? "🔊 Speak: On" : "🔇 Speak: Off";
+    }
+
+    _nodeCanConfigureCamperTools(node) {
+        if (!node) return false;
+        if (node.type !== "campfire/camper") return false;
+        if (node.properties && (node.properties.type === "auditor" || node.properties.auditor_mode)) return false;
+        const target = this.getNodeTarget(node);
+        if (!target) return false;
+        if (typeof target === "string" && target.startsWith("valley:")) return false;
+        return true;
+    }
+
+    updateToolsButtonForNode(node) {
+        if (!this.chatUI || !this.chatUI.toolsBtn) return;
+        const ok = this._nodeCanConfigureCamperTools(node);
+        this.chatUI.toolsBtn.disabled = !ok;
+        this.chatUI.toolsBtn.textContent = ok ? "🧰 Camper Tools" : "🧰 Camper Tools";
+        if (!ok) this.toggleToolsPanel(false);
     }
 
     toggleToolsPanel(visible) {
@@ -1253,16 +1349,23 @@ class CampfireValleyLiteGraph {
 
     async loadToolsForCampfire(campfireId) {
         try {
+            let enabled = false;
+            let ws = false;
+            let ocr = false;
             const res = await fetch(`/api/campfire/tools?campfire=${encodeURIComponent(campfireId)}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            const z = (data.tools || {});
-            const enabled = !!z.enabled;
-            const ws = !!z.web_search;
-            const ocr = !!z.image_ocr;
-            document.getElementById("toolZeitgeistEnabled").checked = enabled;
-            document.getElementById("toolWebSearch").checked = ws;
-            document.getElementById("toolImageOCR").checked = ocr;
+            if (res.ok) {
+                const data = await res.json();
+                const z = (data.tools || {});
+                enabled = !!z.enabled;
+                ws = !!z.web_search;
+                ocr = !!z.image_ocr;
+            }
+            const enabledEl = document.getElementById("toolZeitgeistEnabled");
+            const wsEl = document.getElementById("toolWebSearch");
+            const ocrEl = document.getElementById("toolImageOCR");
+            if (enabledEl) enabledEl.checked = enabled;
+            if (wsEl) wsEl.checked = ws;
+            if (ocrEl) ocrEl.checked = ocr;
             this.bindToolsPanelEvents(campfireId);
             await this.loadLlmModelForCampfire(campfireId);
         } catch (e) {

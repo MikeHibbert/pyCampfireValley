@@ -100,9 +100,22 @@ class Torch(BaseTorch):
         Returns:
             Dictionary ready for Redis transport
         """
-        # Convert to dict with ISO timestamp
+        # Convert to dict with robust timestamp handling
         data = self.dict()
-        data['timestamp'] = self.timestamp.isoformat()
+        ts = getattr(self, "timestamp", None)
+        try:
+            # Prefer ISO from datetime-like objects
+            if hasattr(ts, "isoformat"):
+                data["timestamp"] = ts.isoformat()
+            elif isinstance(ts, (int, float)):
+                # Assume epoch seconds
+                data["timestamp"] = datetime.utcfromtimestamp(float(ts)).isoformat()
+            elif isinstance(ts, str) and ts:
+                data["timestamp"] = ts
+            else:
+                data["timestamp"] = datetime.utcnow().isoformat()
+        except Exception:
+            data["timestamp"] = datetime.utcnow().isoformat()
         
         # Optionally compress large payloads
         if compress and len(json.dumps(data['data'])) > 1024:  # 1KB threshold
@@ -150,9 +163,17 @@ class Torch(BaseTorch):
             decompressed = gzip.decompress(compressed_data)
             data['data'] = json.loads(decompressed.decode('utf-8'))
         
-        # Convert timestamp back to datetime
-        if 'timestamp' in data:
-            data['timestamp'] = datetime.fromisoformat(data['timestamp'])
+        # Convert timestamp back to datetime when possible
+        if "timestamp" in data:
+            tsv = data["timestamp"]
+            try:
+                if isinstance(tsv, str):
+                    data["timestamp"] = datetime.fromisoformat(tsv)
+                elif isinstance(tsv, (int, float)):
+                    data["timestamp"] = datetime.utcfromtimestamp(float(tsv))
+            except Exception:
+                # Leave as-is if parsing fails
+                pass
         
         return cls(**data)
     

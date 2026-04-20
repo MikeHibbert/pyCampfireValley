@@ -5,7 +5,7 @@ import copy
 import json
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi import Body
@@ -30,6 +30,7 @@ from ..voice import is_admin, parse_intent, make_voice_torch
 from ..stt import get_engine
 import base64
 from ..models import CampfireConfig, Torch
+from ..monitoring import get_monitoring_system, LogLevel
 
 
 class WebSocketManager:
@@ -692,6 +693,8 @@ def _ordinal_to_index(token: str) -> Optional[int]:
     t = (token or "").strip().lower()
     if not t:
         return None
+    if t in {"last", "end", "final", "bottom"}:
+        return 1_000_000
     words = {
         "first": 1,
         "second": 2,
@@ -727,7 +730,7 @@ def _parse_reorder_steps(text: str, campers: List[str]) -> List[tuple[str, int]]
         if not seg:
             continue
         m = re.search(
-            r"(?:move|put|place|set)?\s*(.+?)\s+(?:to|as)?\s*(?:the\s+)?((?:\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s*(?:step)?\b",
+            r"(?:move|put|place|set)?\s*(.+?)\s+(?:to|as)?\s*(?:the\s+)?((?:\d+)(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|end|final|bottom)\s*(?:step|place|position)?\b",
             seg,
             re.IGNORECASE,
         )
@@ -1103,7 +1106,12 @@ async def get_campfires(include_auditors: bool = False):
 async def get_campfire_tools(campfire: str):
     if not current_valley:
         raise HTTPException(status_code=404, detail="No valley available")
-    cf = current_valley.campfires.get(campfire)
+    name = (campfire or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    if name not in campfire_parent and not name.lower().endswith(" camper"):
+        raise HTTPException(status_code=400, detail="Tools are configurable per-camper only")
+    cf = current_valley.campfires.get(name)
     if not cf:
         raise HTTPException(status_code=404, detail="Campfire not found")
     cfg = getattr(cf, "config", None)
@@ -1115,14 +1123,14 @@ async def get_campfire_tools(campfire: str):
         conf = cfg.get("config") or {}
         tools = (conf.get("tools") or {}).get("zeitgeist") or {}
     persisted = {}
-    path = _get_config_dir() / f"campfire_{_slugify(campfire)}.yaml"
+    path = _get_config_dir() / f"campfire_{_slugify(name)}.yaml"
     if path.exists():
         try:
             persisted_cfg = ConfigManager.load_campfire_config(str(path))
             persisted = ((persisted_cfg.config or {}).get("tools") or {}).get("zeitgeist") or {}
         except Exception:
             persisted = {}
-    return {"status": "ok", "campfire": campfire, "tools": tools, "persisted": persisted}
+    return {"status": "ok", "campfire": name, "tools": tools, "persisted": persisted}
 
 
 @app.post("/api/campfire/tools")
@@ -1133,6 +1141,8 @@ async def set_campfire_tools(payload: dict = Body(...)):
     zeitgeist = payload.get("zeitgeist") or {}
     if not campfire:
         raise HTTPException(status_code=400, detail="Missing campfire")
+    if campfire not in campfire_parent and not campfire.lower().endswith(" camper"):
+        raise HTTPException(status_code=400, detail="Tools are configurable per-camper only")
     cf = current_valley.campfires.get(campfire)
     if not cf:
         raise HTTPException(status_code=404, detail="Campfire not found")
@@ -1212,18 +1222,57 @@ async def get_campfire_details(campfire: str):
     cfg_dump = cfg.model_dump(by_alias=True) if isinstance(cfg, CampfireConfig) else (cfg if isinstance(cfg, dict) else None)
     llm = {}
     tools = {}
+    dock_cfg = {}
     if isinstance(cfg, CampfireConfig):
         conf = cfg.config or {}
         llm = conf.get("llm") or {}
         tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+        dock_cfg = conf.get("dock") or {}
     elif isinstance(cfg, dict):
         conf = cfg.get("config") or {}
         llm = conf.get("llm") or {}
         tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+        dock_cfg = conf.get("dock") or {}
+    dock_identifier = ""
+    if isinstance(dock_cfg, dict):
+        dock_identifier = (dock_cfg.get("identifier") or "").strip()
+    valley_id = ""
+    try:
+        e = current_valley.config.env or {}
+        valley_id = (e.get("valley_id") or "").strip()
+    except Exception:
+        valley_id = ""
+    if not valley_id:
+        try:
+            valley_id = uuid.uuid4().hex
+            current_valley.config.env["valley_id"] = valley_id
+            try:
+                ConfigManager.save_valley_config(current_valley.config, current_valley.manifest_path)
+            except Exception:
+                pass
+        except Exception:
+            valley_id = current_valley.name
+    address_suffix = dock_identifier or re.sub(r"[^a-zA-Z0-9]+", "-", str(name).lower()).strip("-") or str(name)
     workflow = current_valley.get_workflow(name) if getattr(current_valley, "get_workflow", None) else None
     schedule = current_valley.get_schedule(name) if getattr(current_valley, "get_schedule", None) else None
     party_box = await _party_box_summary()
     campers = sorted([c for c, p in campfire_parent.items() if p == name])
+    camper_id_map: Dict[str, str] = {}
+    for nm in campers:
+        try:
+            cf2 = current_valley.campfires.get(nm)
+            cfg2 = getattr(cf2, "config", None)
+            conf2: Dict[str, Any] = {}
+            if isinstance(cfg2, CampfireConfig):
+                conf2 = cfg2.config or {}
+            elif isinstance(cfg2, dict):
+                conf2 = cfg2.get("config") if isinstance(cfg2.get("config"), dict) else cfg2
+            ident2 = conf2.get("identity") if isinstance(conf2.get("identity"), dict) else {}
+            uid2 = (ident2.get("uuid") or "").strip()
+            if uid2:
+                camper_id_map[nm] = uid2
+        except Exception:
+            continue
     return {
         "status": "ok",
         "campfire": name,
@@ -1231,8 +1280,10 @@ async def get_campfire_details(campfire: str):
         "running": getattr(cf, "_running", False),
         "camper_count": len(getattr(cf, "campers", [])),
         "campers": campers,
+        "camper_ids": camper_id_map,
         "llm": llm,
         "tools": tools,
+        "dock": {"identifier": dock_identifier, "address": f"valley:{valley_id}/{address_suffix}"},
         "workflow": workflow,
         "schedule": schedule,
         "party_box": party_box,
@@ -1257,8 +1308,25 @@ async def get_valley_details():
             continue
     campers = sorted(set(campers))
     campfires = [c for c in all_names if str(c) not in set(campers) and str(c) not in set(auditor_campfires)]
+    vid = ""
+    try:
+        e = current_valley.config.env or {}
+        vid = (e.get("valley_id") or "").strip()
+    except Exception:
+        vid = ""
+    if not vid:
+        try:
+            vid = uuid.uuid4().hex
+            current_valley.config.env["valley_id"] = vid
+            try:
+                ConfigManager.save_valley_config(current_valley.config, current_valley.manifest_path)
+            except Exception:
+                pass
+        except Exception:
+            vid = ""
     status = {
         "name": current_valley.name,
+        "identifier": vid,
         "campfire_total": len(campfires),
         "camper_total": len(campers),
         "campfires": campfires,
@@ -1300,12 +1368,59 @@ async def cleanup_legacy_auditor_campfires():
             pass
     return {"status": "ok", "removed": removed}
 
+@app.get("/api/valley/identifier")
+async def get_valley_identifier():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    vid = ""
+    try:
+        e = current_valley.config.env or {}
+        vid = (e.get("valley_id") or "").strip()
+    except Exception:
+        vid = ""
+    generated = False
+    if not vid:
+        try:
+            vid = uuid.uuid4().hex
+            current_valley.config.env["valley_id"] = vid
+            generated = True
+            try:
+                ConfigManager.save_valley_config(current_valley.config, current_valley.manifest_path)
+            except Exception:
+                pass
+        except Exception:
+            vid = ""
+    return {"status": "ok", "valley": current_valley.name, "identifier": vid, "generated": generated}
+
+@app.post("/api/valley/identifier")
+async def set_valley_identifier(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    raw = (payload.get("identifier") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Missing identifier")
+    try:
+        _ = uuid.UUID(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Identifier must be a valid UUID")
+    current_valley.config.env["valley_id"] = raw
+    try:
+        ConfigManager.save_valley_config(current_valley.config, current_valley.manifest_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist valley identifier: {e}")
+    return {"status": "ok", "valley": current_valley.name, "identifier": raw}
+
 
 @app.get("/api/campfire/llm")
 async def get_campfire_llm(campfire: str):
     if not current_valley:
         raise HTTPException(status_code=404, detail="No valley available")
-    cf = current_valley.campfires.get(campfire)
+    name = (campfire or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    if name not in campfire_parent and not name.lower().endswith(" camper"):
+        raise HTTPException(status_code=400, detail="LLM model is configurable per-camper only")
+    cf = current_valley.campfires.get(name)
     if not cf:
         raise HTTPException(status_code=404, detail="Campfire not found")
     cfg = getattr(cf, "config", None)
@@ -1319,7 +1434,7 @@ async def get_campfire_llm(campfire: str):
         llm = {}
     provider = (llm.get("provider") or "").strip() or "ollama"
     model = (llm.get("model") or "").strip() or None
-    return {"status": "ok", "campfire": campfire, "provider": provider, "model": model}
+    return {"status": "ok", "campfire": name, "provider": provider, "model": model}
 
 
 @app.post("/api/campfire/llm")
@@ -1331,6 +1446,8 @@ async def set_campfire_llm(payload: dict = Body(...)):
     model = (payload.get("model") or "").strip()
     if not campfire or not model:
         raise HTTPException(status_code=400, detail="Missing campfire or model")
+    if campfire not in campfire_parent and not campfire.lower().endswith(" camper"):
+        raise HTTPException(status_code=400, detail="LLM model is configurable per-camper only")
     if provider != "ollama":
         raise HTTPException(status_code=400, detail="Only ollama provider is supported in the UI currently")
     cf = current_valley.campfires.get(campfire)
@@ -1357,6 +1474,140 @@ async def set_campfire_llm(payload: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to persist llm config: {e}")
     return {"status": "ok", "campfire": campfire, "provider": provider, "model": model}
+
+
+@app.get("/api/campfire/identity")
+async def get_backend_campfire_identity(campfire: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    name = (campfire or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    cf = current_valley.campfires.get(name)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    conf: Dict[str, Any] = {}
+    if isinstance(cfg, CampfireConfig):
+        conf = cfg.config or {}
+    elif isinstance(cfg, dict):
+        conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+    ident = conf.get("identity") if isinstance(conf.get("identity"), dict) else {}
+    uid = (ident.get("uuid") or "").strip()
+    if not uid:
+        uid = uuid.uuid4().hex
+        try:
+            if isinstance(cfg, CampfireConfig):
+                cfg.config = cfg.config or {}
+                cfg.config["identity"] = {"uuid": uid}
+            elif isinstance(cfg, dict):
+                conf.setdefault("identity", {})
+                conf["identity"]["uuid"] = uid
+        except Exception:
+            pass
+    return {"status": "ok", "campfire": name, "uuid": uid}
+
+
+@app.get("/api/campfire/identifier")
+async def get_campfire_identifier(campfire: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    name = (campfire or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    cf = current_valley.campfires.get(name)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    conf: Dict[str, Any] = {}
+    if isinstance(cfg, CampfireConfig):
+        conf = cfg.config or {}
+    elif isinstance(cfg, dict):
+        conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+    dock_cfg = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
+    identifier = (dock_cfg.get("identifier") or "").strip() if isinstance(dock_cfg, dict) else ""
+    return {
+        "status": "ok",
+        "campfire": name,
+        "identifier": identifier,
+        "address": f"valley:{current_valley.name}/{identifier or name}",
+    }
+
+
+@app.post("/api/campfire/identifier")
+async def set_campfire_identifier(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    campfire = (payload.get("campfire") or "").strip()
+    identifier = (payload.get("identifier") or "").strip()
+    if not campfire:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    if "/" in identifier or ":" in identifier:
+        raise HTTPException(status_code=400, detail="Identifier cannot contain '/' or ':'")
+    cf = current_valley.campfires.get(campfire)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    if identifier:
+        for other_name, other_cf in (current_valley.campfires or {}).items():
+            other_name_s = str(other_name)
+            if other_name_s == campfire:
+                continue
+            if other_name_s == identifier:
+                raise HTTPException(status_code=409, detail=f"Identifier conflicts with campfire name '{other_name_s}'")
+            other_cfg = getattr(other_cf, "config", None)
+            other_conf: Dict[str, Any] = {}
+            if isinstance(other_cfg, CampfireConfig):
+                other_conf = other_cfg.config or {}
+            elif isinstance(other_cfg, dict):
+                other_conf = other_cfg.get("config") if isinstance(other_cfg.get("config"), dict) else other_cfg
+            other_dock = other_conf.get("dock") if isinstance(other_conf.get("dock"), dict) else {}
+            other_ident = (other_dock.get("identifier") or "").strip() if isinstance(other_dock, dict) else ""
+            if other_ident and other_ident == identifier:
+                raise HTTPException(status_code=409, detail=f"Identifier already in use by '{other_name_s}'")
+    cfg = getattr(cf, "config", None)
+    if isinstance(cfg, CampfireConfig):
+        cfg.config = cfg.config or {}
+        dock_cfg = cfg.config.get("dock") if isinstance(cfg.config.get("dock"), dict) else {}
+        if identifier:
+            dock_cfg["identifier"] = identifier
+            cfg.config["dock"] = dock_cfg
+        else:
+            if isinstance(dock_cfg, dict):
+                dock_cfg.pop("identifier", None)
+            if dock_cfg:
+                cfg.config["dock"] = dock_cfg
+            else:
+                cfg.config.pop("dock", None)
+        to_save = cfg
+    elif isinstance(cfg, dict):
+        cfg.setdefault("config", {})
+        conf = cfg["config"] if isinstance(cfg.get("config"), dict) else {}
+        dock_cfg = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
+        if identifier:
+            dock_cfg["identifier"] = identifier
+            conf["dock"] = dock_cfg
+        else:
+            if isinstance(dock_cfg, dict):
+                dock_cfg.pop("identifier", None)
+            if dock_cfg:
+                conf["dock"] = dock_cfg
+            else:
+                conf.pop("dock", None)
+        cfg["config"] = conf
+        to_save = CampfireConfig(name=campfire, type=cfg.get("type") or "LLMCampfire", config=cfg.get("config") or {})
+    else:
+        raise HTTPException(status_code=400, detail="Campfire config not editable")
+    path = _get_config_dir() / f"campfire_{_slugify(campfire)}.yaml"
+    try:
+        ConfigManager.save_campfire_config(to_save, str(path))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist identifier: {e}")
+    return {
+        "status": "ok",
+        "campfire": campfire,
+        "identifier": identifier,
+        "address": f"valley:{current_valley.name}/{identifier or campfire}",
+    }
 
 
 @app.post("/api/voice/ingest")
@@ -1433,6 +1684,8 @@ async def voice_ingest(payload: dict = Body(...)):
     if auditor_mode or _is_auditor_target(target):
         parent = str(target) if auditor_mode else (campfire_parent.get(target) or _parent_from_auditor_name(target))
         cmd = (content or "").strip()
+        if cmd.startswith("`"):
+            cmd = cmd.strip("`").strip()
         low = cmd.lower()
         allow_actions = any(
             low.startswith(p)
@@ -1451,10 +1704,17 @@ async def voice_ingest(payload: dict = Body(...)):
             )
         )
         if parent and ("move " in low or "reorder" in low or "swap" in low):
+            wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
             campers = [c for c in _campers_for_parent(parent) if c and c != parent]
+            if not campers and isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                for s in wf.get("steps") or []:
+                    if not isinstance(s, dict):
+                        continue
+                    nm = (s.get("camper") or "").strip()
+                    if nm and nm != parent and nm not in campers:
+                        campers.append(nm)
             moves = _parse_reorder_steps(cmd, campers)
             if moves:
-                wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
                 task_by_camper: Dict[str, str] = {}
                 if isinstance(wf, dict) and isinstance(wf.get("steps"), list):
                     for s in wf.get("steps") or []:
@@ -1480,7 +1740,20 @@ async def voice_ingest(payload: dict = Body(...)):
                         a += 2.0 * math.pi
                     return a
 
-                base_order = sorted(campers, key=_angle_for) if campers else []
+                base_order = []
+                if isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                    for s in wf.get("steps") or []:
+                        if isinstance(s, dict):
+                            nm = (s.get("camper") or "").strip()
+                            if nm and nm in campers:
+                                base_order.append(nm)
+                for c in campers:
+                    if c not in base_order:
+                        base_order.append(c)
+
+                if not base_order:
+                    base_order = sorted(campers, key=_angle_for) if campers else []
+                
                 for name, idx in moves:
                     if name in base_order:
                         base_order.remove(name)
@@ -1547,6 +1820,201 @@ async def voice_ingest(payload: dict = Body(...)):
                 msg = "Execution order (visual):\n" + ("\n".join([f"{i+1}. {n}" for i, n in enumerate(ordered)]) if ordered else "(no campers linked)")
             _append_log(target, "assistant", msg)
             return {"status": "ok", "campfire": target, "response": {"text": msg, "workflow": wf, "campers": campers}}
+        if parent and any(k in low for k in ("self diagnostic", "self-diagnostic", "diagnostic", "health check", "audit logs", "self audit", "self-audit")):
+            try:
+                campers = [c for c in _campers_for_parent(parent) if c and c != parent]
+                wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
+                wf_campers = []
+                if isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                    seen = set()
+                    for s in wf.get("steps") or []:
+                        if isinstance(s, dict) and s.get("camper"):
+                            nm = str(s.get("camper")).strip()
+                            if not nm:
+                                continue
+                            if campers and nm not in campers:
+                                continue
+                            if nm in seen:
+                                continue
+                            seen.add(nm)
+                            wf_campers.append(nm)
+                def _angle_for(camper_name: str) -> float:
+                    cctx = graph_node_context.get("campers", {}).get(camper_name, {})
+                    pctx = graph_node_context.get("campfires", {}).get(parent, {})
+                    cc = cctx.get("center")
+                    pc = pctx.get("center")
+                    if not (isinstance(cc, (list, tuple)) and len(cc) == 2 and isinstance(pc, (list, tuple)) and len(pc) == 2):
+                        return 0.0
+                    dx = float(cc[0]) - float(pc[0])
+                    dy = float(cc[1]) - float(pc[1])
+                    a = math.atan2(dy, dx)
+                    a = a + (math.pi / 2.0)
+                    if a < 0:
+                        a += 2.0 * math.pi
+                    return a
+                expected = wf_campers if wf_campers else sorted(campers, key=_angle_for)
+                now = datetime.utcnow()
+                window = now - timedelta(minutes=30)
+                monitoring = get_monitoring_system()
+                try:
+                    if getattr(monitoring, "log_handler", None) is None:
+                        await monitoring.initialize()
+                except Exception:
+                    pass
+                mon_logs = []
+                try:
+                    if getattr(monitoring, "log_handler", None):
+                        mon_logs = await monitoring.log_handler.get_logs(limit=2000)
+                except Exception:
+                    mon_logs = []
+                # Determine correlation id: explicit "cid:XXXX" in command or latest seen for expected campers
+                cid = None
+                m = re.search(r"\bcid:([A-Za-z0-9_\-:]+)", cmd)
+                explicit_cid = False
+                if m:
+                    cid = m.group(1)
+                    explicit_cid = True
+                if not cid and mon_logs:
+                    try:
+                        # Find most recent correlation id that appears for any expected camper
+                        for le in reversed(mon_logs):
+                            corr = getattr(le, "correlation_id", None)
+                            src = getattr(le, "source", None)
+                            ts = getattr(le, "timestamp", None)
+                            if not corr or not src or not isinstance(ts, datetime):
+                                continue
+                            if ts < window:
+                                continue
+                            if src.startswith("campfire.") and src[9:] in expected:
+                                cid = corr
+                                break
+                    except Exception:
+                        cid = None
+                details = []
+                seen_map: Dict[str, Optional[datetime]] = {}
+                errs = 0
+                for nm in expected:
+                    recent = []
+                    if mon_logs:
+                        try:
+                            source = f"campfire.{nm}"
+                            for le in mon_logs:
+                                try:
+                                    if getattr(le, "source", None) != source:
+                                        continue
+                                    if cid and getattr(le, "correlation_id", None) != cid:
+                                        continue
+                                    lts = getattr(le, "timestamp", None)
+                                    if not isinstance(lts, datetime):
+                                        continue
+                                    if not explicit_cid and lts < window:
+                                        continue
+                                    recent.append((lts, {"role": le.level.name.lower(), "text": le.message, "level": le.level}))
+                                except Exception:
+                                    continue
+                            recent.sort(key=lambda x: x[0])
+                        except Exception:
+                            pass
+                    last_ts = recent[-1][0].isoformat() if recent else ""
+                    first_ts = recent[0][0].isoformat() if recent else ""
+                    last_role = recent[-1][1].get("role") if recent else ""
+                    last_text = recent[-1][1].get("text") if recent else ""
+                    has_error = False
+                    last_error_text = ""
+                    try:
+                        for tsv, e in reversed(recent):
+                            lvl = e.get("level")
+                            if lvl in {LogLevel.ERROR, LogLevel.CRITICAL}:
+                                has_error = True
+                                last_error_text = (e.get("text") or "").strip()
+                                break
+                    except Exception:
+                        has_error = False
+                    if has_error:
+                        errs += 1
+                    seen_map[nm] = recent[0][0] if recent else None
+                    preview = (last_error_text or last_text or "").strip()
+                    if len(preview) > 160:
+                        preview = preview[:160] + "…"
+                    status = "OK" if recent and not has_error else ("ERROR" if has_error else "MISSING")
+                    details.append(f"- {status} | {nm} | first={first_ts or '-'} | last={last_ts or '-'} | last_role={last_role or '-'} | last='{preview}'")
+                order_ok = True
+                last_time = None
+                for nm in expected:
+                    tsv = seen_map.get(nm)
+                    if tsv is None:
+                        order_ok = False
+                        break
+                    if last_time and tsv < last_time:
+                        order_ok = False
+                        break
+                    last_time = tsv
+                total = len(expected)
+                seen_count = sum(1 for nm in expected if seen_map.get(nm) is not None)
+                completed = False
+                try:
+                    if cid and mon_logs:
+                        wsrc = f"workflow.{parent}"
+                        completed = any(
+                            getattr(le, "source", None) == wsrc
+                            and getattr(le, "correlation_id", None) == cid
+                            and isinstance(getattr(le, "timestamp", None), datetime)
+                            and (explicit_cid or getattr(le, "timestamp", None) >= window)
+                            and isinstance(getattr(le, "message", None), str)
+                            and "Workflow completed for" in getattr(le, "message", "")
+                            for le in mon_logs
+                        )
+                except Exception:
+                    completed = False
+                in_progress = bool(cid) and (not completed) and (seen_count > 0) and (seen_count < total)
+                strict_ok = True
+                try:
+                    if completed and cid and mon_logs:
+                        wsrc = f"workflow.{parent}"
+                        for le in reversed(mon_logs):
+                            if getattr(le, "source", None) != wsrc:
+                                continue
+                            if getattr(le, "correlation_id", None) != cid:
+                                continue
+                            ctx = getattr(le, "context", None)
+                            if isinstance(ctx, dict):
+                                st = ctx.get("steps_total")
+                                so = ctx.get("steps_ok")
+                                if isinstance(st, int) and isinstance(so, int):
+                                    strict_ok = (st == so)
+                            break
+                except Exception:
+                    strict_ok = True
+                result_word = "PASS" if (order_ok and errs == 0 and (total == 0 or seen_count == total) and completed and strict_ok) else ("IN_PROGRESS" if in_progress else "FAIL")
+                head = f"Self-audit: {result_word}\nCampfire: {parent}\nTime window: last 30m\nExpected order: " + (" -> ".join(expected) if expected else "(none)")
+                verdict = f"Summary: order_ok={order_ok} | errors={errs} | seen={seen_count}/{total} | completed={completed} | strict_ok={strict_ok}"
+                reason = ""
+                if seen_count == 0:
+                    wf_has_steps = bool(wf_campers)
+                    if not wf_has_steps:
+                        reason = "\nReason: no saved workflow found for this campfire. Visual order is shown, but steps won’t execute until a workflow is set."
+                    else:
+                        reason = "\nReason: workflow exists, but no camper activity was found in the selected time window."
+                if in_progress:
+                    reason = "\nReason: workflow execution is still in progress. Run 'self audit' again after the Discord reply is posted."
+                actions = ""
+                if seen_count == 0:
+                    wf_has_steps = bool(wf_campers)
+                    if not wf_has_steps:
+                        actions = "\nNext steps:\n- Ask: 'show workflow' to confirm whether one exists\n- If none, say: 'set workflow {\"steps\": [ {\"camper\": \"Intake Camper\", \"task\": \"Execute\"}, ... ]}'\n- Or say natural commands like: 'reorder Intake Camper first, Editor / Reporter Camper second'\n- Then send a test request (Discord/file upload), and retry: 'self audit'"
+                    else:
+                        actions = "\nNext steps:\n- Send a new test request (Discord/file upload) to this campfire\n- Then run: 'self audit'\n- If you want to audit a specific run, use: 'self audit cid:<correlation_id>'"
+                if in_progress:
+                    actions = "\nNext steps:\n- Wait for the Discord response to finish\n- Then run: 'self audit cid:" + str(cid) + "'"
+                body = "\n".join(details) if details else "(no recent activity)"
+                suffix = f"\nCorrelation: {cid}" if cid else ""
+                msg = head + "\n" + verdict + reason + actions + suffix + "\n" + body
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "order_ok": order_ok, "errors": errs, "expected": expected, "correlation_id": cid}}
+            except Exception as e:
+                msg = f"Self-diagnostic failed: {e}"
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "order_ok": False, "errors": 1, "expected": []}}
         if parent and low.startswith("clear workflow"):
             ok = False
             if getattr(current_valley, "clear_workflow", None):
@@ -1567,11 +2035,21 @@ async def voice_ingest(payload: dict = Body(...)):
                 steps = parsed
             elif isinstance(parsed, dict) and isinstance(parsed.get("steps"), list):
                 steps = parsed.get("steps")
+            elif not parsed and rest:
+                try:
+                    import ast
+                    evaluated = ast.literal_eval(rest)
+                    if isinstance(evaluated, list):
+                        steps = evaluated
+                    elif isinstance(evaluated, dict) and isinstance(evaluated.get("steps"), list):
+                        steps = evaluated.get("steps")
+                except Exception:
+                    pass
             ok = False
             if getattr(current_valley, "set_workflow", None):
                 ok = current_valley.set_workflow(parent, steps)
             wf = current_valley.get_workflow(parent) if ok and getattr(current_valley, "get_workflow", None) else None
-            msg = f"Workflow updated for '{parent}'." if ok else f"Failed to update workflow for '{parent}'."
+            msg = f"Workflow updated for '{parent}'." if ok else f"Failed to update workflow for '{parent}'. Note: The JSON payload must be properly formatted."
             _append_log(target, "assistant", msg)
             return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": ok, "workflow": wf}}
 
@@ -2175,13 +2653,7 @@ async def load_valley(payload: dict = Body(...)):
     try:
         for name in restored:
             try:
-                if getattr(current_valley, "clear_schedule", None):
-                    current_valley.clear_schedule(name)
-            except Exception:
-                pass
-            try:
-                if getattr(current_valley, "clear_workflow", None):
-                    current_valley.clear_workflow(name)
+                wf = current_valley.get_workflow(name) if getattr(current_valley, "get_workflow", None) else None
             except Exception:
                 pass
     except Exception:

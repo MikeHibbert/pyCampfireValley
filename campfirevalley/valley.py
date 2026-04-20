@@ -387,6 +387,18 @@ class Valley(IValley):
         logger.info(f"Provisioning campfire '{campfire_name}' of type '{campfire_config.type}'...")
         
         try:
+            try:
+                if isinstance(campfire_config.config, dict):
+                    ident = (campfire_config.config.get("identity") or {})
+                    if not isinstance(ident, dict):
+                        ident = {}
+                    uid = (ident.get("uuid") or "").strip()
+                    if not uid:
+                        uid = uuid.uuid4().hex
+                        ident["uuid"] = uid
+                        campfire_config.config["identity"] = ident
+            except Exception:
+                pass
             # Create the appropriate campfire type based on configuration
             campfire = None
             
@@ -586,7 +598,26 @@ class Valley(IValley):
             task = (s.get("task") or "").strip()
             if not camper or not task:
                 continue
-            clean_steps.append({"camper": camper, "task": task})
+            cid = (s.get("camper_id") or "").strip()
+            if not cid:
+                try:
+                    cf = self.campfires.get(camper)
+                    cfg = getattr(cf, "config", None)
+                    raw_conf = {}
+                    if isinstance(cfg, CampfireConfig):
+                        raw_conf = cfg.config or {}
+                    elif isinstance(cfg, dict):
+                        raw_conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+                    ident = raw_conf.get("identity") if isinstance(raw_conf.get("identity"), dict) else {}
+                    uid = (ident.get("uuid") or "").strip()
+                    if uid:
+                        cid = uid
+                except Exception:
+                    cid = ""
+            out_step = {"camper": camper, "task": task}
+            if cid:
+                out_step["camper_id"] = cid
+            clean_steps.append(out_step)
         existing = self.get_workflow(campfire_name) or {}
         schedule = existing.get("schedule") if isinstance(existing, dict) else None
         payload = {"version": 1, "campfire": campfire_name, "steps": clean_steps, "updated_at": datetime.utcnow().isoformat()}
@@ -776,24 +807,90 @@ class Valley(IValley):
         steps = workflow.get("steps") if isinstance(workflow, dict) else None
         if not isinstance(steps, list) or not steps:
             return None
+        corr = None
+        try:
+            if hasattr(torch, "metadata") and isinstance(torch.metadata, dict):
+                corr = (torch.metadata.get("correlation_id") or "").strip() or None
+        except Exception:
+            corr = None
+        corr = corr or getattr(torch, "torch_id", None) or getattr(torch, "id", None)
         user_input = self._torch_text(torch)
         outputs: List[Dict[str, Any]] = []
         for idx, step in enumerate(steps[:20]):
             if not isinstance(step, dict):
                 continue
             camper = (step.get("camper") or "").strip()
+            camper_id = (step.get("camper_id") or "").strip()
             task_tmpl = (step.get("task") or "").strip()
             if not camper or not task_tmpl:
                 continue
-            campfire = self.campfires.get(camper)
+            campfire = None
+            if camper_id:
+                for n, cf in self.campfires.items():
+                    try:
+                        cfg = getattr(cf, "config", None)
+                        raw = {}
+                        if isinstance(cfg, CampfireConfig):
+                            raw = cfg.config or {}
+                        elif isinstance(cfg, dict):
+                            raw = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+                        ident = raw.get("identity") if isinstance(raw.get("identity"), dict) else {}
+                        uid = (ident.get("uuid") or "").strip()
+                        if uid and uid == camper_id:
+                            campfire = cf
+                            camper = n  # normalize to resolved name
+                            break
+                    except Exception:
+                        continue
+            if campfire is None:
+                campfire = self.campfires.get(camper)
             if not campfire:
                 outputs.append({"step": idx + 1, "camper": camper, "ok": False, "error": "missing_camper"})
                 continue
-            prior = json.dumps(outputs, ensure_ascii=False)
+            prior_blocks = []
+            for o in outputs:
+                if not isinstance(o, dict):
+                    continue
+                if not o.get("response"):
+                    continue
+                prior_blocks.append(f"Step {o.get('step')}: {o.get('camper')}\n{o.get('response')}")
+            prior_text = "\n\n---\n\n".join(prior_blocks)
             if "{input}" in task_tmpl or "{previous}" in task_tmpl:
-                prompt = task_tmpl.replace("{input}", user_input).replace("{previous}", prior)
+                prompt = task_tmpl.replace("{input}", user_input).replace("{previous}", prior_text)
             else:
-                prompt = f"{task_tmpl}\n\nInput:\n{user_input}\n\nPrior outputs:\n{prior}"
+                prompt = (
+                    f"{task_tmpl}\n\n"
+                    f"Input:\n{user_input}\n\n"
+                    f"Previous step outputs:\n{prior_text if prior_text else '(none)'}\n\n"
+                    f"Return a non-empty response."
+                )
+            is_last = True
+            try:
+                for nxt in (steps[idx + 1 : 20] if isinstance(steps, list) else []):
+                    if not isinstance(nxt, dict):
+                        continue
+                    n_camper = (nxt.get("camper") or "").strip()
+                    n_task = (nxt.get("task") or "").strip()
+                    if n_camper and n_task:
+                        is_last = False
+                        break
+            except Exception:
+                is_last = False
+            if is_last:
+                prompt = (
+                    prompt
+                    + "\n\n"
+                    + "You are the final report author. Produce the final report based on the Input and the Previous step outputs.\n\n"
+                    + "Requirements:\n"
+                    + "1) Produce a cohesive, client-facing report (not a step-by-step trace).\n"
+                    + "2) Include a section titled 'Role Contributions' that proves synthesis.\n"
+                    + "3) In 'Role Contributions', for each prior step output, include 2–3 bullet points that:\n"
+                    + "   - Cite the originating step number and camper name.\n"
+                    + "   - Include a short direct quote (<= 12 words) from that step output.\n"
+                    + "   - Explain how that contribution affected the final recommendations.\n"
+                    + "4) If any prior step output contradicts another, call it out and resolve it.\n"
+                    + "5) Do not ask the user what to do next; deliver the report."
+                )
             step_torch = type(torch)(
                 claim="workflow_step",
                 source_campfire=f"{campfire_name} Auditor",
@@ -803,18 +900,136 @@ class Valley(IValley):
                 target_address=f"valley:{self.name}/{camper}",
                 data={"text": prompt, "service_mode": True, "parent": campfire_name, "step": idx + 1},
                 signature="workflow_placeholder",
+                metadata={"correlation_id": corr, "parent": campfire_name, "step": idx + 1, "camper": camper},
             )
             resp = await campfire.process_torch(step_torch)
             text = None
             if resp is not None and hasattr(resp, "data") and isinstance(resp.data, dict):
-                text = resp.data.get("llm_response") or resp.data.get("text")
-            outputs.append({"step": idx + 1, "camper": camper, "ok": bool(resp), "response": text, "data": getattr(resp, "data", None)})
+                text = (resp.data.get("llm_response") or resp.data.get("text") or "").strip() or None
+            if text is None:
+                retry_torch = type(torch)(
+                    claim="workflow_step",
+                    source_campfire=f"{campfire_name} Auditor",
+                    channel="workflow",
+                    torch_id=f"workflow_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{self.name}/{camper}",
+                    data={
+                        "text": prompt + "\n\nIMPORTANT: You must return a non-empty response. If unsure, return a concise best-effort answer.",
+                        "service_mode": True,
+                        "parent": campfire_name,
+                        "step": idx + 1,
+                        "retry": True,
+                    },
+                    signature="workflow_placeholder",
+                    metadata={"correlation_id": corr, "parent": campfire_name, "step": idx + 1, "camper": camper, "retry": True},
+                )
+                resp = await campfire.process_torch(retry_torch)
+                if resp is not None and hasattr(resp, "data") and isinstance(resp.data, dict):
+                    text = (resp.data.get("llm_response") or resp.data.get("text") or "").strip() or None
+            if is_last and prior_text and text is not None:
+                try:
+                    if "role contributions" not in text.lower():
+                        forced = (
+                            prompt
+                            + "\n\n"
+                            + "IMPORTANT: Your previous response did not include the required 'Role Contributions' section.\n"
+                            + "You MUST include it exactly with that title.\n\n"
+                            + "Use this template:\n"
+                            + "## Final Report\n"
+                            + "(client-facing report)\n\n"
+                            + "## Role Contributions\n"
+                            + "- Step 1 (Camper Name): \"short quote\" — how it changed the final report\n"
+                            + "- Step 2 (Camper Name): \"short quote\" — how it changed the final report\n"
+                            + "(repeat for every prior step)\n"
+                        )
+                        retry_torch = type(torch)(
+                            claim="workflow_step",
+                            source_campfire=f"{campfire_name} Auditor",
+                            channel="workflow",
+                            torch_id=f"workflow_{uuid.uuid4().hex}",
+                            sender_valley=self.name,
+                            target_address=f"valley:{self.name}/{camper}",
+                            data={"text": forced, "service_mode": True, "parent": campfire_name, "step": idx + 1, "retry": True, "retry_reason": "missing_role_contributions"},
+                            signature="workflow_placeholder",
+                            metadata={"correlation_id": corr, "parent": campfire_name, "step": idx + 1, "camper": camper, "retry": True, "retry_reason": "missing_role_contributions"},
+                        )
+                        resp = await campfire.process_torch(retry_torch)
+                        if resp is not None and hasattr(resp, "data") and isinstance(resp.data, dict):
+                            text = (resp.data.get("llm_response") or resp.data.get("text") or "").strip() or None
+                except Exception:
+                    pass
+            step_ok = bool(text)
+            outputs.append({"step": idx + 1, "camper": camper, "ok": step_ok, "response": text, "data": getattr(resp, "data", None)})
+            if not step_ok:
+                result = {
+                    "ok": False,
+                    "error": "no_response",
+                    "text": f"Workflow halted: step {idx + 1} ({camper}) returned no response.",
+                    "campfire": campfire_name,
+                    "results": outputs,
+                }
+                try:
+                    await self.monitoring.log(
+                        LogLevel.WARNING,
+                        f"Workflow halted for '{campfire_name}'",
+                        f"workflow.{campfire_name}",
+                        context={"steps_total": len(steps or []), "steps_ok": len([o for o in outputs if isinstance(o, dict) and o.get('ok')]), "halted_at": idx + 1, "halted_camper": camper},
+                        correlation_id=corr,
+                    )
+                except Exception:
+                    pass
+                return type(torch)(
+                    claim="service_response",
+                    source_campfire=f"{campfire_name} Auditor",
+                    channel="service",
+                    torch_id=f"service_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{torch.sender_valley}",
+                    data=result,
+                    signature="service_placeholder",
+                    metadata={"correlation_id": corr, "parent": campfire_name},
+                )
         final_text = ""
         for o in reversed(outputs):
             if o.get("response"):
                 final_text = str(o["response"])
                 break
-        result = {"text": final_text or "Workflow completed.", "campfire": campfire_name, "results": outputs}
+        report_lines = []
+        for o in outputs:
+            if not isinstance(o, dict):
+                continue
+            title = f"Step {o.get('step')}: {o.get('camper')}"
+            body = (o.get("response") or "").strip()
+            report_lines.append(title + "\n" + (body if body else "(no response)"))
+        report = "\n\n---\n\n".join(report_lines)
+        editor_text = None
+        try:
+            for o in reversed(outputs):
+                if not isinstance(o, dict):
+                    continue
+                nm = str(o.get("camper") or "").strip().lower()
+                if "editor" in nm or "reporter" in nm:
+                    t = (o.get("response") or "").strip()
+                    if t:
+                        editor_text = t
+                        break
+        except Exception:
+            editor_text = None
+        result = {"ok": True, "text": editor_text or (final_text or report or "Workflow completed."), "campfire": campfire_name, "results": outputs}
+        try:
+            total_steps = len([s for s in (steps or []) if isinstance(s, dict) and (s.get("camper") or "").strip() and (s.get("task") or "").strip()])
+            ok_steps = len([o for o in outputs if isinstance(o, dict) and o.get("ok")])
+            missing = [o.get("camper") for o in outputs if isinstance(o, dict) and o.get("error") == "missing_camper" and o.get("camper")]
+            await self.monitoring.log(
+                LogLevel.INFO,
+                f"Workflow completed for '{campfire_name}'",
+                f"workflow.{campfire_name}",
+                context={"steps_total": total_steps, "steps_ok": ok_steps, "missing": missing},
+                correlation_id=corr,
+            )
+        except Exception:
+            pass
         return type(torch)(
             claim="service_response",
             source_campfire=f"{campfire_name} Auditor",
@@ -824,6 +1039,7 @@ class Valley(IValley):
             target_address=f"valley:{torch.sender_valley}",
             data=result,
             signature="service_placeholder",
+            metadata={"correlation_id": corr, "parent": campfire_name},
         )
     
     async def process_torch(self, torch: 'Torch') -> Optional['Torch']:
@@ -861,10 +1077,13 @@ class Valley(IValley):
                 campfire_name = campfire_name[9:]
             
             # Get the campfire
-            if campfire_name in self.campfires:
-                campfire = self.campfires[campfire_name]
-                logger.info(f"Routing torch {torch.torch_id} to campfire '{campfire_name}'")
-                service_resp = await self.process_service_call(campfire_name, torch)
+            resolved_name = campfire_name
+            if resolved_name not in self.campfires:
+                resolved_name = self._resolve_campfire_by_identifier(campfire_name) or campfire_name
+            if resolved_name in self.campfires:
+                campfire = self.campfires[resolved_name]
+                logger.info(f"Routing torch {torch.torch_id} to campfire '{resolved_name}'")
+                service_resp = await self.process_service_call(resolved_name, torch)
                 if service_resp is not None:
                     return service_resp
                 return await campfire.process_torch(torch)
@@ -882,6 +1101,29 @@ class Valley(IValley):
         except Exception as e:
             logger.error(f"Error processing torch {torch.torch_id}: {e}")
             raise
+
+    def _resolve_campfire_by_identifier(self, identifier: str) -> Optional[str]:
+        ident = (identifier or "").strip()
+        if not ident:
+            return None
+        matches: List[str] = []
+        for name, cf in (self.campfires or {}).items():
+            cfg = getattr(cf, "config", None)
+            conf: Dict[str, Any] = {}
+            if isinstance(cfg, CampfireConfig):
+                conf = cfg.config or {}
+            elif isinstance(cfg, dict):
+                conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+            dock = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
+            v = dock.get("identifier") if isinstance(dock, dict) else None
+            v = (str(v).strip() if v is not None else "")
+            if v and v == ident:
+                matches.append(str(name))
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning(f"Multiple campfires share identifier '{ident}': {matches}. Using '{matches[0]}'.")
+        return matches[0]
     
     async def _load_advanced_config(self) -> None:
         """Load advanced configuration from config directory"""
