@@ -3,6 +3,7 @@
 
 class CampfireValleyLiteGraph {
     constructor() {
+        this.buildId = "20260504-debug-a1";
         this.graph = null;
         this.canvas = null;
         this.nodes = {};
@@ -62,6 +63,11 @@ class CampfireValleyLiteGraph {
             
             // Connect to WebSocket
             this.connectWebSocket();
+
+            this.sendUiDebugLog("ui_loaded", {
+                build_id: this.buildId,
+                href: window.location.href
+            });
             
             // Start graph execution
             this.graph.start();
@@ -771,6 +777,7 @@ class CampfireValleyLiteGraph {
             this.chatUI.input.focus();
             this.updateSpeakButtonForNode(node);
             this.updateChatTitleFromBackend(node);
+            this.refreshChatHistoryFromBackend(node);
         }
     }
 
@@ -895,6 +902,7 @@ class CampfireValleyLiteGraph {
                         <div class="chat-details-actions">
                             <input id="campfireDockIdentifierInput" class="chat-input" type="text" placeholder="Set Dock Identifier (optional)" value="${this._escapeHtml(dock.identifier || "")}" autocomplete="off" />
                             <button id="campfireDockIdentifierSave" type="button">Save</button>
+                            <button id="campfireDeleteBtn" type="button" class="danger">Delete Campfire</button>
                         </div>
                     </div>
                     <div class="chat-details-block">
@@ -915,6 +923,7 @@ class CampfireValleyLiteGraph {
             this.chatUI.messages.innerHTML = body;
             const input = document.getElementById("campfireDockIdentifierInput");
             const btn = document.getElementById("campfireDockIdentifierSave");
+            const deleteBtn = document.getElementById("campfireDeleteBtn");
             if (btn && input) {
                 btn.onclick = async () => {
                     const v = String(input.value || "").trim();
@@ -936,6 +945,49 @@ class CampfireValleyLiteGraph {
                         btn.click();
                     }
                 });
+            }
+            if (deleteBtn) {
+                deleteBtn.onclick = async () => {
+                    const firstRes = await fetch("/api/campfire/delete", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ campfire: target, confirm: false })
+                    });
+                    const firstData = firstRes.ok ? await firstRes.json() : null;
+                    const summary = (firstData && firstData.summary) || {};
+                    const campfiresToDelete = Array.isArray(summary.campfires) ? summary.campfires : [];
+                    const auditorsToDelete = Array.isArray(summary.auditors) ? summary.auditors : [];
+                    const campersToDelete = Array.isArray(summary.campers) ? summary.campers : [];
+                    const total = typeof summary.total === "number" ? summary.total : 0;
+                    const confirmText =
+                        `Delete '${target}'?\n\n` +
+                        `This will also remove:\n` +
+                        `- Campfires: ${campfiresToDelete.join(", ") || "(none)"}\n` +
+                        `- Auditors: ${auditorsToDelete.join(", ") || "(none)"}\n` +
+                        `- Campers: ${campersToDelete.join(", ") || "(none)"}\n\n` +
+                        `Total nodes to delete: ${total}`;
+                    if (!window.confirm(confirmText)) {
+                        return;
+                    }
+                    deleteBtn.disabled = true;
+                    try {
+                        const res2 = await fetch("/api/campfire/delete", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ campfire: target, confirm: true })
+                        });
+                        const data2 = res2.ok ? await res2.json() : null;
+                        const msg = (data2 && data2.message) || `Deleted '${target}'.`;
+                        this.chatUI.messages.innerHTML = `<div class="chat-details">${this._escapeHtml(msg)}</div>`;
+                        await this.fetchBackendCampfires(true);
+                        await this.syncBackendCampfireNodes();
+                        this.setSelectedNode(null);
+                    } catch (e) {
+                        this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to delete campfire.</div>`;
+                    } finally {
+                        deleteBtn.disabled = false;
+                    }
+                };
             }
         } catch (e) {
             this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load campfire details.</div>`;
@@ -1511,6 +1563,12 @@ class CampfireValleyLiteGraph {
                             }
                             return;
                         }
+                        if (action === "delete_campfire_confirm") {
+                            const cmd = `confirm delete campfire "${name}"`;
+                            this.appendChatMessage(node, { role: "user", text: cmd, ts: Date.now() });
+                            this.sendChatToBackend(node, cmd);
+                            return;
+                        }
                         const cmd = `remove camper ${name}`;
                         this.appendChatMessage(node, { role: "user", text: cmd, ts: Date.now() });
                         this.sendChatToBackend(node, cmd);
@@ -1581,6 +1639,45 @@ class CampfireValleyLiteGraph {
             err.className = "log-entry assistant";
             err.textContent = "Failed to load logs (backend unreachable).";
             this.chatUI.logsPanel.appendChild(err);
+        }
+    }
+
+    async refreshChatHistoryFromBackend(node) {
+        if (!this.chatUI || !node) {
+            return;
+        }
+        const target = this.getNodeTarget(node);
+        if (!target || (typeof target === "string" && target.startsWith("valley:"))) {
+            return;
+        }
+        try {
+            const res = await fetch(`/api/logs/${encodeURIComponent(target)}?limit=200`);
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            const entries = Array.isArray(data && data.entries) ? data.entries : [];
+            const history = entries.map((e) => ({
+                role: (e && e.role) || "system",
+                text: (e && e.text) || "",
+                ts: (e && e.ts) || Date.now()
+            }));
+            this.chatByNodeId.set(this.getChatKeyForNode(node), history);
+            if (this.selectedNode === node) {
+                this.renderChatHistory(node);
+            }
+        } catch (e) {
+        }
+    }
+
+    async sendUiDebugLog(event, data) {
+        try {
+            await fetch("/api/debug/ui-log", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ event, data })
+            });
+        } catch (e) {
         }
     }
 
@@ -2055,6 +2152,17 @@ class CampfireValleyLiteGraph {
         }
         const isRemote = (typeof target === "string") && target.startsWith("valley:");
         const isAuditor = !!(node && node.properties && node.properties.type === "auditor");
+        if (isAuditor) {
+            this.sendUiDebugLog("auditor_send_start", {
+                node_id: node && node.id,
+                node_title: node && node.title,
+                node_name: node && node.properties && node.properties.name,
+                node_target: target,
+                node_type: node && node.properties && node.properties.type,
+                auditor_mode: isAuditor,
+                text
+            });
+        }
         const sendOnce = async () => {
             return await fetch("/api/voice/ingest", {
                 method: "POST",
@@ -2086,14 +2194,34 @@ class CampfireValleyLiteGraph {
             const data = await res.json();
             const response = data && data.response;
             let msg = { role: "system", text: "(no response)", ts: Date.now() };
-            if (response && typeof response.llm_response === "string") {
+            let renderBranch = "none";
+            if (response && typeof response.text === "string" && typeof response.created_campfire === "string") {
+                msg.text = response.text;
+                renderBranch = "created_campfire_text";
+            } else if (response && typeof response.llm_response === "string") {
                 msg.text = response.llm_response;
+                renderBranch = "llm_response";
             } else if (response && typeof response.text === "string") {
                 msg.text = response.text;
+                renderBranch = "text";
             } else if (response && typeof response === "string") {
                 msg.text = response;
+                renderBranch = "string_response";
             } else if (response != null) {
                 msg.text = JSON.stringify(response);
+                renderBranch = "json_stringify";
+            }
+            if (isAuditor) {
+                this.sendUiDebugLog("auditor_send_result", {
+                    node_id: node && node.id,
+                    node_target: target,
+                    response_keys: response && typeof response === "object" ? Object.keys(response) : [],
+                    has_text: !!(response && typeof response.text === "string"),
+                    has_llm_response: !!(response && typeof response.llm_response === "string"),
+                    created_campfire: response && response.created_campfire,
+                    render_branch: renderBranch,
+                    rendered_preview: String(msg.text || "").slice(0, 300)
+                });
             }
             if (response && Array.isArray(response.options)) {
                 msg.options = response.options;
@@ -2108,7 +2236,8 @@ class CampfireValleyLiteGraph {
             this.updateChatTitleFromBackend(node);
             const created = response && response.created;
             const removed = response && response.removed;
-            if ((Array.isArray(created) && created.length > 0) || (Array.isArray(removed) && removed.length > 0)) {
+            const createdCampfire = response && response.created_campfire;
+            if ((Array.isArray(created) && created.length > 0) || (Array.isArray(removed) && removed.length > 0) || (typeof createdCampfire === "string" && createdCampfire.length > 0)) {
                 setTimeout(() => {
                     try {
                         this.syncBackendCampfireNodes();

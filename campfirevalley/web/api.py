@@ -348,6 +348,32 @@ def _parse_remove_camper_command(text: str) -> Optional[str]:
     return ""
 
 
+def _parse_delete_campfire_command(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip().strip("`").strip()
+    low = t.lower()
+    confirm = False
+    if low.startswith("confirm "):
+        confirm = True
+        t = t[len("confirm "):].strip()
+        low = t.lower()
+    if not (
+        low.startswith("delete campfire")
+        or low.startswith("remove campfire")
+        or low.startswith("delete a campfire")
+        or low.startswith("remove a campfire")
+        or low.startswith("delete team")
+        or low.startswith("remove team")
+    ):
+        return None
+    m = re.search(r"(?:delete|remove)\s+(?:a\s+)?(?:campfire|team)\s*(.*)$", t, re.IGNORECASE)
+    name = ""
+    if m:
+        name = (m.group(1) or "").strip().strip("\"'").strip()
+    return {"name": name, "confirm": confirm}
+
+
 def _parse_rename_camper_command(text: str) -> Optional[dict]:
     if not text or not isinstance(text, str):
         return None
@@ -441,6 +467,13 @@ def _cleanup_campfire_artifacts(campfire_name: str) -> None:
     except Exception:
         pass
     try:
+        if current_valley and getattr(current_valley, "_workflow_path_for", None):
+            wf_path = current_valley._workflow_path_for(campfire_name)
+            if wf_path.exists():
+                wf_path.unlink()
+    except Exception:
+        pass
+    try:
         cfg_dir = _get_config_dir()
         belief_path = cfg_dir / f"camper_{_slugify(campfire_name)}_beliefs.yaml"
         if belief_path.exists():
@@ -448,10 +481,123 @@ def _cleanup_campfire_artifacts(campfire_name: str) -> None:
     except Exception:
         pass
     try:
+        cfg_dir = _get_config_dir()
+        campfire_path = cfg_dir / f"campfire_{_slugify(campfire_name)}.yaml"
+        if campfire_path.exists():
+            campfire_path.unlink()
+    except Exception:
+        pass
+    try:
         collection = _get_beliefs_collection()
         collection.delete(where={"campfire": campfire_name})
     except Exception:
         pass
+
+
+def _collect_cascade_delete_targets(root_name: str) -> Dict[str, List[str]]:
+    root = (root_name or "").strip()
+    if not root:
+        return {"campfires": [], "auditors": [], "campers": [], "all": []}
+    seen: set[str] = set()
+    campfires: List[str] = []
+    auditors: List[str] = []
+    campers: List[str] = []
+
+    def visit_campfire(name: str) -> None:
+        nm = (name or "").strip()
+        if not nm or nm in seen:
+            return
+        seen.add(nm)
+        campfires.append(nm)
+        auditor_name = f"{nm} Auditor"
+        if current_valley and auditor_name in current_valley.campfires and auditor_name not in seen:
+            seen.add(auditor_name)
+            auditors.append(auditor_name)
+        child_candidates: List[str] = list(_campers_for_parent(nm))
+        try:
+            wf = current_valley.get_workflow(nm) if current_valley and getattr(current_valley, "get_workflow", None) else None
+            for step in (wf.get("steps") if isinstance(wf, dict) else []) or []:
+                if not isinstance(step, dict):
+                    continue
+                camper_name = (step.get("camper") or "").strip()
+                if camper_name and camper_name not in child_candidates:
+                    child_candidates.append(camper_name)
+        except Exception:
+            pass
+        for child in child_candidates:
+            child_name = (child or "").strip()
+            if not child_name or child_name in seen:
+                continue
+            if current_valley and child_name in current_valley.campfires:
+                campers.append(child_name)
+            seen.add(child_name)
+            child_auditor = f"{child_name} Auditor"
+            if current_valley and child_auditor in current_valley.campfires and child_auditor not in seen:
+                seen.add(child_auditor)
+                auditors.append(child_auditor)
+
+    visit_campfire(root)
+    return {
+        "campfires": campfires,
+        "auditors": auditors,
+        "campers": campers,
+        "all": campers + auditors + campfires,
+    }
+
+
+def _delete_summary_for_campfire(root_name: str) -> Dict[str, List[str]]:
+    root = (root_name or "").strip()
+    if not root:
+        return {"campfires": [], "auditors": [], "campers": [], "all": []}
+    campfires: List[str] = []
+    campers: List[str] = []
+    auditors: List[str] = []
+    seen: set[str] = set()
+
+    def add_unique(bucket: List[str], name: str) -> None:
+        nm = (name or "").strip()
+        if not nm or nm in seen:
+            return
+        seen.add(nm)
+        bucket.append(nm)
+
+    add_unique(campfires, root)
+
+    if current_valley:
+        add_unique(auditors, f"{root} Auditor" if f"{root} Auditor" in current_valley.campfires else "")
+
+    # Parent map is the strongest signal for live linked campers.
+    for child_name, parent_name in list(campfire_parent.items()):
+        if (parent_name or "").strip() != root:
+            continue
+        if current_valley and child_name not in current_valley.campfires:
+            continue
+        add_unique(campers, child_name)
+
+    # Workflow steps provide a fallback when a linked camper exists but the parent map is stale.
+    try:
+        wf = current_valley.get_workflow(root) if current_valley and getattr(current_valley, "get_workflow", None) else None
+        for step in (wf.get("steps") if isinstance(wf, dict) else []) or []:
+            if not isinstance(step, dict):
+                continue
+            camper_name = (step.get("camper") or "").strip()
+            if current_valley and camper_name in current_valley.campfires:
+                add_unique(campers, camper_name)
+    except Exception:
+        pass
+
+    if current_valley:
+        for camper_name in list(campers):
+            auditor_name = f"{camper_name} Auditor"
+            if auditor_name in current_valley.campfires:
+                add_unique(auditors, auditor_name)
+
+    return {
+        "campfires": campfires,
+        "auditors": auditors,
+        "campers": campers,
+        "all": campfires + auditors + campers,
+    }
 
 
 def _move_beliefs_embeddings(old_name: str, new_name: str) -> None:
@@ -495,12 +641,16 @@ def _auditor_orchestrator_instruction() -> str:
     return (
         "You are the Campfire Auditor and Orchestrator.\n"
         "If the user asks about current campfire status/settings (workflow/execution order, schedule, tools, model, campers), answer directly in plain text.\n"
-        "Only produce a JSON plan if the user explicitly asks to change the team/workflow/schedule or to create a plan.\n"
+        "Only produce a JSON plan if the user explicitly asks to change the team/workflow/schedule, to create a plan, or to set up a campfire/team.\n"
         "Never create or manage auditors as separate campers.\n"
+        "If the user asks to set up or create a team for the current campfire, plan campers and workflow for the current campfire unless they explicitly say new, another, or separate campfire/team.\n"
+        "Only include campfire_to_create when the user explicitly asks for a new, another, or separate campfire/team.\n"
         "When producing a JSON plan, return ONLY valid JSON with keys:\n"
+        "- campfire_to_create: optional object {name, persona, model, system_prompt} for explicit new campfire/team requests only\n"
         "- campers_to_create: array of {name, persona, model, system_prompt, rag_template}\n"
         "- task_plan: array of {camper, task}\n"
         "- message_to_user: string\n"
+        "- run_after_create: optional boolean\n"
         "Do not include any extra text outside the JSON when returning a plan."
     )
 
@@ -666,6 +816,92 @@ def _parse_add_camper_command(text: str) -> Optional[str]:
         name = (m3.group(1) or "").strip().strip("\"'").strip()
         return name if name else None
     return ""
+
+
+def _parse_create_campfire_request(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip().strip("`").strip()
+    if not t:
+        return None
+    m = re.match(
+        r"^(?:please\s+)?(?:create|make|build|set\s*up|setup)\s+(?:me\s+|us\s+)?(?:a|an)?\s*(?:(?P<modifier>new|another|separate)\s+)?(?:campfire|team)\b(?P<rest>.*)$",
+        t,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    explicit_new = bool((m.group("modifier") or "").strip())
+    rest = (m.group("rest") or "").strip()
+    name = None
+    m_name = re.search(
+        r"(?:named|called)\s+(\"[^\"]+\"|'[^']+'|.+?)(?=\s+(?:that|to|for|with)\b|[.!?]|$)",
+        rest,
+        re.IGNORECASE,
+    )
+    if m_name:
+        name = (m_name.group(1) or "").strip().strip("\"'").strip()
+    goal = ""
+    for marker in ("that can", "to", "for", "which can"):
+        mm = re.search(rf"\b{marker}\b\s*(.+)$", rest, re.IGNORECASE)
+        if mm:
+            goal = (mm.group(1) or "").strip()
+            break
+    if not goal:
+        goal = rest
+    if m_name:
+        goal = re.sub(
+            r"(?:named|called)\s+(\"[^\"]+\"|'[^']+'|.+?)(?=\s+(?:that|to|for|with)\b|[.!?]|$)",
+            "",
+            goal,
+            flags=re.IGNORECASE,
+        ).strip()
+    goal = goal.strip(" .,:;-")
+    return {"name": name or "", "goal": goal or t, "raw": t, "explicit_new": explicit_new}
+
+
+def _display_name_token(token: str) -> str:
+    tok = (token or "").strip()
+    if not tok:
+        return ""
+    if any(ch.isupper() for ch in tok[1:]):
+        return tok
+    return tok[:1].upper() + tok[1:]
+
+
+def _derive_campfire_name(seed_text: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9+/._-]*", seed_text or "")
+    skip = {
+        "a", "an", "and", "build", "campfire", "can", "create", "for", "help", "make",
+        "new", "of", "plan", "problem", "set", "setup", "solve", "team", "that", "the",
+        "this", "to", "up", "with", "workflow", "one", "two", "three", "four", "five",
+        "six", "seven", "eight", "nine", "ten",
+    }
+    kept: List[str] = []
+    for tok in tokens:
+        low = tok.lower()
+        if low in skip:
+            continue
+        if len(tok) < 3 and not any(ch.isdigit() for ch in tok):
+            continue
+        shown = _display_name_token(tok)
+        if shown:
+            kept.append(shown)
+        if len(kept) >= 3:
+            break
+    if not kept:
+        return "New Campfire"
+    return (" ".join(kept) + " Campfire").strip()[:80]
+
+
+def _unique_campfire_name(base_name: str) -> str:
+    candidate = (base_name or "").strip() or "New Campfire"
+    if not current_valley or candidate not in current_valley.campfires:
+        return candidate
+    idx = 2
+    while f"{candidate} {idx}" in current_valley.campfires:
+        idx += 1
+    return f"{candidate} {idx}"
 
 
 def _normalize_label(s: str) -> str:
@@ -1102,6 +1338,84 @@ async def get_campfires(include_auditors: bool = False):
     return campfires
 
 
+@app.get("/api/services")
+async def list_services(include_auditors: bool = False):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    vid = ""
+    try:
+        e = current_valley.config.env or {}
+        vid = (e.get("valley_id") or "").strip()
+    except Exception:
+        vid = ""
+    if not vid:
+        try:
+            vid = uuid.uuid4().hex
+            current_valley.config.env["valley_id"] = vid
+            try:
+                ConfigManager.save_valley_config(current_valley.config, current_valley.manifest_path)
+            except Exception:
+                pass
+        except Exception:
+            vid = current_valley.name
+    services = []
+    for campfire_name, cf in (current_valley.campfires or {}).items():
+        nm = str(campfire_name)
+        if not include_auditors and nm.endswith(" Auditor"):
+            continue
+        cfg = getattr(cf, "config", None)
+        conf: Dict[str, Any] = {}
+        if isinstance(cfg, CampfireConfig):
+            conf = cfg.config or {}
+        elif isinstance(cfg, dict):
+            conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+        dock_cfg = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
+        identifier = (dock_cfg.get("identifier") or "").strip() if isinstance(dock_cfg, dict) else ""
+        llm = conf.get("llm") if isinstance(conf.get("llm"), dict) else {}
+        tools = (conf.get("tools") or {}).get("zeitgeist") if isinstance(conf.get("tools"), dict) else {}
+        kind = "camper" if (nm in campfire_parent or nm.lower().endswith(" camper")) else "campfire"
+        parent = campfire_parent.get(nm)
+        addr_key = identifier or nm
+        capabilities = []
+        if kind == "camper":
+            capabilities.append("camper")
+        else:
+            capabilities.append("campfire")
+        if nm.endswith(" Auditor"):
+            capabilities.append("auditor")
+        if isinstance(tools, dict) and tools:
+            capabilities.append("tools")
+        if isinstance(llm, dict) and llm.get("model"):
+            capabilities.append("llm")
+        if getattr(current_valley, "get_workflow", None) and kind == "campfire":
+            wf = current_valley.get_workflow(nm)
+            if wf:
+                capabilities.append("workflow")
+        if getattr(current_valley, "get_schedule", None) and kind == "campfire":
+            sched = current_valley.get_schedule(nm)
+            if sched and isinstance(sched, dict) and sched.get("enabled"):
+                capabilities.append("schedule")
+        services.append({
+            "name": nm,
+            "kind": kind,
+            "type": cf.__class__.__name__,
+            "running": bool(getattr(cf, "_running", False)),
+            "parent": parent,
+            "identifier": identifier,
+            "addresses": {
+                "valley_id": f"valley:{vid}/{addr_key}",
+                "valley_name": f"valley:{current_valley.name}/{addr_key}",
+            },
+            "llm": {
+                "provider": (llm.get("provider") or "").strip() if isinstance(llm, dict) else "",
+                "model": (llm.get("model") or "").strip() if isinstance(llm, dict) else "",
+            },
+            "capabilities": sorted(set([c for c in capabilities if c])),
+        })
+    services.sort(key=lambda s: (s.get("kind") or "", s.get("parent") or "", s.get("name") or ""))
+    return {"status": "ok", "valley": {"name": current_valley.name, "identifier": vid}, "services": services}
+
+
 @app.get("/api/campfire/tools")
 async def get_campfire_tools(campfire: str):
     if not current_valley:
@@ -1367,6 +1681,82 @@ async def cleanup_legacy_auditor_campfires():
         except Exception:
             pass
     return {"status": "ok", "removed": removed}
+
+
+@app.post("/api/campfire/delete")
+async def delete_campfire(payload: Dict[str, Any]):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    name = str((payload or {}).get("campfire") or "").strip()
+    confirm = bool((payload or {}).get("confirm"))
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing campfire name")
+    summary = _delete_summary_for_campfire(name)
+    if not summary["campfires"]:
+        raise HTTPException(status_code=404, detail=f"Campfire {name} not found")
+    if not confirm:
+        return {
+            "status": "confirm_required",
+            "campfire": name,
+            "summary": {
+                "campfires": summary["campfires"],
+                "auditors": summary["auditors"],
+                "campers": summary["campers"],
+                "total": len(summary["all"]),
+            },
+            "message": f"Delete '{name}' and all linked auditors/campers?",
+        }
+
+    removed: List[str] = []
+    failed: List[str] = []
+    target_names = list(summary["all"])
+    for target_name in target_names:
+        existed_before = bool(current_valley and target_name in current_valley.campfires)
+        try:
+            if existed_before:
+                await current_valley.deprovision_campfire(target_name)
+        except Exception:
+            pass
+        try:
+            campfire_parent.pop(target_name, None)
+        except Exception:
+            pass
+        try:
+            _cleanup_campfire_artifacts(target_name)
+        except Exception:
+            pass
+        exists_after = bool(current_valley and target_name in current_valley.campfires)
+        if existed_before and not exists_after:
+            removed.append(target_name)
+        elif existed_before and exists_after:
+            failed.append(target_name)
+
+    # Reconcile against the actual final runtime state so the response matches reality
+    # even if deleting the parent implicitly removed some linked nodes.
+    if current_valley:
+        removed = [n for n in target_names if n not in current_valley.campfires]
+        failed = [n for n in target_names if n in current_valley.campfires]
+    if not failed:
+        removed = list(target_names)
+
+    msg = (
+        f"Deleted campfire '{name}' and related nodes."
+        if not failed else
+        f"Deleted campfire '{name}' with some cleanup failures."
+    )
+    return {
+        "status": "ok" if not failed else "partial",
+        "campfire": name,
+        "removed": removed,
+        "failed": failed,
+        "message": msg,
+        "summary": {
+            "campfires": summary["campfires"],
+            "auditors": summary["auditors"],
+            "campers": summary["campers"],
+            "total": len(summary["all"]),
+        },
+    }
 
 @app.get("/api/valley/identifier")
 async def get_valley_identifier():
@@ -1687,22 +2077,216 @@ async def voice_ingest(payload: dict = Body(...)):
         if cmd.startswith("`"):
             cmd = cmd.strip("`").strip()
         low = cmd.lower()
+        create_campfire_request = _parse_create_campfire_request(cmd)
+        delete_campfire_request = _parse_delete_campfire_command(cmd)
         allow_actions = any(
             low.startswith(p)
             for p in (
                 "add camper",
+                "create a campfire",
+                "create campfire",
                 "create camper",
+                "make a campfire",
+                "build a campfire",
+                "set up a campfire",
+                "setup a campfire",
+                "camp plan",
+                "plan workflow",
                 "move ",
                 "reorder ",
                 "swap ",
                 "remove camper",
+                "delete campfire",
+                "remove campfire",
+                "delete team",
+                "remove team",
                 "rename camper",
                 "set workflow",
                 "clear workflow",
                 "set schedule",
                 "clear schedule",
             )
-        )
+        ) or (create_campfire_request is not None) or (delete_campfire_request is not None)
+        if delete_campfire_request is not None:
+            target_campfire = str(delete_campfire_request.get("name") or "").strip()
+            if not target_campfire:
+                target_campfire = str(parent or "").strip()
+            if not target_campfire:
+                msg = "Which campfire should I delete?"
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg}}
+            summary = _delete_summary_for_campfire(target_campfire)
+            if not summary["campfires"]:
+                msg = f"Campfire '{target_campfire}' not found."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": False}}
+            if not bool(delete_campfire_request.get("confirm")):
+                msg = (
+                    f"Delete campfire '{target_campfire}'?\n"
+                    f"Campfires: {', '.join(summary['campfires']) or '(none)'}\n"
+                    f"Auditors: {', '.join(summary['auditors']) or '(none)'}\n"
+                    f"Campers: {', '.join(summary['campers']) or '(none)'}\n"
+                    f"Total nodes to delete: {len(summary['all'])}"
+                )
+                _append_log(target, "assistant", msg)
+                return {
+                    "status": "ok",
+                    "campfire": target,
+                    "response": {
+                        "text": msg,
+                        "options": [target_campfire],
+                        "options_action": "delete_campfire_confirm",
+                        "ok": True,
+                    },
+                }
+            delete_result = await delete_campfire({"campfire": target_campfire, "confirm": True})
+            removed_items = delete_result.get("removed") or []
+            failed_items = delete_result.get("failed") or []
+            msg = str(delete_result.get("message") or f"Deleted campfire '{target_campfire}'.")
+            final_payload = {
+                "text": msg,
+                "ok": delete_result.get("status") == "ok",
+                "removed": removed_items,
+                "failed": failed_items,
+                "summary": delete_result.get("summary"),
+            }
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": final_payload}
+        if parent and (low.startswith("camp plan") or low.startswith("plan workflow")):
+            plan_only = low.startswith("camp plan only") or low.startswith("plan workflow only")
+            goal = cmd
+            for prefix in ("camp plan only", "camp plan", "plan workflow only", "plan workflow"):
+                if low.startswith(prefix):
+                    goal = cmd[len(prefix):].strip()
+                    break
+            goal = goal.strip(" :,-")
+            if not goal:
+                goal = cmd
+
+            wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
+            campers = [c for c in _campers_for_parent(parent) if c and c != parent]
+            if not campers and isinstance(wf, dict) and isinstance(wf.get("steps"), list):
+                for s in wf.get("steps") or []:
+                    if not isinstance(s, dict):
+                        continue
+                    nm = (s.get("camper") or "").strip()
+                    if nm and nm != parent and nm not in campers:
+                        campers.append(nm)
+            if not campers:
+                msg = f"No campers linked to '{parent}'. Add campers first, then try again."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": False}}
+
+            known = set(campers)
+            corr = f"plan_{uuid.uuid4().hex}"
+
+            def _extract_plan_items(raw: str) -> List[dict]:
+                if not raw or not isinstance(raw, str):
+                    return []
+                m = re.search(r"```json\\s*([\\s\\S]+?)```", raw, flags=re.IGNORECASE)
+                candidate = (m.group(1).strip() if m else raw.strip())
+                dec = json.JSONDecoder()
+                for i, ch in enumerate(candidate):
+                    if ch not in "[{":
+                        continue
+                    try:
+                        obj, _ = dec.raw_decode(candidate[i:])
+                        if isinstance(obj, list):
+                            return [x for x in obj if isinstance(x, dict)]
+                        if isinstance(obj, dict) and isinstance(obj.get("steps"), list):
+                            return [x for x in obj.get("steps") if isinstance(x, dict)]
+                    except Exception:
+                        continue
+                return []
+
+            proposals: List[Dict[str, Any]] = []
+            for idx, camper in enumerate(campers[:12], start=1):
+                cf = current_valley.campfires.get(camper)
+                if not cf:
+                    continue
+                prompt = (
+                    f"You are {camper}.\n\n"
+                    f"Goal:\n{goal}\n\n"
+                    f"Available campers:\n- " + "\n- ".join(campers) + "\n\n"
+                    f"Task:\nPropose 1-3 workflow steps to achieve the goal. Each step must be assigned to one of the available campers.\n\n"
+                    f"Return ONLY JSON (no markdown, no commentary) as a list of objects. Schema:\n"
+                    f"[{{\"camper\": \"<one of available campers>\", \"task\": \"<imperative instruction>\"}}]\n"
+                )
+                step_torch = Torch(
+                    claim="workflow_step",
+                    source_campfire=f"{parent} Auditor",
+                    channel="planning",
+                    torch_id=f"plan_{uuid.uuid4().hex}",
+                    sender_valley=current_valley.name,
+                    target_address=f"valley:{current_valley.name}/{camper}",
+                    data={"text": prompt, "service_mode": True, "parent": parent, "step": idx, "planning": True},
+                    signature="plan_placeholder",
+                    metadata={"correlation_id": corr, "parent": parent, "step": idx, "camper": camper, "planning": True},
+                )
+                resp = await cf.process_torch(step_torch)
+                raw = ""
+                if resp is not None and hasattr(resp, "data") and isinstance(resp.data, dict):
+                    raw = (resp.data.get("llm_response") or resp.data.get("text") or "").strip()
+                items = _extract_plan_items(raw)
+                proposals.append({"camper": camper, "raw": raw, "items": items})
+
+            planned_steps: List[Dict[str, str]] = []
+            seen = set()
+            for p in proposals:
+                default_camper = (p.get("camper") or "").strip()
+                items = p.get("items") if isinstance(p.get("items"), list) else []
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    c = (it.get("camper") or default_camper or "").strip()
+                    t = (it.get("task") or it.get("text") or it.get("step") or "").strip()
+                    if not c or c not in known:
+                        c = default_camper
+                    if not c or not t:
+                        continue
+                    k = (c.lower(), t.lower())
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    planned_steps.append({"camper": c, "task": t})
+                    if len(planned_steps) >= 20:
+                        break
+                if len(planned_steps) >= 20:
+                    break
+
+            if not planned_steps:
+                planned_steps = [{"camper": c, "task": "Provide your role-specific analysis and recommendations."} for c in campers[:5]]
+
+            if "Editor / Reporter Camper" in known:
+                rest = [s for s in planned_steps if (s.get("camper") or "").strip() != "Editor / Reporter Camper"]
+                planned_steps = rest + [{"camper": "Editor / Reporter Camper", "task": "Synthesize prior outputs into the final client-facing report, including a 'Role Contributions' section with quotes."}]
+
+            plan_lines = [f"{i+1}. {s.get('camper')}: {s.get('task')}" for i, s in enumerate(planned_steps)]
+            plan_text = "Planned steps:\n" + ("\n".join(plan_lines) if plan_lines else "(none)")
+
+            if plan_only:
+                msg = plan_text + f"\n\nCorrelation: {corr}"
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": True, "correlation_id": corr, "steps": planned_steps}}
+
+            run_torch = Torch(
+                claim="service_request",
+                source_campfire=f"{parent} Auditor",
+                channel="service",
+                torch_id=f"service_{uuid.uuid4().hex}",
+                sender_valley=current_valley.name,
+                target_address=f"valley:{current_valley.name}/{parent}",
+                data={"text": goal},
+                signature="service_placeholder",
+                metadata={"correlation_id": corr, "workflow_override_steps": planned_steps, "planned": True},
+            )
+            final_resp = await current_valley.process_torch(run_torch)
+            final_text = ""
+            if final_resp is not None and hasattr(final_resp, "data") and isinstance(final_resp.data, dict):
+                final_text = (final_resp.data.get("text") or final_resp.data.get("llm_response") or "").strip()
+            msg = plan_text + f"\n\nCorrelation: {corr}\n\n---\n\nFinal report:\n" + (final_text or "(no response)")
+            _append_log(target, "assistant", msg)
+            return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": bool(final_text), "correlation_id": corr, "steps": planned_steps, "final": getattr(final_resp, "data", None)}}
         if parent and ("move " in low or "reorder" in low or "swap" in low):
             wf = current_valley.get_workflow(parent) if getattr(current_valley, "get_workflow", None) else None
             campers = [c for c in _campers_for_parent(parent) if c and c != parent]
@@ -2284,34 +2868,93 @@ async def voice_ingest(payload: dict = Body(...)):
             response_text = response.get("llm_response") or response.get("text")
         elif isinstance(response, str):
             response_text = response
-        if response_text:
+        plan = _extract_first_json_object(str(response_text or ""))
+        if response_text and (not plan or (auditor_mode and not allow_actions)):
             _append_log(target, "assistant", str(response_text))
 
         if auditor_mode and not allow_actions:
             return result
-
-        plan = _extract_first_json_object(str(response_text or ""))
         if not plan:
             return result
 
+        plan_parent = parent
+        explicit_new_campfire = bool(
+            isinstance(create_campfire_request, dict) and create_campfire_request.get("explicit_new")
+        )
+        creating_new_campfire = explicit_new_campfire or (parent is None and isinstance(plan.get("campfire_to_create"), dict))
+        configuring_current_campfire = bool(create_campfire_request is not None) and not creating_new_campfire and bool(parent)
+        create_spec = plan.get("campfire_to_create") if isinstance(plan.get("campfire_to_create"), dict) else {}
         campers_to_create = plan.get("campers_to_create") or []
         task_plan = plan.get("task_plan") or []
         message_to_user = plan.get("message_to_user") or ""
+        created_parent = None
         created = []
         results = []
+        camper_name_map: Dict[str, str] = {}
+
+        if creating_new_campfire:
+            requested_name = ""
+            if isinstance(create_spec, dict):
+                requested_name = str(create_spec.get("name") or "").strip()
+            if not requested_name and isinstance(create_campfire_request, dict):
+                requested_name = str(create_campfire_request.get("name") or "").strip()
+            goal_text = ""
+            if isinstance(create_campfire_request, dict):
+                goal_text = str(create_campfire_request.get("goal") or "").strip()
+            if not goal_text:
+                goal_text = str(message_to_user or cmd).strip()
+            base_name = requested_name or _derive_campfire_name(goal_text)
+            plan_parent = _unique_campfire_name(base_name)
+            persona = str(create_spec.get("persona") or "").strip() if isinstance(create_spec, dict) else ""
+            provider, model = _pick_provider_and_model(create_spec.get("model") if isinstance(create_spec, dict) else None)
+            sys_prompt = ""
+            if isinstance(create_spec, dict):
+                sys_prompt = str(create_spec.get("system_prompt") or "").strip()
+            if not sys_prompt:
+                sys_prompt = (
+                    f"You are {plan_parent}. Coordinate a specialist camper team to solve this goal: {goal_text}. "
+                    f"Use the saved workflow when the user asks you to run work, ask clarifying questions when needed, "
+                    f"and keep final outputs concise and actionable."
+                )
+            parent_cfg = CampfireConfig(
+                name=plan_parent,
+                type="LLMCampfire",
+                config={
+                    "llm": {"provider": provider, "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"), "model": model},
+                    "prompts": {"system": sys_prompt},
+                    "persona": {"name": plan_parent, "persona": persona or "team orchestrator", "model": model},
+                    "rag": {"documents": _default_rag_documents(plan_parent, persona or goal_text)},
+                },
+            )
+            ok = await current_valley.provision_campfire(parent_cfg)
+            if not ok:
+                msg = f"Failed to create campfire '{plan_parent}'."
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": False}}
+            created_parent = plan_parent
 
         if isinstance(campers_to_create, list):
             for raw in campers_to_create[:8]:
                 if not isinstance(raw, dict):
                     continue
-                name = (raw.get("name") or "").strip()
-                if not name:
+                original_name = (raw.get("name") or "").strip()
+                if not original_name:
                     continue
+                name = original_name
                 low_name = name.lower()
                 if low_name == "auditor" or low_name.endswith(" auditor"):
                     continue
                 if name in current_valley.campfires:
-                    continue
+                    existing_parent = campfire_parent.get(name)
+                    if not creating_new_campfire:
+                        camper_name_map[original_name] = name
+                        continue
+                    if existing_parent == plan_parent:
+                        camper_name_map[original_name] = name
+                        continue
+                    if existing_parent != plan_parent:
+                        name = _unique_campfire_name(f"{plan_parent or parent or 'Campfire'} {original_name}")
+                camper_name_map[original_name] = name
                 persona = raw.get("persona")
                 provider, model = _pick_provider_and_model(raw.get("model"))
                 sys_prompt = (raw.get("system_prompt") or f"You are {name}.").strip()
@@ -2330,19 +2973,75 @@ async def voice_ingest(payload: dict = Body(...)):
                 ok = await current_valley.provision_campfire(cfg)
                 if ok:
                     created.append(name)
-                    if parent:
-                        campfire_parent[name] = parent
+                    if plan_parent:
+                        campfire_parent[name] = plan_parent
 
+        workflow_steps = []
         if isinstance(task_plan, list):
             for raw in task_plan[:12]:
                 if not isinstance(raw, dict):
                     continue
                 camper = (raw.get("camper") or "").strip()
                 task = (raw.get("task") or "").strip()
+                if camper in camper_name_map:
+                    camper = camper_name_map[camper]
                 if not camper or not task:
                     continue
                 if camper not in current_valley.campfires:
                     continue
+                workflow_steps.append({"camper": camper, "task": task})
+
+        if creating_new_campfire:
+            workflow_saved = False
+            if workflow_steps and getattr(current_valley, "set_workflow", None):
+                workflow_saved = current_valley.set_workflow(plan_parent, workflow_steps)
+            created_camper_names = created if created else sorted(_campers_for_parent(plan_parent))
+            msg = (
+                f"Created campfire '{plan_parent}'.\n"
+                f"Campers: " + (", ".join(created_camper_names) if created_camper_names else "(none)") + "\n"
+                f"Workflow saved: {'yes' if workflow_saved else 'no'}.\n"
+                f"The team is ready, but no work has been started yet."
+            )
+            final_payload = {
+                "text": msg,
+                "ok": True,
+                "created_campfire": plan_parent,
+                "created": created,
+                "workflow": current_valley.get_workflow(plan_parent) if getattr(current_valley, "get_workflow", None) else None,
+                "plan": plan,
+                "parent": plan_parent,
+                "message_to_user": message_to_user,
+            }
+            _append_log(target, "assistant", str(final_payload.get("text")))
+            return {"status": "ok", "campfire": target, "response": final_payload}
+
+        if configuring_current_campfire:
+            workflow_saved = False
+            if workflow_steps and getattr(current_valley, "set_workflow", None):
+                workflow_saved = current_valley.set_workflow(plan_parent, workflow_steps)
+            current_names = sorted(_campers_for_parent(plan_parent))
+            msg = (
+                f"Updated campfire '{plan_parent}'.\n"
+                f"Campers: " + (", ".join(current_names) if current_names else "(none)") + "\n"
+                f"Workflow saved: {'yes' if workflow_saved else 'no'}.\n"
+                f"The team is ready, but no work has been started yet."
+            )
+            final_payload = {
+                "text": msg,
+                "ok": True,
+                "created": created,
+                "workflow": current_valley.get_workflow(plan_parent) if getattr(current_valley, "get_workflow", None) else None,
+                "plan": plan,
+                "parent": plan_parent,
+                "message_to_user": message_to_user,
+            }
+            _append_log(target, "assistant", str(final_payload.get("text")))
+            return {"status": "ok", "campfire": target, "response": final_payload}
+
+        if workflow_steps:
+            for raw in workflow_steps:
+                camper = (raw.get("camper") or "").strip()
+                task = (raw.get("task") or "").strip()
                 _append_log(camper, "user", task)
                 try:
                     r = await asyncio.wait_for(current_valley.send_voice_text(camper, task, admin=False), timeout=60)
@@ -2359,7 +3058,7 @@ async def voice_ingest(payload: dict = Body(...)):
                     _append_log(camper, "assistant", str(out))
                 results.append({"camper": camper, "ok": True, "response": resp})
 
-        final_payload = {"text": message_to_user or "Orchestration plan prepared.", "created": created, "results": results, "plan": plan, "parent": parent}
+        final_payload = {"text": message_to_user or "Orchestration plan prepared.", "created": created, "results": results, "plan": plan, "parent": plan_parent, "created_campfire": created_parent}
         _append_log(target, "assistant", str(final_payload.get("text")))
         return {"status": "ok", "campfire": target, "response": final_payload}
     try:
@@ -2444,6 +3143,18 @@ async def get_logs(campfire_name: str, limit: int = 200):
         limit = 200
     limit = max(1, min(limit, 2000))
     return {"status": "ok", "campfire": campfire_name, "entries": _read_logs(campfire_name, limit=limit)}
+
+
+@app.post("/api/debug/ui-log")
+async def ui_debug_log(payload: dict = Body(...)):
+    event = (payload.get("event") or "").strip() or "ui_event"
+    data = payload.get("data")
+    try:
+        body = json.dumps({"event": event, "data": data}, ensure_ascii=False)
+    except Exception:
+        body = str({"event": event, "data": str(data)})
+    _append_log("UI Debug", "system", body)
+    return {"status": "ok"}
 
 
 @app.post("/api/campfire/export")

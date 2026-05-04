@@ -65,6 +65,16 @@ You can reorder workflow steps using natural language:
 
 This persists a workflow for the parent campfire, and subsequent “what’s the workflow?” queries will return **Execution order (workflow)**.
 
+### CAMP planning mode
+
+Use this to have the Auditor query each camper for proposed steps, compile a plan, then execute the plan immediately (without changing the persisted workflow):
+
+- `camp plan <your goal>`
+
+To generate a plan without executing:
+
+- `camp plan only <your goal>`
+
 ### Auditing execution
 
 Use `self audit` to confirm that each camper actually ran (and in the correct order) for the last 30 minutes. To inspect a specific run, use:
@@ -74,6 +84,26 @@ Use `self audit` to confirm that each camper actually ran (and in the correct or
 ### Final report synthesis (Role Contributions)
 
 The final step in the workflow is treated as the final report author. The orchestrator automatically requires the final report to include a `Role Contributions` section with step-numbered quotes from the upstream campers. This makes it easy to verify that the final report is a synthesis of multiple perspectives, not a single generic response.
+
+## Service Discovery
+
+You can list the services (campfires/campers) addressable inside a valley.
+
+### REST
+
+- `GET /api/services`
+
+This returns a list of services including:
+- `identifier` (dock identifier, if configured)
+- `addresses.valley_id` and `addresses.valley_name`
+
+### Torch (Dock)
+
+External callers can query a valley via Dock by sending a torch to:
+
+- `valley:<VALLEY_IDENTIFIER>/services`
+
+with claim `valley_discovery` (or `service_discovery`) and a `reply_channel` in torch metadata. The reply payload includes the same `services` list and addresses.
 
 ## Legacy Cleanup
 

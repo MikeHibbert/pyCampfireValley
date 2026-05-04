@@ -90,7 +90,7 @@ from .party_box import (
     FileSystemPartyBox, PartyBoxManager
 )
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 __all__ = [
     # Core classes

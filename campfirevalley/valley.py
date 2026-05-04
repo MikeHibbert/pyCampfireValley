@@ -803,8 +803,16 @@ class Valley(IValley):
     async def process_service_call(self, campfire_name: str, torch: 'Torch') -> Optional['Torch']:
         if not self._is_service_torch(torch):
             return None
+        override_steps = None
+        try:
+            if hasattr(torch, "metadata") and isinstance(torch.metadata, dict):
+                v = torch.metadata.get("workflow_override_steps")
+                if isinstance(v, list) and v:
+                    override_steps = v
+        except Exception:
+            override_steps = None
         workflow = self.get_workflow(campfire_name) or {}
-        steps = workflow.get("steps") if isinstance(workflow, dict) else None
+        steps = override_steps if override_steps is not None else (workflow.get("steps") if isinstance(workflow, dict) else None)
         if not isinstance(steps, list) or not steps:
             return None
         corr = None

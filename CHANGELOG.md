@@ -15,6 +15,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - (none)
 
+## [1.2.3] - 2026-05-04
+### Added
+- API: service discovery endpoint for local valley campfires and camper addresses
+- Auditor: CAMP planning mode with `camp plan` and `camp plan only`
+- Web UI: confirmed cascade delete action for a campfire, its auditor, linked campers, and linked camper auditors
+
+### Changed
+- Auditor: natural `create campfire` requests now configure the current campfire by default and only create a separate team for explicit `new`/`another`/`separate` requests
+- Web UI: node chat refreshes from backend logs when reopening the panel, reducing stale cached history
+- Docker: `campfire-valley-remote` on `8001` now receives the same rebuilt frontend/backend fixes as the main web service
+
+### Fixed
+- Auditor: `delete campfire` commands execute as first-class actions instead of leaking raw orchestration JSON into chat
+- Delete flow: preview summaries and final removal reports now match the actual deleted campfire tree
+- Discord/remote orchestration: reply handling and service discovery routing are more reliable across Dock-connected valleys
+
 ## [1.2.2] - 2026-04-13
 ### Added
 - Web UI: searchable/clickable Valley snapshot picker with delete support

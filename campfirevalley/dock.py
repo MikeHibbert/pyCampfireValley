@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 import time
 import random
+import uuid
 from .interfaces import IDock, IValley, IMCPBroker, IPartyBox
 from .models import Torch, DockMode, FederationMembership, CampfireConfig
 
@@ -456,6 +457,18 @@ class Dock(IDock):
                 return
             
             campfire_name = parts[1]
+
+            if campfire_name in {"services", "discovery"} or torch.claim in {"valley_discovery", "service_discovery"}:
+                reply_channel = (torch.metadata or {}).get("reply_channel") if hasattr(torch, "metadata") else None
+                if reply_channel:
+                    payload = self._build_service_catalog()
+                    if isinstance(payload, dict):
+                        try:
+                            payload["correlation_id"] = getattr(torch, "id", None) or getattr(torch, "torch_id", None)
+                        except Exception:
+                            pass
+                    await self.mcp_broker.publish(reply_channel, payload)
+                return
             
             # Get campfire from valley
             campfires = self.valley.get_campfires()
@@ -490,6 +503,64 @@ class Dock(IDock):
                 
         except Exception as e:
             logger.error(f"Error routing torch {torch.id}: {e}")
+
+    def _valley_identifier(self) -> str:
+        try:
+            cfg = self.valley.get_config()
+            env = getattr(cfg, "env", None) or {}
+            vid = (env.get("valley_id") or "").strip()
+            if vid:
+                return vid
+        except Exception:
+            pass
+        try:
+            cfg = self.valley.get_config()
+            env = getattr(cfg, "env", None)
+            if isinstance(env, dict):
+                vid = uuid.uuid4().hex
+                env["valley_id"] = vid
+                return vid
+        except Exception:
+            pass
+        try:
+            return str(self.valley.get_config().name)
+        except Exception:
+            return "valley"
+
+    def _build_service_catalog(self) -> dict:
+        try:
+            cfg = self.valley.get_config()
+            vname = getattr(cfg, "name", None) or "valley"
+        except Exception:
+            vname = "valley"
+        vid = self._valley_identifier()
+        services = []
+        try:
+            campfires = self.valley.get_campfires() or {}
+        except Exception:
+            campfires = {}
+        for name, cf in campfires.items():
+            nm = str(name)
+            cfg = getattr(cf, "config", None)
+            conf: Dict[str, Any] = {}
+            if isinstance(cfg, CampfireConfig):
+                conf = cfg.config or {}
+            elif isinstance(cfg, dict):
+                conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+            dock_cfg = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
+            identifier = (dock_cfg.get("identifier") or "").strip() if isinstance(dock_cfg, dict) else ""
+            addr_key = identifier or nm
+            services.append({
+                "name": nm,
+                "identifier": identifier,
+                "type": cf.__class__.__name__,
+                "addresses": {
+                    "valley_id": f"valley:{vid}/{addr_key}",
+                    "valley_name": f"valley:{vname}/{addr_key}",
+                },
+            })
+        services.sort(key=lambda s: s.get("name") or "")
+        return {"status": "ok", "type": "services", "valley": {"name": vname, "identifier": vid}, "services": services}
 
     def _resolve_campfire_by_identifier(self, campfires: Dict[str, Any], identifier: str) -> Optional[str]:
         ident = (identifier or "").strip()
