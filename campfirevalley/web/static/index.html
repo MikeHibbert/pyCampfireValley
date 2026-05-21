@@ -4,22 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CampfireValley Visualization</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260504a">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260521g">
     <script src="/static/js/litegraph.js"></script>
     <script src="/static/js/gamification.js"></script>
-    <script src="/static/js/campfire-nodes.js"></script>
-    <script src="/static/js/litegraph-integration.js?v=20260504a"></script>
-    <script src="/static/js/metrics.js?v=20260504a"></script>
-    <script src="/static/js/main.js?v=20260504a"></script>
+    <script src="/static/js/campfire-nodes.js?v=20260521g"></script>
+    <script src="/static/js/litegraph-integration.js?v=20260521g"></script>
+    <script src="/static/js/metrics.js?v=20260521g"></script>
+    <script src="/static/js/main.js?v=20260521g"></script>
 </head>
 <body>
     <div class="container">
         <div class="metrics-panel" id="metricsPanel">
             <div class="metrics-header">
-                <h3>📊 System Metrics</h3>
+                <h3>Campfire Control</h3>
                 <button id="toggleMetrics" class="btn-small">Hide</button>
             </div>
             <div class="metrics-content">
+                <div class="metric-group">
+                    <h4>🏕️ Valley</h4>
+                    <div id="valleySummary" class="management-stack"></div>
+                </div>
                 <div class="metric-group">
                     <h4>🔥 Campfire Performance</h4>
                     <div id="campfireMetrics" class="metrics-grid">
@@ -42,22 +46,23 @@
                     </div>
                 </div>
                 <div class="metric-group">
-                    <h4>⚡ Node Status</h4>
-                    <div id="nodeMetrics" class="metrics-list">
-                        <!-- Dynamic node metrics will be populated here -->
-                    </div>
+                    <h4>⚡ Campfire Health</h4>
+                    <div id="nodeMetrics" class="management-stack"></div>
                 </div>
                 <div class="metric-group">
                     <h4>🌐 Dock</h4>
-                    <div id="dockMetrics" class="metrics-list"></div>
-                    <button id="dockEnable" class="btn" style="width:100%; margin-top:8px;">Enable Dock</button>
-                    <select id="dockMode" class="btn" style="width:100%; margin-top:8px;">
+                    <div id="dockMetrics" class="management-stack"></div>
+                    <div class="dock-controls">
+                    <button id="dockEnable" class="btn sidebar-btn">Enable Dock</button>
+                    <select id="dockMode" class="btn sidebar-select">
                         <option value="private">Private</option>
                         <option value="partial">Partial</option>
                         <option value="public">Public</option>
                     </select>
-                    <button id="dockBroadcast" class="btn" style="width:100%; margin-top:8px;">Broadcast Discovery</button>
-                    <div id="dockValleys" class="metrics-list"></div>
+                    <button id="dockBroadcast" class="btn sidebar-btn">Broadcast Discovery</button>
+                    </div>
+                    <div class="metric-subhead">Discovered Valleys</div>
+                    <div id="dockValleys" class="management-stack"></div>
                 </div>
             </div>
         </div>
@@ -88,11 +93,13 @@
             </div>
             <div id="chatActionBar" class="chat-action-bar hidden">
                 <button id="chatFreeze" class="chat-freeze" type="button">🔒 Freeze Beliefs</button>
+                <button id="chatClearBeliefs" class="chat-freeze" type="button">🧹 Clear Beliefs</button>
                 <button id="chatLogs" class="chat-freeze" type="button">📜 Logs</button>
                 <button id="chatExport" class="chat-freeze" type="button">⬇ Export</button>
                 <button id="chatSpeak" class="chat-freeze" type="button">🔊 Speak: On</button>
                 <button id="chatStopSpeak" class="chat-freeze" type="button">⏹️ Stop Audio</button>
                 <button id="chatTools" class="chat-freeze" type="button">🧰 Tools</button>
+                <button id="chatRounds" class="chat-freeze" type="button">🔁 Rounds</button>
             </div>
             <canvas id="litegraphCanvas" class="litegraph-canvas"></canvas>
         </div>

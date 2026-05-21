@@ -97,7 +97,7 @@ services:
       - EMBEDDINGS_DIR=/app/data/embeddings
       - LOGS_DIR=/app/data/logs
       - VALLEY_NAME=Remote Valley
-      - ENABLE_DOCK_ON_START=false
+      - ENABLE_DOCK_ON_START=true
       - DOCK_MODE=private
     volumes:
       - ./config:/app/config:ro

@@ -1,194 +1,165 @@
 # CampfireValley Docker Deployment
 
-This guide explains how to run CampfireValley with web monitoring using Docker.
+This guide covers the Docker stack that is currently used and tested in this repository.
+
+## What The Stack Runs
+
+| Service | Container | Host Port | Notes |
+| --- | --- | --- | --- |
+| Local valley web app | `campfire-valley-web` | `8000` | Main UI and local valley |
+| Remote demo valley | `campfire-valley-remote` | `8001` | Second valley used for discovery and remote inspection |
+| Redis | `campfire-redis` | internal | MCP broker and shared state |
+| Prometheus | `campfire-prometheus` | `9090` | Metrics |
+| Optional Discord bot | `campfire-discord-bot` | none | Sends Discord requests into the local valley |
 
 ## Quick Start
 
-1. **Clone the repository** (if you haven't already):
-   ```bash
-   git clone https://github.com/MikeHibbert/pyCampfireValley.git
-   cd pyCampfireValley
-   ```
+1. Clone the repository:
 
-2. **Set up environment variables**:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys and configuration
-   ```
-
-3. **Build and run with Docker Compose**:
-   ```bash
-   docker-compose up --build
-   ```
-
-4. **Access the web interface**:
-   - Open your browser to: http://localhost:8000
-   - The web interface provides a LiteGraph canvas for visual campfire management
-   - Monitor real-time campfire processes and node interactions
-
-## What's Included
-
-The Docker setup includes:
-
-- **CampfireValley Web Server**: Main application with web monitoring interface
-- **Redis**: For caching and inter-process communication
-- **Prometheus**: For metrics collection and monitoring
-- **Web Interface**: Real-time dashboard to observe campfire processes
-
-## Configuration
-
-### Environment Variables
-
-- `OPENROUTER_API_KEY`: Your OpenRouter API key for cloud-based LLMs
-- `OLLAMA_HOST`: Host for local Ollama instance (default: http://host.docker.internal:11434)
-- `CAMPFIRE_VALLEY_LOG_LEVEL`: Logging level (default: INFO)
-- `VALLEY_IDENTIFIER`: Unique valley id used for MCP routing (must match between services)
-- `CAMPFIRE_IDENTIFIER`: Dock identifier for the campfire Discord should address (default: `contract-review-campfire`)
-- `DISCORD_BOT_TOKEN`: Discord bot token (required for the Discord bot service)
-- `DISCORD_CHANNEL`: Discord channel name to listen to (default: `contract-review`)
-
-### Discord Bot
-
-If `campfire-discord-bot` is enabled in `docker-compose.yml`, the bot will:
-
-- Post a placeholder “Boat arriving…” message immediately
-- Post the final report as one or more reply messages
-- Attach the full report as a `.md` file when the output is longer than the configured message limit
-
-### Using Local Ollama
-
-If you're running Ollama locally on your host machine:
-
-1. Make sure Ollama is running: `ollama serve`
-2. The default configuration should work: `OLLAMA_HOST=http://host.docker.internal:11434`
-
-## Valley Configuration with Manifests
-
-CampfireValley uses `manifest.yaml` files to configure valley behavior. You can easily change your valley's purpose by using different manifest configurations.
-
-### Quick Manifest Switch
-
-To change your valley configuration:
-
-1. **Create or copy a manifest file**:
-   ```bash
-   # Use a development-focused valley
-   cp examples/manifest-dev.yaml manifest.yaml
-   
-   # Or use a marketing-focused valley
-   cp examples/manifest-marketing.yaml manifest.yaml
-   ```
-
-2. **Restart the containers**:
-   ```bash
-   docker-compose restart
-   ```
-
-### Example Manifest Types
-
-- **Development Valley**: Code review, testing, documentation campfires
-- **Marketing Valley**: Content creation, social media, analytics campfires  
-- **Security Valley**: Threat detection, vulnerability scanning campfires
-- **Enterprise Valley**: Full-featured with monitoring, justice system, and specialist campfires
-
-### Custom Manifest
-
-Create your own `manifest.yaml`:
-
-```yaml
-name: "MyCustomValley"
-version: "1.0"
-env:
-  dock_mode: "public"
-  security_level: "standard"
-campfires:
-  visible: ["my-campfire-1", "my-campfire-2"]
-  hidden: ["internal-processor"]
-community:
-  discovery: true
-  trusted_valleys: []
+```bash
+git clone https://github.com/MikeHibbert/pyCampfireValley.git
+cd CampfireValley
 ```
 
-For detailed manifest configuration options, see the main README.md file.
+2. Copy the environment file:
 
-### Using Cloud LLMs
+```bash
+cp .env.example .env
+```
 
-1. Get an API key from [OpenRouter](https://openrouter.ai/)
-2. Set `OPENROUTER_API_KEY` in your `.env` file
+3. Start the stack:
 
-## Monitoring and Observability
+```bash
+docker compose up -d --build
+```
 
-### Web Interface (Port 8000)
-- Access the Web UI on: http://localhost:8000
+4. Open the services:
 
-### Prometheus Metrics (Port 9090)
-- Access Prometheus at: http://localhost:9090
-- Metrics include campfire activity, processing times, and system health
+- Local valley UI: `http://localhost:8000`
+- Remote demo valley UI: `http://localhost:8001`
+- Prometheus: `http://localhost:9090`
 
-### Health Checks
-- Application health: http://localhost:8000/
+## What To Expect After Startup
 
-## Example Valley Workflow
+- `8000` shows the local valley graph and management UI
+- `8001` shows the remote demo valley
+- The local valley should discover the remote demo valley through Dock
+- The left sidebar on `8000` should show the local valley, dock status, and discovered valleys
 
-The Docker container runs an example valley that demonstrates:
+## Useful Commands
 
-1. **Multiple Campfires**: Different specialized AI agents
-2. **Collaborative Problem Solving**: Campfires working together
-3. **Real-time Monitoring**: Web interface showing all activity
-4. **Emergent Intelligence**: Complex behaviors from simple interactions
+### Start or rebuild everything
+
+```bash
+docker compose up -d --build
+```
+
+### Rebuild only the web UIs
+
+```bash
+docker compose up -d --build campfire-valley campfire-valley-remote
+```
+
+### Check service status
+
+```bash
+docker compose ps
+```
+
+### View logs
+
+```bash
+docker compose logs -f campfire-valley
+docker compose logs -f campfire-valley-remote
+docker compose logs -f redis
+```
+
+### Stop the stack
+
+```bash
+docker compose down
+```
+
+## Environment Variables
+
+These are the most commonly used compose variables:
+
+- `OPENROUTER_API_KEY` - optional cloud model access
+- `OLLAMA_HOST` - local Ollama host, default `http://host.docker.internal:11434`
+- `VALLEY_IDENTIFIER` - stable local valley identifier used in discovery and routing
+- `CAMPFIRE_IDENTIFIER` - default campfire identifier for inbound addressing
+- `DISCORD_BOT_TOKEN` - enables the optional Discord bot
+- `DISCORD_CHANNEL` - channel watched by the Discord bot
+- `PORT` - override the host port mapped to the local valley UI
+
+## Docker Volumes And Persistence
+
+The stack persists state in Docker volumes for:
+
+- local valley data
+- remote valley data
+- campfire configs
+- embeddings
+- logs
+- Redis data
+- Prometheus data
+
+The repository also mounts:
+
+- `./config` into the containers as read-only config input
+- `./logs` and `./reports` for host-visible outputs
+
+## Remote Demo Valley Notes
+
+The second valley in compose is intentional and is useful for testing discovery flows:
+
+- It runs at `http://localhost:8001`
+- It uses Dock discovery so the local valley can see it
+- Its campfires and services can be inspected from the local UI
+- Remote admin actions remain disabled in the local UI
+
+## Health Checks And Verification
+
+### Check containers
+
+```bash
+docker compose ps
+```
+
+### Verify the UIs respond
+
+- `http://localhost:8000/`
+- `http://localhost:8001/`
+
+### Verify discovery APIs
+
+- `http://localhost:8000/api/dock/status`
+- `http://localhost:8000/api/dock/valleys`
+- `http://localhost:8000/api/services`
 
 ## Troubleshooting
 
-### Container Won't Start
-- Check logs: `docker-compose logs campfire-valley`
-- Verify environment variables in `.env`
-- Ensure ports 8080, 6379, and 9090 are available
+### The web UI does not load
 
-### No LLM Responses
-- Verify `OPENROUTER_API_KEY` is set correctly
-- For Ollama: ensure it's running and accessible
-- Check logs for API connection errors
+- Run `docker compose ps`
+- Check `docker compose logs -f campfire-valley`
+- Check that the configured port is not already in use
 
-### Web Interface Not Loading
-- Verify container is healthy: `docker-compose ps`
-- Check if port 8080 is accessible
-- Review application logs for startup errors
+### The remote valley is not shown on `8000`
 
-## Development
+- Check `docker compose ps`
+- Confirm both `campfire-valley-web` and `campfire-valley-remote` are running
+- Check `docker compose logs -f campfire-valley`
+- Check `docker compose logs -f campfire-valley-remote`
+- Refresh `http://localhost:8000` after both services are healthy
 
-### Building Locally
-```bash
-docker build -t campfire-valley .
-```
+### The app is up but there are no model responses
 
-### Running Individual Services
-```bash
-# Just the valley application
-docker-compose up campfire-valley
+- Verify `OPENROUTER_API_KEY`, or
+- Make sure your local Ollama service is running and reachable at `OLLAMA_HOST`
 
-# With dependencies
-docker-compose up campfire-valley redis
-```
+## Related Docs
 
-### Accessing Container Shell
-```bash
-docker-compose exec campfire-valley bash
-```
-
-## Stopping the Services
-
-```bash
-# Stop all services
-docker-compose down
-
-# Stop and remove volumes (clears all data)
-docker-compose down -v
-```
-
-## Data Persistence
-
-The following data is persisted in Docker volumes:
-- Valley data and configurations: `valley_data`
-- Redis data: `redis_data`
-- Prometheus metrics: `prometheus_data`
-- Application logs: `./logs` (host directory)
+- [README.md](README.md)
+- [docs/web-ui.md](docs/web-ui.md)
+- [examples/README_FEDERATION.md](examples/README_FEDERATION.md)

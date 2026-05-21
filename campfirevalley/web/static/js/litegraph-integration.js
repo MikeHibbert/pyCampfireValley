@@ -3,7 +3,7 @@
 
 class CampfireValleyLiteGraph {
     constructor() {
-        this.buildId = "20260504-debug-a1";
+        this.buildId = "20260521-graph-link-rebuild-b2";
         this.graph = null;
         this.canvas = null;
         this.nodes = {};
@@ -11,11 +11,16 @@ class CampfireValleyLiteGraph {
         this.isInitialized = false;
         this.selectedNode = null;
         this.chatByNodeId = new Map();
+        this.remoteInspectorState = new Map();
         this.chatUI = null;
+        this.roundsUI = null;
+        this.roundsState = { catalog: [], plans: [], rows: [], lastResult: null };
         this.speechRecognition = null;
         this.isListening = false;
         this.backendCampfiresCache = { ts: 0, items: [] };
         this.backendSyncPromise = null;
+        this.connectorRefreshTimers = [];
+        this.backendGraphRefreshTimers = [];
         
         // Initialize gamification engine
         if (typeof CampfireGameEngine !== 'undefined') {
@@ -43,9 +48,16 @@ class CampfireValleyLiteGraph {
             this.canvas.render_shadows = false;
             this.canvas.render_canvas_border = false;
             this.canvas.render_connections_shadows = false;
-            this.canvas.render_connections_border = false;
+            this.canvas.render_connections_border = true;
+            this.canvas.connections_width = 5;
             this.canvas.highquality_render = true;
             this.canvas.use_gradients = true;
+            if (typeof LGraphCanvas !== "undefined" && LGraphCanvas.link_type_colors) {
+                LGraphCanvas.link_type_colors.camper = "#FDE047";
+                LGraphCanvas.link_type_colors.campfire = "#86EFAC";
+                LGraphCanvas.link_type_colors.valley = "#7DD3FC";
+                LGraphCanvas.link_type_colors.valley_connection = "#7DD3FC";
+            }
             
             // Enable multi-selection and group movement
             this.canvas.allow_multi_selection = true;
@@ -87,7 +99,13 @@ class CampfireValleyLiteGraph {
         const rootValleyNode = LiteGraph.createNode("campfire/valley");
         rootValleyNode.pos = [80, 220];
         rootValleyNode.properties = rootValleyNode.properties || {};
-        rootValleyNode.properties.name = "Main Valley";
+        rootValleyNode.properties.name = "Local Valley";
+        rootValleyNode.properties.display_name = "Local Valley";
+        rootValleyNode.properties.origin_label = "LOCAL";
+        rootValleyNode.properties.route_name = "(loading...)";
+        rootValleyNode.properties.local = true;
+        rootValleyNode.properties.remote = false;
+        rootValleyNode.title = "Local Valley";
         this.graph.add(rootValleyNode);
         this.nodes.valley = rootValleyNode;
 
@@ -650,11 +668,13 @@ class CampfireValleyLiteGraph {
         const actionBar = document.getElementById("chatActionBar");
         const title = document.getElementById("chatTitle");
         const freeze = document.getElementById("chatFreeze");
+        const clearBeliefsBtn = document.getElementById("chatClearBeliefs");
         const logsBtn = document.getElementById("chatLogs");
         const exportBtn = document.getElementById("chatExport");
         const speakBtn = document.getElementById("chatSpeak");
         const stopSpeakBtn = document.getElementById("chatStopSpeak");
         const toolsBtn = document.getElementById("chatTools");
+        const roundsBtn = document.getElementById("chatRounds");
         const messages = document.getElementById("chatMessages");
         const logsPanel = document.getElementById("chatLogsPanel");
         const input = document.getElementById("chatInput");
@@ -662,7 +682,7 @@ class CampfireValleyLiteGraph {
         const mic = document.getElementById("chatMic");
         const close = document.getElementById("chatClose");
         const inputRow = panel.querySelector(".chat-input-row");
-        if (!panel || !actionBar || !title || !freeze || !logsBtn || !exportBtn || !speakBtn || !stopSpeakBtn || !toolsBtn || !messages || !logsPanel || !input || !send || !mic || !close) {
+        if (!panel || !actionBar || !title || !freeze || !clearBeliefsBtn || !logsBtn || !exportBtn || !speakBtn || !stopSpeakBtn || !toolsBtn || !roundsBtn || !messages || !logsPanel || !input || !send || !mic || !close) {
             return;
         }
         const toolsPanel = document.createElement("div");
@@ -675,7 +695,57 @@ class CampfireValleyLiteGraph {
             <div class="chat-tools-row"><label>Ollama Model</label><select id="toolModelSelect"></select></div>
         `;
         document.body.appendChild(toolsPanel);
-        this.chatUI = { panel, actionBar, title, freeze, logsBtn, exportBtn, speakBtn, stopSpeakBtn, toolsBtn, toolsPanel, messages, logsPanel, inputRow, input, send, mic, close };
+        const roundsPanel = document.createElement("div");
+        roundsPanel.id = "roundsBuilderPanel";
+        roundsPanel.className = "rounds-builder-panel";
+        roundsPanel.innerHTML = `
+            <div class="rounds-builder-head">
+                <div class="rounds-builder-title">Rounds Builder</div>
+                <button id="roundsClose" class="chat-close" type="button">✕</button>
+            </div>
+            <div class="rounds-builder-body">
+                <div class="rounds-builder-grid">
+                    <div class="rounds-builder-field">
+                        <label>Saved Plan</label>
+                        <select id="roundsSavedPlans"></select>
+                    </div>
+                    <div class="rounds-builder-field">
+                        <label>Context Campfire</label>
+                        <input id="roundsCampfire" type="text" placeholder="Optional campfire context" />
+                    </div>
+                    <div class="rounds-builder-field">
+                        <label>Plan Name</label>
+                        <input id="roundsPlanName" type="text" placeholder="e.g. Draft Then Review" />
+                    </div>
+                    <div class="rounds-builder-field">
+                        <label>Description</label>
+                        <input id="roundsDescription" type="text" placeholder="What this rounds chain is for" />
+                    </div>
+                    <div class="rounds-builder-field full">
+                        <label>Task</label>
+                        <textarea id="roundsTask" placeholder="Describe the task to run through the rounds chain"></textarea>
+                    </div>
+                </div>
+                <div class="rounds-plan-tools">
+                    <button id="roundsNewPlan" type="button">New</button>
+                    <button id="roundsLoadPlan" type="button">Load</button>
+                    <button id="roundsDeletePlan" type="button">Delete</button>
+                    <button id="roundsRefreshCatalog" type="button">Refresh Catalog</button>
+                </div>
+                <div class="rounds-builder-actions">
+                    <button id="roundsAddRow" type="button">+ Add Round</button>
+                    <button id="roundsSavePlan" class="primary" type="button">Save Plan</button>
+                    <button id="roundsPreview" type="button">Preview</button>
+                    <button id="roundsRun" class="primary" type="button">Run</button>
+                </div>
+                <div id="roundsCatalogNote" class="rounds-builder-note"></div>
+                <div id="roundsPlanMeta" class="rounds-builder-meta"></div>
+                <div id="roundsRows" class="rounds-list"></div>
+                <pre id="roundsOutput" class="rounds-output">Load a catalog, add one or more services, and save or run a rounds plan.</pre>
+            </div>
+        `;
+        document.body.appendChild(roundsPanel);
+        this.chatUI = { panel, actionBar, title, freeze, clearBeliefsBtn, logsBtn, exportBtn, speakBtn, stopSpeakBtn, toolsBtn, roundsBtn, toolsPanel, roundsPanel, messages, logsPanel, inputRow, input, send, mic, close };
 
         close.addEventListener("click", () => {
             this.hideChatPanel();
@@ -705,6 +775,10 @@ class CampfireValleyLiteGraph {
 
         freeze.addEventListener("click", async () => {
             await this.freezeBeliefsForSelectedNode();
+        });
+
+        clearBeliefsBtn.addEventListener("click", async () => {
+            await this.clearBeliefsForSelectedNode();
         });
 
         logsBtn.addEventListener("click", async () => {
@@ -747,6 +821,20 @@ class CampfireValleyLiteGraph {
             this.toggleToolsPanel(true);
             this.loadToolsForCampfire(target);
         });
+
+        roundsBtn.addEventListener("click", async () => {
+            const isVisible = !!(this.chatUI && this.chatUI.roundsPanel && this.chatUI.roundsPanel.classList.contains("visible"));
+            if (isVisible) {
+                this.toggleRoundsPanel(false);
+                return;
+            }
+            await this.openRoundsBuilder();
+        });
+
+        const roundsClose = roundsPanel.querySelector("#roundsClose");
+        if (roundsClose) {
+            roundsClose.addEventListener("click", () => this.toggleRoundsPanel(false));
+        }
     }
 
     setSelectedNode(node) {
@@ -766,6 +854,10 @@ class CampfireValleyLiteGraph {
         this.chatUI.title.textContent = displayName;
         this.chatUI.panel.classList.remove("hidden");
         this.chatUI.actionBar.classList.remove("hidden");
+        if (this.chatUI.input) {
+            this.chatUI.input.placeholder = "Message this node...";
+        }
+        this.updateActionBarForNode(node);
         this.updateToolsButtonForNode(node);
         if (node.type === "campfire/campfire") {
             this.renderCampfireDetails(node);
@@ -784,6 +876,448 @@ class CampfireValleyLiteGraph {
     _escapeHtml(s) {
         const t = String(s == null ? "" : s);
         return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+
+    _shortValleyId(value) {
+        const text = String(value || "").trim();
+        if (!text) return "";
+        if (text.length <= 18) return text;
+        return `${text.slice(0, 8)}...${text.slice(-8)}`;
+    }
+
+    _isRemoteTarget(target) {
+        return typeof target === "string" && target.startsWith("valley:");
+    }
+
+    _isRemoteNode(node) {
+        if (!node) return false;
+        if (node.properties && node.properties.remote === true) return true;
+        return this._isRemoteTarget(this.getNodeTarget(node));
+    }
+
+    updateActionBarForNode(node) {
+        if (!this.chatUI) return;
+        const isRemote = this._isRemoteNode(node);
+        const remoteReason = "Disabled for remote campfires.";
+        const controls = [
+            this.chatUI.freeze,
+            this.chatUI.clearBeliefsBtn,
+            this.chatUI.logsBtn,
+            this.chatUI.exportBtn
+        ];
+        controls.forEach((btn) => {
+            if (!btn) return;
+            btn.disabled = isRemote;
+            btn.title = isRemote ? remoteReason : "";
+        });
+    }
+
+    _deriveRemoteValleySummary(valley) {
+        const v = valley || {};
+        const services = Array.isArray(v.exposed_services) ? v.exposed_services : [];
+        const campfires = Array.isArray(v.exposed_campfires) ? v.exposed_campfires : [];
+        const firstService = services.length ? services[0] : null;
+        const addresses = firstService && firstService.addresses ? firstService.addresses : {};
+        const publicAddress = String(v.public_address || "").trim();
+        const remoteValleyId = String(v.valley_id || "").trim();
+        const routeAddress = String(publicAddress || addresses.valley_id || addresses.valley_name || (remoteValleyId ? `valley:${remoteValleyId}` : (`valley:${v.name || "remote"}`))).trim();
+        const routeKey = routeAddress.startsWith("valley:") ? routeAddress.slice(7).split("/")[0] : routeAddress;
+        const identifier = remoteValleyId || (String(addresses.valley_id || "").trim().match(/^valley:([^/]+)/) || [null, ""])[1] || "";
+        const serviceNames = services
+            .map((s) => String((s && (s.name || s.service_id)) || "").trim())
+            .filter(Boolean);
+        return {
+            displayName: String(v.name || "Remote Valley").trim(),
+            originLabel: "REMOTE",
+            routeAddress,
+            routeKey,
+            identifier,
+            shortIdentifier: this._shortValleyId(identifier || routeKey),
+            serviceCount: services.length,
+            campfireCount: campfires.length,
+            exposedCampfires: campfires,
+            exposedServices: serviceNames,
+            lastSeen: String(v.last_seen || "").trim(),
+            trustLevel: String(v.trust_level || "").trim()
+        };
+    }
+
+    _resolveSelectedRemoteValley(node, dockEntries) {
+        const props = (node && node.properties) || {};
+        const discovered = Array.isArray(dockEntries) ? dockEntries.map((entry) => this._deriveRemoteValleySummary(entry)) : [];
+        const nodeIdentifier = String(props.identifier || "").trim();
+        const nodeRoute = String(props.route_name || "").trim();
+        const nodeRouteKey = String(props.route_key || "").trim();
+        const nodeName = String(props.display_name || props.name || "").trim();
+        const match = discovered.find((valley) => {
+            return (nodeIdentifier && valley.identifier === nodeIdentifier) ||
+                (nodeRoute && valley.routeAddress === nodeRoute) ||
+                (nodeRouteKey && valley.routeKey === nodeRouteKey) ||
+                (nodeName && valley.displayName === nodeName);
+        });
+        if (match) {
+            return match;
+        }
+        return {
+            displayName: nodeName || "Remote Valley",
+            originLabel: "REMOTE",
+            routeAddress: nodeRoute || (nodeIdentifier ? `valley:${nodeIdentifier}` : "valley:remote"),
+            routeKey: nodeRouteKey || nodeIdentifier || nodeName || "remote",
+            identifier: nodeIdentifier,
+            shortIdentifier: this._shortValleyId(nodeIdentifier || nodeRouteKey || nodeName),
+            serviceCount: 0,
+            campfireCount: Number(props.total_campfires || 0),
+            exposedCampfires: [],
+            exposedServices: [],
+            lastSeen: "",
+            trustLevel: ""
+        };
+    }
+
+    _resolveSelectedRemoteCampfire(node, dockEntries) {
+        const target = String(this.getNodeTarget(node) || "").trim();
+        const props = (node && node.properties) || {};
+        const name = String(props.name || node.title || "").trim();
+        const serviceId = String(props.service_id || "").trim();
+        const routeName = String(props.route_name || target || "").trim();
+        const remoteValleyName = String(props.remote_valley_name || "").trim();
+        const remoteValleyId = String(props.remote_valley_id || "").trim();
+        const valleys = Array.isArray(dockEntries) ? dockEntries : [];
+        let matchedValley = null;
+        let matchedService = null;
+
+        valleys.forEach((entry) => {
+            if (matchedService) return;
+            const valleyName = String((entry && entry.name) || "").trim();
+            const valleyId = String((entry && entry.valley_id) || "").trim();
+            const publicAddress = String((entry && entry.public_address) || "").trim();
+            const services = Array.isArray(entry && entry.exposed_services) ? entry.exposed_services : [];
+            const valleyMatches = (remoteValleyId && remoteValleyId === valleyId) ||
+                (remoteValleyName && remoteValleyName === valleyName) ||
+                (publicAddress && target && target.startsWith(`${publicAddress}/`));
+            services.forEach((service) => {
+                if (matchedService) return;
+                const addresses = (service && service.addresses) || {};
+                const serviceAddress = String(addresses.valley_id || addresses.valley_name || "").trim();
+                const serviceMatches = (serviceId && String((service && service.service_id) || "").trim() === serviceId) ||
+                    (name && String((service && service.name) || "").trim() === name) ||
+                    (serviceAddress && serviceAddress === target);
+                if (valleyMatches && serviceMatches) {
+                    matchedValley = entry;
+                    matchedService = service;
+                }
+            });
+        });
+
+        const service = matchedService || {};
+        const valley = matchedValley || {};
+        const llm = (service && service.llm) || {};
+        const addresses = (service && service.addresses) || {};
+        const valleyAddress = String(valley.public_address || "").trim();
+        const taskTypes = Array.isArray(service.task_types) ? service.task_types : [];
+        const capabilities = Array.isArray(service.capabilities) ? service.capabilities : [];
+        const visibleCampfires = Array.isArray(valley.exposed_campfires)
+            ? valley.exposed_campfires.map((item) => String(item || "").trim()).filter(Boolean)
+            : [];
+        const visibleServiceEntries = Array.isArray(valley.exposed_services)
+            ? valley.exposed_services.map((item) => {
+                const service = item || {};
+                return {
+                    serviceId: String(service.service_id || "").trim(),
+                    name: String(service.name || service.service_id || "").trim(),
+                    kind: String(service.kind || "").trim(),
+                    serviceKind: String(service.service_kind || service.kind || "").trim(),
+                    summary: String(service.summary || "").trim(),
+                    taskTypes: Array.isArray(service.task_types) ? service.task_types : [],
+                    capabilities: Array.isArray(service.capabilities) ? service.capabilities : [],
+                    supportsRounds: !!service.supports_rounds,
+                    exposure: String(service.exposure || "").trim()
+                };
+            }).filter((item) => item.name)
+            : [];
+        const visibleCamperEntries = visibleServiceEntries.filter((item) => item.kind === "camper" || item.serviceKind === "camper");
+        const visibleServices = Array.isArray(valley.exposed_services)
+            ? valley.exposed_services
+                .map((item) => String((item && (item.name || item.service_id)) || "").trim())
+                .filter(Boolean)
+            : [];
+        return {
+            displayName: name || String(service.name || "Remote Campfire").trim(),
+            serviceId: String(service.service_id || serviceId || "").trim(),
+            routeAddress: String(routeName || addresses.valley_id || addresses.valley_name || target || "(not advertised)").trim(),
+            valleyName: String(valley.name || remoteValleyName || "Remote Valley").trim(),
+            valleyId: String(valley.valley_id || remoteValleyId || "").trim(),
+            valleyAddress: valleyAddress,
+            kind: String(service.kind || props.backend_type || "campfire").trim(),
+            type: String(service.type || "").trim(),
+            summary: String(service.summary || props.service_summary || "").trim(),
+            description: String(service.description || "").trim(),
+            taskTypes,
+            capabilities,
+            supportsRounds: !!service.supports_rounds,
+            exposure: String(service.exposure || "").trim(),
+            llmProvider: String(llm.provider || "").trim(),
+            llmModel: String(llm.model || "").trim(),
+            visibleCampfires,
+            visibleServices,
+            visibleServiceEntries,
+            visibleCamperEntries
+        };
+    }
+
+    _remoteInspectorKey(node, remote) {
+        return String((remote && remote.routeAddress) || this.getNodeTarget(node) || (node && node.id) || "").trim();
+    }
+
+    _selectedRemoteWorker(node, remote) {
+        const serviceEntries = Array.isArray(remote && remote.visibleServiceEntries) ? remote.visibleServiceEntries : [];
+        const camperEntries = Array.isArray(remote && remote.visibleCamperEntries) ? remote.visibleCamperEntries : [];
+        const candidates = camperEntries.length ? camperEntries : serviceEntries;
+        if (!candidates.length) return null;
+        const selected = String(this.remoteInspectorState.get(this._remoteInspectorKey(node, remote)) || "").trim();
+        return candidates.find((item) => String(item.serviceId || item.name || "").trim() === selected) || candidates[0] || null;
+    }
+
+    _findRemoteValleyNodeForCampfire(node, remote) {
+        if (!this.graph || !Array.isArray(this.graph._nodes)) return null;
+        const valleyId = String((remote && remote.valleyId) || (node && node.properties && node.properties.remote_valley_id) || "").trim();
+        const valleyName = String((remote && remote.valleyName) || (node && node.properties && node.properties.remote_valley_name) || "").trim();
+        return this.graph._nodes.find((candidate) => {
+            if (!candidate || candidate.type !== "campfire/valley") return false;
+            const props = candidate.properties || {};
+            if (!props.remote) return false;
+            const candidateId = String(props.identifier || "").trim();
+            const candidateName = String(props.display_name || props.name || "").trim();
+            return (valleyId && candidateId === valleyId) || (valleyName && candidateName === valleyName);
+        }) || null;
+    }
+
+    async _queueRemoteCampfireInRounds(node, remote) {
+        await this.openRoundsBuilder();
+        const remoteTarget = String((remote && remote.routeAddress) || this.getNodeTarget(node) || "").trim();
+        const remoteName = String((remote && remote.displayName) || (node && node.properties && node.properties.name) || node.title || "").trim();
+        const remoteServiceId = String((remote && remote.serviceId) || (node && node.properties && node.properties.service_id) || "").trim();
+        const match = (this.roundsState.catalog || []).find((service) => {
+            if (!service || !service._remote) return false;
+            const key = this._serviceOptionKey(service);
+            return (remoteServiceId && String(service.service_id || "").trim() === remoteServiceId) ||
+                (remoteTarget && key === remoteTarget) ||
+                (remoteName && String(service.name || "").trim() === remoteName);
+        });
+        const row = match
+            ? this._applyServiceToRow(this._emptyRoundRow(), match)
+            : Object.assign(this._emptyRoundRow(), {
+                label: remoteName,
+                target_address: remoteTarget,
+                service_id: remoteServiceId,
+                task_type: String(((remote && remote.taskTypes) || [])[0] || "").trim()
+            });
+        const rows = Array.isArray(this.roundsState.rows) ? this.roundsState.rows : [];
+        const emptyIdx = rows.findIndex((item) => {
+            const r = item || {};
+            return !String(r.label || "").trim() &&
+                !String(r.target_address || "").trim() &&
+                !String(r.service_id || "").trim() &&
+                !String(r.task_type || "").trim() &&
+                !String(r.instruction || "").trim();
+        });
+        if (emptyIdx >= 0) rows[emptyIdx] = row;
+        else rows.push(row);
+        this.roundsState.rows = rows.length ? rows : [row];
+        this.renderRoundsBuilder();
+        this._setRoundsOutput(`Added remote campfire "${remoteName || remoteTarget}" to the rounds chain.`, false);
+    }
+
+    async renderRemoteCampfireDetails(node) {
+        if (!this.chatUI) return;
+        const target = this.getNodeTarget(node);
+        if (!target) return;
+        if (this.chatUI.inputRow) this.chatUI.inputRow.style.display = "";
+        this.chatUI.logsPanel.classList.add("hidden");
+        this.toggleToolsPanel(false);
+        this.chatUI.messages.innerHTML = `<div class="chat-details">Loading remote campfire details…</div>`;
+        try {
+            const res = await fetch("/api/dock/valleys");
+            if (!res.ok) {
+                this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load remote campfire details: ${res.status}</div>`;
+                return;
+            }
+            const data = await res.json();
+            const dock = (data && data.valleys) || [];
+            const remote = this._resolveSelectedRemoteCampfire(node, dock);
+            const taskTypes = (remote.taskTypes || []).join(", ") || "(not advertised)";
+            const capabilities = (remote.capabilities || []).join(", ") || "(not advertised)";
+            const visibleCampfires = (remote.visibleCampfires || []).join(", ") || "(none advertised)";
+            const visibleServices = (remote.visibleServices || []).join(", ") || "(none advertised)";
+            const visibleCampers = Array.isArray(remote.visibleCamperEntries) ? remote.visibleCamperEntries : [];
+            const selectedWorker = this._selectedRemoteWorker(node, remote);
+            const selectedWorkerTaskTypes = selectedWorker && Array.isArray(selectedWorker.taskTypes) && selectedWorker.taskTypes.length
+                ? selectedWorker.taskTypes.join(", ")
+                : "(not advertised)";
+            const selectedWorkerCapabilities = selectedWorker && Array.isArray(selectedWorker.capabilities) && selectedWorker.capabilities.length
+                ? selectedWorker.capabilities.join(", ")
+                : "(not advertised)";
+            const visibleCamperButtons = visibleCampers.length
+                ? `<div class="chat-options">${visibleCampers.map((item) => {
+                    const key = this._escapeHtml(String(item.serviceId || item.name || "").trim());
+                    const selectedKey = String(selectedWorker && (selectedWorker.serviceId || selectedWorker.name) || "").trim();
+                    const active = key === this._escapeHtml(selectedKey) ? " remote-worker-btn-active" : "";
+                    return `<button type="button" class="chat-option-btn remote-worker-btn${active}" data-service-id="${key}">${this._escapeHtml(item.name)}</button>`;
+                }).join("")}</div>`
+                : `<div class="chat-details-text">No remote campers are advertised for this remote valley.</div>`;
+            const llmText = [remote.llmProvider || "", remote.llmModel || ""].filter(Boolean).join(" / ") || "(not advertised)";
+            const description = remote.description || remote.summary || "This remote campfire is visible through dock discovery. Remote admin controls are disabled here.";
+            const body = `
+                <div class="chat-details">
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Remote Campfire</div>
+                        <div class="valley-card remote">
+                            <div class="valley-card-head">
+                                <span class="valley-badge remote">REMOTE</span>
+                                <span class="valley-card-title">${this._escapeHtml(remote.displayName || "Remote Campfire")}</span>
+                            </div>
+                            <div class="valley-card-row"><span>Route</span><span>${this._escapeHtml(remote.routeAddress || target)}</span></div>
+                            <div class="valley-card-row"><span>Remote Valley</span><span>${this._escapeHtml(remote.valleyName || "(unknown)")}</span></div>
+                            <div class="valley-card-row"><span>Service ID</span><span>${this._escapeHtml(remote.serviceId || "(not advertised)")}</span></div>
+                            <div class="valley-card-row"><span>Kind</span><span>${this._escapeHtml(remote.kind || "(not advertised)")}</span></div>
+                            <div class="valley-card-row"><span>LLM</span><span>${this._escapeHtml(llmText)}</span></div>
+                            <div class="valley-card-row"><span>Supports Rounds</span><span>${this._escapeHtml(remote.supportsRounds ? "yes" : "no")}</span></div>
+                            <div class="valley-card-row"><span>Exposure</span><span>${this._escapeHtml(remote.exposure || "(not advertised)")}</span></div>
+                        </div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Summary</div>
+                        <div class="chat-details-text">${this._escapeHtml(description)}</div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Quick Actions</div>
+                        <div class="chat-details-actions">
+                            <button id="remoteCampfireMessageBtn" type="button">Message This Campfire</button>
+                            <button id="remoteCampfireRoundsBtn" type="button">Use In Rounds</button>
+                            <button id="remoteCampfireValleyBtn" type="button">Open Remote Valley</button>
+                            <button id="remoteCampfireServicesBtn" type="button">Show Visible Services</button>
+                        </div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Task Types</div>
+                        <div class="chat-details-text">${this._escapeHtml(taskTypes)}</div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Capabilities</div>
+                        <div class="chat-details-text">${this._escapeHtml(capabilities)}</div>
+                    </div>
+                    <div class="chat-details-block" id="remoteCampfireVisibleCampers">
+                        <div class="chat-details-h">Visible Remote Campers</div>
+                        ${visibleCamperButtons}
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Selected Remote Worker</div>
+                        <div class="valley-card remote">
+                            <div class="valley-card-row"><span>Name</span><span>${this._escapeHtml((selectedWorker && selectedWorker.name) || "(none advertised)")}</span></div>
+                            <div class="valley-card-row"><span>Kind</span><span>${this._escapeHtml((selectedWorker && (selectedWorker.serviceKind || selectedWorker.kind)) || "(none advertised)")}</span></div>
+                            <div class="valley-card-row"><span>Task Types</span><span>${this._escapeHtml(selectedWorkerTaskTypes)}</span></div>
+                            <div class="valley-card-row"><span>Capabilities</span><span>${this._escapeHtml(selectedWorkerCapabilities)}</span></div>
+                            <div class="valley-card-row"><span>Supports Rounds</span><span>${this._escapeHtml(selectedWorker ? (selectedWorker.supportsRounds ? "yes" : "no") : "(not advertised)")}</span></div>
+                            <div class="valley-card-row"><span>Access</span><span>Inspect only</span></div>
+                        </div>
+                        <div class="chat-details-text">Remote workers can be inspected here, but direct access and admin functions still require permission from the owning valley.</div>
+                    </div>
+                    <div class="chat-details-block" id="remoteCampfireVisibleCampfires">
+                        <div class="chat-details-h">Visible Campfires In Remote Valley</div>
+                        <div class="chat-details-text">${this._escapeHtml(visibleCampfires)}</div>
+                    </div>
+                    <div class="chat-details-block" id="remoteCampfireVisibleServices">
+                        <div class="chat-details-h">Visible Services In Remote Valley</div>
+                        <div class="chat-details-text">${this._escapeHtml(visibleServices)}</div>
+                    </div>
+                    <div class="chat-details-block">
+                        <div class="chat-details-h">Allowed Actions</div>
+                        <div class="chat-details-text">You can message this remote campfire with the input box below or include it in rounds. Admin functions stay disabled because this campfire belongs to a remote valley.</div>
+                    </div>
+                </div>
+            `;
+            this.chatUI.messages.innerHTML = body;
+            if (this.chatUI.input) {
+                this.chatUI.input.placeholder = `Message remote campfire: ${remote.displayName || target}`;
+            }
+            const messageBtn = document.getElementById("remoteCampfireMessageBtn");
+            const roundsBtn = document.getElementById("remoteCampfireRoundsBtn");
+            const valleyBtn = document.getElementById("remoteCampfireValleyBtn");
+            const servicesBtn = document.getElementById("remoteCampfireServicesBtn");
+            const visibleServicesBlock = document.getElementById("remoteCampfireVisibleServices");
+            const workerButtons = Array.from(document.querySelectorAll(".remote-worker-btn"));
+            const remoteValleyNode = this._findRemoteValleyNodeForCampfire(node, remote);
+            if (messageBtn) {
+                messageBtn.onclick = () => {
+                    if (this.chatUI && this.chatUI.inputRow) this.chatUI.inputRow.style.display = "";
+                    if (this.chatUI && this.chatUI.input) this.chatUI.input.focus();
+                };
+            }
+            if (roundsBtn) {
+                roundsBtn.onclick = async () => {
+                    roundsBtn.disabled = true;
+                    try {
+                        await this._queueRemoteCampfireInRounds(node, remote);
+                    } finally {
+                        roundsBtn.disabled = false;
+                    }
+                };
+            }
+            if (valleyBtn) {
+                valleyBtn.disabled = !remoteValleyNode;
+                valleyBtn.onclick = () => {
+                    if (remoteValleyNode) this.setSelectedNode(remoteValleyNode);
+                };
+            }
+            if (servicesBtn) {
+                servicesBtn.onclick = () => {
+                    if (visibleServicesBlock && visibleServicesBlock.scrollIntoView) {
+                        visibleServicesBlock.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                    }
+                };
+            }
+            workerButtons.forEach((btn) => {
+                btn.onclick = async () => {
+                    const key = String(btn.getAttribute("data-service-id") || "").trim();
+                    this.remoteInspectorState.set(this._remoteInspectorKey(node, remote), key);
+                    await this.renderRemoteCampfireDetails(node);
+                };
+            });
+        } catch (e) {
+            this.chatUI.messages.innerHTML = `<div class="chat-details">Failed to load remote campfire details.</div>`;
+        }
+    }
+
+    async _loadLocalValleySummary() {
+        let details = {};
+        let identifier = "";
+        try {
+            const res = await fetch("/api/valley/details");
+            if (res.ok) {
+                details = await res.json();
+            }
+        } catch (e) {
+        }
+        try {
+            const idRes = await fetch("/api/valley/identifier");
+            if (idRes.ok) {
+                const idData = await idRes.json();
+                identifier = String((idData && idData.identifier) || "").trim();
+            }
+        } catch (e) {
+        }
+        const valley = (details && details.valley) || {};
+        const displayName = String(valley.name || this.nodes.valley?.properties?.display_name || "Local Valley").trim();
+        return {
+            displayName,
+            originLabel: "LOCAL",
+            identifier,
+            shortIdentifier: this._shortValleyId(identifier),
+            routeAddress: identifier ? `valley:${identifier}` : `valley:${displayName}`,
+            routeKey: identifier || displayName,
+            campfireCount: Number(valley.campfire_total || 0),
+            camperCount: Number(valley.camper_total || 0)
+        };
     }
 
     _markdownToHtml(text) {
@@ -863,11 +1397,15 @@ class CampfireValleyLiteGraph {
 
     async renderCampfireDetails(node) {
         if (!this.chatUI) return;
+        const target = this.getNodeTarget(node);
+        if (!target) return;
+        if (this._isRemoteNode(node)) {
+            await this.renderRemoteCampfireDetails(node);
+            return;
+        }
         if (this.chatUI.inputRow) this.chatUI.inputRow.style.display = "none";
         this.chatUI.logsPanel.classList.add("hidden");
         this.toggleToolsPanel(false);
-        const target = this.getNodeTarget(node);
-        if (!target) return;
         this.chatUI.messages.innerHTML = `<div class="chat-details">Loading campfire details…</div>`;
         try {
             const res = await fetch(`/api/campfire/details?campfire=${encodeURIComponent(target)}`);
@@ -1028,44 +1566,109 @@ class CampfireValleyLiteGraph {
             const backendCampfires = (v.campfires || []);
             const backendCampers = (v.campers || []);
             const auditorCampfires = (v.auditor_campfires || []);
-            const body = `
-                <div class="chat-details">
-                    <div class="chat-details-block">
-                        <div class="chat-details-h">Valley</div>
-                        <div class="chat-details-kv"><span>Name</span><span>${this._escapeHtml(v.name || "")}</span></div>
-                        <div class="chat-details-kv"><span>Identifier</span><span>${this._escapeHtml(valleyId || "")}</span></div>
-                        <div class="chat-details-kv"><span>Address</span><span>${this._escapeHtml(valleyId ? ("valley:" + valleyId) : "")}</span></div>
-                        <div class="chat-details-actions">
-                            <input id="valleyIdentifierInput" class="chat-input" type="text" placeholder="Set Valley UUID" value="${this._escapeHtml(valleyId || "")}" autocomplete="off" />
-                            <button id="valleyIdentifierSave" type="button">Save</button>
+            const localRouteAddress = valleyId ? `valley:${valleyId}` : `valley:${v.name || "local"}`;
+            const discoveredValleys = Array.isArray(dock) ? dock.map((entry) => this._deriveRemoteValleySummary(entry)) : [];
+            const isRemoteSelection = !!(node && node.properties && node.properties.remote);
+            const selectedRemoteValley = isRemoteSelection ? this._resolveSelectedRemoteValley(node, dock) : null;
+            const dockValleyHtml = discoveredValleys.length
+                ? discoveredValleys.map((valley) => {
+                    const campfireBits = valley.exposedCampfires.length ? valley.exposedCampfires.slice(0, 4).join(", ") : "(none)";
+                    const serviceBits = valley.exposedServices.length ? valley.exposedServices.slice(0, 4).join(", ") : "(none)";
+                    return `
+                        <div class="valley-card remote">
+                            <div class="valley-card-head">
+                                <span class="valley-badge remote">${this._escapeHtml(valley.originLabel)}</span>
+                                <span class="valley-card-title">${this._escapeHtml(valley.displayName)}</span>
+                            </div>
+                            <div class="valley-card-row"><span>Route</span><span>${this._escapeHtml(valley.routeAddress)}</span></div>
+                            <div class="valley-card-row"><span>Stable ID</span><span>${this._escapeHtml(valley.shortIdentifier || "(not advertised)")}</span></div>
+                            <div class="valley-card-row"><span>Alias</span><span>${this._escapeHtml(valley.displayName || "(unnamed)")}</span></div>
+                            <div class="valley-card-row"><span>Trust</span><span>${this._escapeHtml(valley.trustLevel || "(unknown)")}</span></div>
+                            <div class="valley-card-row"><span>Last Seen</span><span>${this._escapeHtml(valley.lastSeen || "(unknown)")}</span></div>
+                            <div class="valley-card-row"><span>Visible Campfires</span><span>${this._escapeHtml(String(valley.campfireCount))}</span></div>
+                            <div class="valley-card-row"><span>Visible Services</span><span>${this._escapeHtml(String(valley.serviceCount))}</span></div>
+                            <div class="valley-card-meta">Campfires: ${this._escapeHtml(campfireBits)}</div>
+                            <div class="valley-card-meta">Services: ${this._escapeHtml(serviceBits)}</div>
                         </div>
-                        <div class="chat-details-kv"><span>Graph Campfires</span><span>${this._escapeHtml(String(graphCampfireCount))}</span></div>
-                        <div class="chat-details-kv"><span>Backend Campfires</span><span>${this._escapeHtml(String(v.campfire_total || backendCampfires.length || 0))}</span></div>
-                        <div class="chat-details-kv"><span>Backend Campers</span><span>${this._escapeHtml(String(v.camper_total || backendCampers.length || 0))}</span></div>
+                    `;
+                }).join("")
+                : `<div class="chat-details-text">(none discovered)</div>`;
+            const body = isRemoteSelection
+                ? `
+                    <div class="chat-details">
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Remote Valley</div>
+                            <div class="valley-card remote">
+                                <div class="valley-card-head">
+                                    <span class="valley-badge remote">REMOTE</span>
+                                    <span class="valley-card-title">${this._escapeHtml(selectedRemoteValley.displayName || "Remote Valley")}</span>
+                                </div>
+                                <div class="valley-card-row"><span>Route</span><span>${this._escapeHtml(selectedRemoteValley.routeAddress || "(not advertised)")}</span></div>
+                                <div class="valley-card-row"><span>Stable ID</span><span>${this._escapeHtml(selectedRemoteValley.shortIdentifier || "(not advertised)")}</span></div>
+                                <div class="valley-card-row"><span>Alias</span><span>${this._escapeHtml(selectedRemoteValley.displayName || "(unnamed)")}</span></div>
+                                <div class="valley-card-row"><span>Visible Campfires</span><span>${this._escapeHtml(String(selectedRemoteValley.campfireCount || 0))}</span></div>
+                                <div class="valley-card-row"><span>Visible Services</span><span>${this._escapeHtml(String(selectedRemoteValley.serviceCount || 0))}</span></div>
+                                <div class="valley-card-row"><span>Trust</span><span>${this._escapeHtml(selectedRemoteValley.trustLevel || "(unknown)")}</span></div>
+                                <div class="valley-card-row"><span>Last Seen</span><span>${this._escapeHtml(selectedRemoteValley.lastSeen || "(unknown)")}</span></div>
+                            </div>
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Visible Campfires</div>
+                            <div class="chat-details-text">${this._escapeHtml((selectedRemoteValley.exposedCampfires || []).join(", ") || "(none)")}</div>
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Visible Services</div>
+                            <div class="chat-details-text">${this._escapeHtml((selectedRemoteValley.exposedServices || []).join(", ") || "(none)")}</div>
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Local Dock View</div>
+                            ${dockValleyHtml}
+                        </div>
                     </div>
-                    <div class="chat-details-block">
-                        <div class="chat-details-h">Backend Campfire Names</div>
-                        <div class="chat-details-text">${this._escapeHtml((backendCampfires || []).join(", ") || "(none)")}</div>
+                `
+                : `
+                    <div class="chat-details">
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Valley</div>
+                            <div class="valley-card local">
+                                <div class="valley-card-head">
+                                    <span class="valley-badge local">LOCAL</span>
+                                    <span class="valley-card-title">${this._escapeHtml(v.name || "Local Valley")}</span>
+                                </div>
+                                <div class="valley-card-row"><span>Route</span><span>${this._escapeHtml(localRouteAddress)}</span></div>
+                                <div class="valley-card-row"><span>Stable ID</span><span>${this._escapeHtml(this._shortValleyId(valleyId) || "(not set)")}</span></div>
+                                <div class="valley-card-row"><span>Graph Campfires</span><span>${this._escapeHtml(String(graphCampfireCount))}</span></div>
+                                <div class="valley-card-row"><span>Backend Campfires</span><span>${this._escapeHtml(String(v.campfire_total || backendCampfires.length || 0))}</span></div>
+                                <div class="valley-card-row"><span>Backend Campers</span><span>${this._escapeHtml(String(v.camper_total || backendCampers.length || 0))}</span></div>
+                            </div>
+                            <div class="chat-details-actions">
+                                <input id="valleyIdentifierInput" class="chat-input" type="text" placeholder="Set Valley UUID" value="${this._escapeHtml(valleyId || "")}" autocomplete="off" />
+                                <button id="valleyIdentifierSave" type="button">Save</button>
+                            </div>
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Backend Campfire Names</div>
+                            <div class="chat-details-text">${this._escapeHtml((backendCampfires || []).join(", ") || "(none)")}</div>
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Backend Camper Names</div>
+                            <div class="chat-details-text">${this._escapeHtml((backendCampers || []).join(", ") || "(none)")}</div>
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Legacy Auditor Campfires</div>
+                            <div class="chat-details-text">${this._escapeHtml((auditorCampfires || []).join(", ") || "(none)")}</div>
+                            <div class="chat-details-actions"><button id="cleanupAuditorsBtn" type="button">Cleanup Legacy Auditors</button></div>
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Dock Valleys</div>
+                            ${dockValleyHtml}
+                        </div>
+                        <div class="chat-details-block">
+                            <div class="chat-details-h">Schedules</div>
+                            <pre class="chat-details-pre">${this._escapeHtml(JSON.stringify(schedules || [], null, 2))}</pre>
+                        </div>
                     </div>
-                    <div class="chat-details-block">
-                        <div class="chat-details-h">Backend Camper Names</div>
-                        <div class="chat-details-text">${this._escapeHtml((backendCampers || []).join(", ") || "(none)")}</div>
-                    </div>
-                    <div class="chat-details-block">
-                        <div class="chat-details-h">Legacy Auditor Campfires</div>
-                        <div class="chat-details-text">${this._escapeHtml((auditorCampfires || []).join(", ") || "(none)")}</div>
-                        <div class="chat-details-actions"><button id="cleanupAuditorsBtn" type="button">Cleanup Legacy Auditors</button></div>
-                    </div>
-                    <div class="chat-details-block">
-                        <div class="chat-details-h">Dock Valleys</div>
-                        <pre class="chat-details-pre">${this._escapeHtml(JSON.stringify(dock || [], null, 2))}</pre>
-                    </div>
-                    <div class="chat-details-block">
-                        <div class="chat-details-h">Schedules</div>
-                        <pre class="chat-details-pre">${this._escapeHtml(JSON.stringify(schedules || [], null, 2))}</pre>
-                    </div>
-                </div>
-            `;
+                `;
             this.chatUI.messages.innerHTML = body;
             const btn = document.getElementById("cleanupAuditorsBtn");
             if (btn) {
@@ -1142,6 +1745,378 @@ class CampfireValleyLiteGraph {
         if (!this.chatUI || !this.chatUI.toolsPanel) return;
         if (visible) this.chatUI.toolsPanel.classList.add("visible");
         else this.chatUI.toolsPanel.classList.remove("visible");
+    }
+
+    toggleRoundsPanel(visible) {
+        if (!this.chatUI || !this.chatUI.roundsPanel) return;
+        if (visible) this.chatUI.roundsPanel.classList.add("visible");
+        else this.chatUI.roundsPanel.classList.remove("visible");
+    }
+
+    _getRoundsElements() {
+        const panel = this.chatUI && this.chatUI.roundsPanel;
+        if (!panel) return {};
+        return {
+            panel,
+            savedPlans: panel.querySelector("#roundsSavedPlans"),
+            campfire: panel.querySelector("#roundsCampfire"),
+            planName: panel.querySelector("#roundsPlanName"),
+            description: panel.querySelector("#roundsDescription"),
+            task: panel.querySelector("#roundsTask"),
+            addRow: panel.querySelector("#roundsAddRow"),
+            savePlan: panel.querySelector("#roundsSavePlan"),
+            preview: panel.querySelector("#roundsPreview"),
+            run: panel.querySelector("#roundsRun"),
+            loadPlan: panel.querySelector("#roundsLoadPlan"),
+            deletePlan: panel.querySelector("#roundsDeletePlan"),
+            newPlan: panel.querySelector("#roundsNewPlan"),
+            refreshCatalog: panel.querySelector("#roundsRefreshCatalog"),
+            rows: panel.querySelector("#roundsRows"),
+            output: panel.querySelector("#roundsOutput"),
+            catalogNote: panel.querySelector("#roundsCatalogNote"),
+            planMeta: panel.querySelector("#roundsPlanMeta")
+        };
+    }
+
+    _roundsContextCampfire() {
+        if (!this.selectedNode || this.selectedNode.type !== "campfire/campfire") return "";
+        const target = this.getNodeTarget(this.selectedNode);
+        return typeof target === "string" ? target : "";
+    }
+
+    _emptyRoundRow() {
+        return { label: "", target_address: "", service_id: "", task_type: "", mode: "replace", instruction: "" };
+    }
+
+    _serviceOptionKey(service) {
+        if (!service) return "";
+        const addresses = service.addresses || {};
+        return String(service.target_address || addresses.valley_id || addresses.valley_name || service.service_id || service.name || "").trim();
+    }
+
+    _serviceOptionLabel(service) {
+        if (!service) return "(unknown service)";
+        const name = String(service.name || service.service_id || "service").trim();
+        const taskTypes = Array.isArray(service.task_types) ? service.task_types.filter(Boolean) : [];
+        const valleyName = String(service._valley_name || (service._remote ? "remote" : "local")).trim();
+        const suffix = taskTypes.length ? ` [${taskTypes.slice(0, 2).join(", ")}]` : "";
+        return `${name}${suffix} - ${valleyName}`;
+    }
+
+    _applyServiceToRow(row, service) {
+        const clone = Object.assign({}, row || this._emptyRoundRow());
+        if (!service) return clone;
+        const addresses = service.addresses || {};
+        clone.label = String(service.name || service.service_id || clone.label || "").trim();
+        clone.target_address = String(addresses.valley_id || addresses.valley_name || service.target_address || clone.target_address || "").trim();
+        clone.service_id = String(service.service_id || clone.service_id || "").trim();
+        const taskTypes = Array.isArray(service.task_types) ? service.task_types.filter(Boolean) : [];
+        clone.task_type = String(clone.task_type || taskTypes[0] || "").trim();
+        return clone;
+    }
+
+    async loadRoundsCatalog() {
+        const res = await fetch("/api/rounds/catalog");
+        if (!res.ok) throw new Error(`Failed to load rounds catalog (${res.status})`);
+        const data = await res.json();
+        const local = Array.isArray(data && data.local) ? data.local : [];
+        const remote = Array.isArray(data && data.remote) ? data.remote : [];
+        this.roundsState.catalog = []
+            .concat(local.map((service) => Object.assign({ _remote: false, _valley_name: "local" }, service || {})))
+            .concat(remote.map((service) => Object.assign({ _remote: true }, service || {})));
+        this.roundsState.catalogMeta = (data && data.dock) || {};
+    }
+
+    async loadRoundsPlans() {
+        const res = await fetch("/api/rounds/plans");
+        if (!res.ok) throw new Error(`Failed to load rounds plans (${res.status})`);
+        const data = await res.json();
+        this.roundsState.plans = Array.isArray(data && data.plans) ? data.plans : [];
+    }
+
+    _setRoundsOutput(text, isError) {
+        const els = this._getRoundsElements();
+        if (!els.output) return;
+        els.output.textContent = String(text == null ? "" : text);
+        els.output.classList.toggle("error", !!isError);
+    }
+
+    _resetRoundsBuilder() {
+        this.roundsState.rows = [this._emptyRoundRow()];
+        this.roundsState.activePlanName = "";
+        const els = this._getRoundsElements();
+        if (els.savedPlans) els.savedPlans.value = "";
+        if (els.planName) els.planName.value = "";
+        if (els.description) els.description.value = "";
+        if (els.task) els.task.value = "";
+        if (els.campfire) els.campfire.value = this._roundsContextCampfire();
+        if (els.planMeta) els.planMeta.textContent = "";
+        this._setRoundsOutput("Load a catalog, add one or more services, and save or run a rounds plan.", false);
+        this.renderRoundsRows();
+    }
+
+    async openRoundsBuilder() {
+        this.toggleToolsPanel(false);
+        this.toggleRoundsPanel(true);
+        this.bindRoundsBuilderEvents();
+        const els = this._getRoundsElements();
+        if (els.campfire && !els.campfire.value) els.campfire.value = this._roundsContextCampfire();
+        try {
+            await Promise.all([this.loadRoundsCatalog(), this.loadRoundsPlans()]);
+            if (!Array.isArray(this.roundsState.rows) || !this.roundsState.rows.length) {
+                this.roundsState.rows = [this._emptyRoundRow()];
+            }
+            this.renderRoundsBuilder();
+        } catch (e) {
+            this.renderRoundsBuilder();
+            this._setRoundsOutput(`Failed to load rounds builder data.\n${e}`, true);
+        }
+    }
+
+    bindRoundsBuilderEvents() {
+        if (this.roundsState.boundRoundsUi) return;
+        const els = this._getRoundsElements();
+        if (!els.panel) return;
+        if (els.addRow) {
+            els.addRow.addEventListener("click", () => {
+                this.roundsState.rows.push(this._emptyRoundRow());
+                this.renderRoundsRows();
+            });
+        }
+        if (els.newPlan) els.newPlan.addEventListener("click", () => this._resetRoundsBuilder());
+        if (els.refreshCatalog) {
+            els.refreshCatalog.addEventListener("click", async () => {
+                try {
+                    await Promise.all([this.loadRoundsCatalog(), this.loadRoundsPlans()]);
+                    this.renderRoundsBuilder();
+                    this._setRoundsOutput("Rounds catalog refreshed.", false);
+                } catch (e) {
+                    this._setRoundsOutput(`Failed to refresh rounds catalog.\n${e}`, true);
+                }
+            });
+        }
+        if (els.loadPlan) {
+            els.loadPlan.addEventListener("click", async () => {
+                const name = String((els.savedPlans && els.savedPlans.value) || "").trim();
+                if (!name) return;
+                try {
+                    const res = await fetch(`/api/rounds/plans/${encodeURIComponent(name)}`);
+                    if (!res.ok) throw new Error(`Failed to load plan (${res.status})`);
+                    const data = await res.json();
+                    this.populateRoundsBuilderFromPlan((data && data.plan) || null);
+                    this._setRoundsOutput(`Loaded rounds plan "${name}".`, false);
+                } catch (e) {
+                    this._setRoundsOutput(`Failed to load rounds plan.\n${e}`, true);
+                }
+            });
+        }
+        if (els.deletePlan) {
+            els.deletePlan.addEventListener("click", async () => {
+                const name = String((els.savedPlans && els.savedPlans.value) || (els.planName && els.planName.value) || "").trim();
+                if (!name) return;
+                if (!window.confirm(`Delete saved rounds plan "${name}"?`)) return;
+                try {
+                    const res = await fetch(`/api/rounds/plans/${encodeURIComponent(name)}`, { method: "DELETE" });
+                    if (!res.ok) throw new Error(`Failed to delete plan (${res.status})`);
+                    await this.loadRoundsPlans();
+                    this._resetRoundsBuilder();
+                    this.renderRoundsBuilder();
+                    this._setRoundsOutput(`Deleted rounds plan "${name}".`, false);
+                } catch (e) {
+                    this._setRoundsOutput(`Failed to delete rounds plan.\n${e}`, true);
+                }
+            });
+        }
+        if (els.savePlan) {
+            els.savePlan.addEventListener("click", async () => {
+                try {
+                    const payload = this.collectRoundsPlanPayload();
+                    const res = await fetch("/api/rounds/plans", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!res.ok) {
+                        const msg = await res.text();
+                        throw new Error(msg || `Failed to save plan (${res.status})`);
+                    }
+                    const data = await res.json();
+                    await this.loadRoundsPlans();
+                    this.populateRoundsBuilderFromPlan((data && data.plan) || payload);
+                    this.renderRoundsBuilder();
+                    this._setRoundsOutput(`Saved rounds plan "${payload.name}".`, false);
+                } catch (e) {
+                    this._setRoundsOutput(`Failed to save rounds plan.\n${e}`, true);
+                }
+            });
+        }
+        if (els.preview) els.preview.addEventListener("click", async () => { await this.runRoundsBuilder(true); });
+        if (els.run) els.run.addEventListener("click", async () => { await this.runRoundsBuilder(false); });
+        this.roundsState.boundRoundsUi = true;
+    }
+
+    populateRoundsBuilderFromPlan(plan) {
+        const els = this._getRoundsElements();
+        const p = plan || {};
+        this.roundsState.activePlanName = String(p.name || "").trim();
+        if (els.savedPlans) els.savedPlans.value = this.roundsState.activePlanName;
+        if (els.planName) els.planName.value = String(p.name || "").trim();
+        if (els.description) els.description.value = String(p.description || "").trim();
+        if (els.task && p.task) els.task.value = String(p.task || "").trim();
+        if (els.campfire) els.campfire.value = String(p.campfire || this._roundsContextCampfire() || "").trim();
+        this.roundsState.rows = Array.isArray(p.rounds) && p.rounds.length ? p.rounds.map((row) => Object.assign(this._emptyRoundRow(), row || {})) : [this._emptyRoundRow()];
+        this.renderRoundsBuilder();
+    }
+
+    collectRoundsPlanPayload(requireName = true) {
+        const els = this._getRoundsElements();
+        const name = String((els.planName && els.planName.value) || "").trim();
+        const description = String((els.description && els.description.value) || "").trim();
+        const task = String((els.task && els.task.value) || "").trim();
+        const campfire = String((els.campfire && els.campfire.value) || "").trim();
+        const rounds = (this.roundsState.rows || []).map((row, idx, arr) => {
+            const current = Object.assign(this._emptyRoundRow(), row || {});
+            return {
+                label: current.label || "",
+                target_address: current.target_address || "",
+                service_id: current.service_id || "",
+                task_type: current.task_type || "",
+                mode: idx === arr.length - 1 ? "final" : (current.mode || "replace"),
+                instruction: current.instruction || ""
+            };
+        }).filter((row) => row.target_address || row.service_id || row.label);
+        if (requireName && !name) throw new Error("Plan name is required.");
+        if (!rounds.length) throw new Error("Add at least one round.");
+        return { name: name || "Ad Hoc Rounds", description, task, campfire, rounds };
+    }
+
+    async runRoundsBuilder(preview) {
+        try {
+            const payload = this.collectRoundsPlanPayload(false);
+            if (!payload.task) throw new Error("Task is required.");
+            const res = await fetch("/api/rounds/run", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ rounds: payload.rounds, text: payload.task, preview: !!preview })
+            });
+            if (!res.ok) {
+                const msg = await res.text();
+                throw new Error(msg || `Failed to ${preview ? "preview" : "run"} rounds (${res.status})`);
+            }
+            const data = await res.json();
+            this.roundsState.lastResult = data;
+            this._setRoundsOutput(preview ? JSON.stringify({ correlation_id: data.correlation_id, rounds: data.rounds }, null, 2) : JSON.stringify(data, null, 2), false);
+            if (!preview && this.selectedNode) {
+                const response = data && data.response ? data.response : {};
+                const textOut = response.text || response.llm_response || JSON.stringify(response || {}, null, 2);
+                this.appendChatMessage(this.selectedNode, { role: "system", text: `Rounds run completed.\n\n${textOut}`, ts: Date.now() });
+            }
+        } catch (e) {
+            this._setRoundsOutput(`Failed to ${preview ? "preview" : "run"} rounds.\n${e}`, true);
+        }
+    }
+
+    renderRoundsBuilder() {
+        const els = this._getRoundsElements();
+        if (!els.panel) return;
+        if (els.savedPlans) {
+            const current = String(this.roundsState.activePlanName || "");
+            const options = [`<option value="">(select saved plan)</option>`];
+            (this.roundsState.plans || []).forEach((plan) => {
+                const name = String((plan && plan.name) || "").trim();
+                if (!name) return;
+                options.push(`<option value="${this._escapeHtml(name)}"${name === current ? " selected" : ""}>${this._escapeHtml(name)}</option>`);
+            });
+            els.savedPlans.innerHTML = options.join("");
+        }
+        if (els.catalogNote) {
+            const catalog = this.roundsState.catalog || [];
+            const localCount = catalog.filter((service) => !service._remote).length;
+            const remoteCount = catalog.filter((service) => !!service._remote).length;
+            const dock = this.roundsState.catalogMeta || {};
+            els.catalogNote.textContent = `Catalog: ${localCount} local service(s), ${remoteCount} remote service(s). Dock running: ${dock.running ? "yes" : "no"}. Known valleys: ${dock.known_valleys || 0}.`;
+        }
+        if (els.planMeta) {
+            const match = (this.roundsState.plans || []).find((plan) => String(plan.name || "") === String(this.roundsState.activePlanName || ""));
+            els.planMeta.textContent = match ? `Saved plan updated: ${match.updated_at || "unknown"}` : "Last round is always treated as final when saved or run.";
+        }
+        this.renderRoundsRows();
+    }
+
+    renderRoundsRows() {
+        const els = this._getRoundsElements();
+        if (!els.rows) return;
+        const rows = Array.isArray(this.roundsState.rows) ? this.roundsState.rows : [];
+        if (!rows.length) {
+            els.rows.innerHTML = `<div class="rounds-builder-empty">No rounds yet. Add a service to start building a chain.</div>`;
+            return;
+        }
+        const options = [`<option value="">(select a service)</option>`];
+        (this.roundsState.catalog || []).forEach((service) => {
+            const key = this._serviceOptionKey(service);
+            if (!key) return;
+            options.push(`<option value="${this._escapeHtml(key)}">${this._escapeHtml(this._serviceOptionLabel(service))}</option>`);
+        });
+        els.rows.innerHTML = "";
+        rows.forEach((row, idx) => {
+            const wrap = document.createElement("div");
+            wrap.className = "rounds-row";
+            const isLast = idx === rows.length - 1;
+            wrap.innerHTML = `
+                <div class="rounds-row-index">${idx + 1}</div>
+                <div class="rounds-row-service"><select data-round-field="service">${options.join("")}</select></div>
+                <div class="rounds-row-mode">
+                    <select data-round-field="mode">
+                        <option value="replace">replace</option>
+                        <option value="augment">augment</option>
+                        <option value="merge">merge</option>
+                        <option value="final">final</option>
+                    </select>
+                </div>
+                <div class="rounds-row-instruction"><input data-round-field="instruction" type="text" placeholder="Optional round instruction" value="${this._escapeHtml(row.instruction || "")}" /></div>
+                <div class="rounds-row-instruction"><input data-round-field="task_type" type="text" placeholder="Task type" value="${this._escapeHtml(row.task_type || "")}" /></div>
+                <div class="rounds-row-remove"><button type="button" data-round-field="remove">Remove</button></div>
+            `;
+            const serviceSel = wrap.querySelector('select[data-round-field="service"]');
+            const modeSel = wrap.querySelector('select[data-round-field="mode"]');
+            const instructionInput = wrap.querySelector('input[data-round-field="instruction"]');
+            const taskTypeInput = wrap.querySelector('input[data-round-field="task_type"]');
+            const removeBtn = wrap.querySelector('button[data-round-field="remove"]');
+            if (serviceSel) {
+                serviceSel.value = this._serviceOptionKey(row);
+                serviceSel.addEventListener("change", (e) => {
+                    const selected = (this.roundsState.catalog || []).find((service) => this._serviceOptionKey(service) === e.target.value);
+                    this.roundsState.rows[idx] = this._applyServiceToRow(this.roundsState.rows[idx], selected);
+                    this.renderRoundsRows();
+                });
+            }
+            if (modeSel) {
+                modeSel.value = isLast ? "final" : (row.mode || "replace");
+                modeSel.disabled = isLast;
+                modeSel.addEventListener("change", (e) => {
+                    this.roundsState.rows[idx].mode = e.target.value;
+                });
+            }
+            if (instructionInput) {
+                instructionInput.addEventListener("input", (e) => {
+                    this.roundsState.rows[idx].instruction = e.target.value || "";
+                });
+            }
+            if (taskTypeInput) {
+                taskTypeInput.addEventListener("input", (e) => {
+                    this.roundsState.rows[idx].task_type = e.target.value || "";
+                });
+            }
+            if (removeBtn) {
+                removeBtn.disabled = rows.length <= 1;
+                removeBtn.addEventListener("click", () => {
+                    this.roundsState.rows.splice(idx, 1);
+                    if (!this.roundsState.rows.length) this.roundsState.rows = [this._emptyRoundRow()];
+                    this.renderRoundsRows();
+                });
+            }
+            els.rows.appendChild(wrap);
+        });
     }
 
     _nodeCenter(node) {
@@ -1262,6 +2237,127 @@ class CampfireValleyLiteGraph {
             }
             this._connectNearestCampfireCamper(r.origin, r.target);
         }
+        this._refreshStructuralLinkStyles();
+    }
+
+    _removeCampfireCamperLinks(originNode, targetNodes) {
+        if (!this.graph || !this.graph.links || !originNode || !Array.isArray(targetNodes) || !targetNodes.length) return;
+        const targetIds = new Set(targetNodes.filter(Boolean).map((n) => String(n.id)));
+        const linkIds = Object.keys(this.graph.links || {});
+        linkIds.forEach((id) => {
+            const link = this.graph.links[id];
+            if (!link) return;
+            if (String(link.origin_id) !== String(originNode.id)) return;
+            if (!targetIds.has(String(link.target_id))) return;
+            try {
+                this.graph.removeLink(link.id || id);
+            } catch (e) {
+            }
+        });
+    }
+
+    _removeMatchingLinks(matchFn) {
+        if (!this.graph || !this.graph.links || typeof matchFn !== "function") return;
+        const linkIds = Object.keys(this.graph.links || {});
+        linkIds.forEach((id) => {
+            const link = this.graph.links[id];
+            if (!link) return;
+            const origin = this.graph.getNodeById ? this.graph.getNodeById(link.origin_id) : null;
+            const target = this.graph.getNodeById ? this.graph.getNodeById(link.target_id) : null;
+            if (!matchFn(link, origin, target)) return;
+            try {
+                this.graph.removeLink(link.id || id);
+            } catch (e) {
+            }
+        });
+    }
+
+    _rebuildCampfireTeamLinks(campfireNode, targetNodes) {
+        if (!campfireNode || !Array.isArray(targetNodes)) return;
+        this._removeMatchingLinks((link, origin, target) => {
+            return origin === campfireNode && !!(target && target.type === "campfire/camper");
+        });
+        targetNodes.filter(Boolean).forEach((targetNode) => {
+            try {
+                this._connectNearestCampfireCamper(campfireNode, targetNode);
+            } catch (e) {
+            }
+        });
+    }
+
+    _rebuildLocalValleyCampfireLinks(localValleyNode, campfireNodes) {
+        if (!localValleyNode || !Array.isArray(campfireNodes)) return;
+        const targetSet = new Set(campfireNodes.filter(Boolean).map((node) => String(node.id)));
+        this._removeMatchingLinks((link, origin, target) => {
+            return origin === localValleyNode && !!(target && target.type === "campfire/campfire" && (!target.properties || target.properties.remote !== true));
+        });
+        campfireNodes.filter(Boolean).forEach((node) => {
+            if (!targetSet.has(String(node.id))) return;
+            try {
+                localValleyNode.connect(1, node, 0);
+            } catch (e) {
+            }
+        });
+    }
+
+    _refreshStructuralLinkStyles() {
+        if (!this.graph || !this.graph.links) return;
+        const links = Object.values(this.graph.links || {});
+        links.forEach((link) => {
+            if (!link) return;
+            const origin = this.graph.getNodeById ? this.graph.getNodeById(link.origin_id) : null;
+            const target = this.graph.getNodeById ? this.graph.getNodeById(link.target_id) : null;
+            if (!origin || !target) return;
+            if (origin.type === "campfire/campfire" && target.type === "campfire/camper") {
+                const isAuditor = !!(target.properties && target.properties.type === "auditor");
+                link.color = isAuditor ? "#C084FC" : "#FDE047";
+                link.type = "camper";
+                return;
+            }
+            if (origin.type === "campfire/valley" && target.type === "campfire/campfire") {
+                link.color = origin.properties && origin.properties.remote ? "#60A5FA" : "#86EFAC";
+                link.type = "campfire";
+            }
+        });
+        if (this.canvas) this.canvas.setDirty(true, true);
+    }
+
+    _scheduleStructuralLinkRefresh(delays = [0, 250, 900]) {
+        this.connectorRefreshTimers.forEach((timerId) => {
+            try {
+                clearTimeout(timerId);
+            } catch (e) {
+            }
+        });
+        this.connectorRefreshTimers = [];
+        delays.forEach((delay) => {
+            const timerId = setTimeout(() => {
+                try {
+                    this._refreshStructuralLinkStyles();
+                } catch (e) {
+                }
+            }, delay);
+            this.connectorRefreshTimers.push(timerId);
+        });
+    }
+
+    _scheduleBackendGraphSync(delays = [250, 900, 1800]) {
+        this.backendGraphRefreshTimers.forEach((timerId) => {
+            try {
+                clearTimeout(timerId);
+            } catch (e) {
+            }
+        });
+        this.backendGraphRefreshTimers = [];
+        delays.forEach((delay) => {
+            const timerId = setTimeout(() => {
+                try {
+                    this.syncBackendCampfireNodes();
+                } catch (e) {
+                }
+            }, delay);
+            this.backendGraphRefreshTimers.push(timerId);
+        });
     }
 
     _layoutPositionsAround(center, count, baseRadius = 220, ringPad = 140) {
@@ -1396,6 +2492,7 @@ class CampfireValleyLiteGraph {
             this._rerouteCampfireCamperLinksNearest();
         } catch (e) {
         }
+        this._scheduleStructuralLinkRefresh();
         if (this.canvas) this.canvas.setDirty(true, true);
     }
 
@@ -1517,6 +2614,7 @@ class CampfireValleyLiteGraph {
         this.chatUI.logsPanel.classList.add("hidden");
         if (this.chatUI.inputRow) this.chatUI.inputRow.style.display = "";
         this.toggleToolsPanel(false);
+        this.toggleRoundsPanel(false);
     }
 
     getChatKeyForNode(node) {
@@ -1727,6 +2825,38 @@ class CampfireValleyLiteGraph {
         }
     }
 
+    async clearBeliefsForSelectedNode() {
+        if (!this.chatUI || !this.selectedNode) {
+            return;
+        }
+        const node = this.selectedNode;
+        const target = this.getNodeTarget(node);
+        if (!target) {
+            return;
+        }
+        const ok = window.confirm(`Clear saved beliefs for "${target}"? This removes persisted memory for this campfire.`);
+        if (!ok) {
+            return;
+        }
+        this.chatUI.clearBeliefsBtn.classList.add("busy");
+        try {
+            const res = await fetch("/api/beliefs/clear", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ campfire: target })
+            });
+            if (!res.ok) {
+                this.appendChatMessage(node, { role: "system", text: `Clear beliefs failed: ${res.status}`, ts: Date.now() });
+                return;
+            }
+            this.appendChatMessage(node, { role: "system", text: `Beliefs cleared for ${target}.`, ts: Date.now() });
+        } catch (e) {
+            this.appendChatMessage(node, { role: "system", text: "Clear beliefs failed: backend unreachable", ts: Date.now() });
+        } finally {
+            this.chatUI.clearBeliefsBtn.classList.remove("busy");
+        }
+    }
+
     async exportSelectedNode() {
         if (!this.chatUI || !this.selectedNode) {
             return;
@@ -1922,26 +3052,43 @@ class CampfireValleyLiteGraph {
             const campfireSpacingY = 180;
 
             valleys.forEach((v, idx) => {
-                const name = v && v.name ? String(v.name) : null;
+                const valley = this._deriveRemoteValleySummary(v);
+                const name = valley.displayName || null;
                 if (!name) return;
                 const valleyNode = LiteGraph.createNode("campfire/valley");
                 valleyNode.pos = [startX, startY + (idx * valleySpacingY)];
                 valleyNode.properties = valleyNode.properties || {};
                 valleyNode.properties.remote = true;
+                valleyNode.properties.local = false;
                 valleyNode.properties.name = name;
-                valleyNode.title = name;
+                valleyNode.properties.display_name = name;
+                valleyNode.properties.origin_label = "REMOTE";
+                valleyNode.properties.route_name = valley.routeAddress;
+                valleyNode.properties.route_key = valley.routeKey;
+                valleyNode.properties.identifier = valley.identifier;
+                valleyNode.properties.total_campfires = valley.campfireCount;
+                valleyNode.properties.status = "remote";
+                valleyNode.title = `Remote: ${name}`;
                 this.graph.add(valleyNode);
 
                 const exposed = Array.isArray(v.exposed_campfires) ? v.exposed_campfires : [];
+                const exposedServices = Array.isArray(v.exposed_services) ? v.exposed_services : [];
                 exposed.forEach((cf, j) => {
                     const cfName = cf ? String(cf) : null;
                     if (!cfName) return;
+                    const matchingService = exposedServices.find((service) => String((service && service.name) || "").trim() === cfName) || {};
                     const campfireNode = LiteGraph.createNode("campfire/campfire");
                     campfireNode.pos = [valleyNode.pos[0] + campfireOffsetX, valleyNode.pos[1] + (j * campfireSpacingY)];
                     campfireNode.properties = campfireNode.properties || {};
                     campfireNode.properties.remote = true;
                     campfireNode.properties.name = cfName;
-                    campfireNode.properties.target = `valley:${name}/${cfName}`;
+                    campfireNode.properties.target = `${valley.routeAddress}/${cfName}`;
+                    campfireNode.properties.route_name = `${valley.routeAddress}/${cfName}`;
+                    campfireNode.properties.remote_valley_name = valley.displayName;
+                    campfireNode.properties.remote_valley_id = valley.identifier;
+                    campfireNode.properties.service_id = String((matchingService && matchingService.service_id) || "").trim();
+                    campfireNode.properties.service_summary = String((matchingService && matchingService.summary) || "").trim();
+                    campfireNode.properties.backend_type = String((matchingService && matchingService.kind) || "campfire").trim();
                     campfireNode.title = cfName;
                     this.graph.add(campfireNode);
                     try {
@@ -1970,9 +3117,38 @@ class CampfireValleyLiteGraph {
         }
         this.backendSyncPromise = (async () => {
         let campfires = await this.fetchBackendCampfires(true);
+        let localValley = null;
+        try {
+            localValley = await this._loadLocalValleySummary();
+        } catch (e) {
+            localValley = null;
+        }
+        const campfireRecords = Array.isArray(campfires) ? campfires : [];
+        const byId = new Map();
+        campfireRecords.forEach((c) => {
+            if (c && c.id) byId.set(String(c.id), c);
+        });
         const existingNodes = Array.isArray(this.graph._nodes) ? [...this.graph._nodes] : [];
+        const validIds = new Set(
+            campfireRecords
+                .map((c) => (c && c.id ? String(c.id) : ""))
+                .filter(Boolean)
+        );
         existingNodes.forEach((n) => {
-            if (n && n.properties && n.properties.backend === true) {
+            if (!n || !n.type) return;
+            if (n.properties && n.properties.remote === true) return;
+            const props = n.properties || {};
+            const nodeType = String(n.type || "");
+            const target = String(props.target || props.id || props.name || n.title || "").trim();
+            const isBackendMarked = props.backend === true;
+            const isAuditorNode = props.type === "auditor" || String(n.title || "").trim().toLowerCase() === "auditor";
+            const isBackendLike = nodeType === "campfire/campfire" || nodeType === "campfire/camper";
+            const shouldRemoveStale =
+                isBackendLike &&
+                target &&
+                !validIds.has(target) &&
+                (isBackendMarked || isAuditorNode || props.target || props.id);
+            if (isBackendMarked || shouldRemoveStale) {
                 try {
                     this.graph.remove(n);
                 } catch (e) {
@@ -1981,11 +3157,6 @@ class CampfireValleyLiteGraph {
         });
         this.nodes.backendCampers = [];
 
-        const campfireRecords = Array.isArray(campfires) ? campfires : [];
-        const byId = new Map();
-        campfireRecords.forEach((c) => {
-            if (c && c.id) byId.set(String(c.id), c);
-        });
         const parents = new Map();
         campfireRecords.forEach((c) => {
             const id = c && c.id ? String(c.id) : null;
@@ -1993,6 +3164,17 @@ class CampfireValleyLiteGraph {
             if (id && parent) parents.set(id, parent);
         });
         if (this.nodes.valley && this.nodes.valley.properties) {
+            if (localValley) {
+                this.nodes.valley.properties.remote = false;
+                this.nodes.valley.properties.local = true;
+                this.nodes.valley.properties.name = localValley.displayName;
+                this.nodes.valley.properties.display_name = localValley.displayName;
+                this.nodes.valley.properties.origin_label = "LOCAL";
+                this.nodes.valley.properties.route_name = localValley.routeAddress;
+                this.nodes.valley.properties.route_key = localValley.routeKey;
+                this.nodes.valley.properties.identifier = localValley.identifier;
+                this.nodes.valley.title = `Local: ${localValley.displayName}`;
+            }
             this.nodes.valley.properties.total_campfires = campfireRecords.length;
         }
 
@@ -2018,13 +3200,17 @@ class CampfireValleyLiteGraph {
             .filter((c) => !parents.has(c.id))
             .sort((a, b) => a.id.localeCompare(b.id));
 
+        const localCampfireNodes = [];
         const campfireNodeById = new Map();
+        const auditorNodeByParent = new Map();
+        const camperNodesByParent = new Map();
         primaryCampfires.forEach((c, idx) => {
             let campfireNode = null;
             try {
                 campfireNode = existingNodes.find((n) => {
                     if (!n || n.type !== "campfire/campfire") return false;
                     if (n.properties && n.properties.backend === true) return false;
+                    if (n.properties && n.properties.remote === true) return false;
                     const t = (n.properties && (n.properties.target || n.properties.name)) || n.title || "";
                     return String(t) === String(c.id);
                 }) || null;
@@ -2033,7 +3219,12 @@ class CampfireValleyLiteGraph {
             }
             if (!campfireNode && primaryCampfires.length === 1) {
                 try {
-                    campfireNode = existingNodes.find((n) => n && n.type === "campfire/campfire" && !(n.properties && n.properties.backend === true)) || null;
+                    campfireNode = existingNodes.find((n) => {
+                        if (!n || n.type !== "campfire/campfire") return false;
+                        if (n.properties && n.properties.backend === true) return false;
+                        if (n.properties && n.properties.remote === true) return false;
+                        return true;
+                    }) || null;
                 } catch (e) {
                     campfireNode = null;
                 }
@@ -2052,11 +3243,15 @@ class CampfireValleyLiteGraph {
                 this.nodes.backendCampers.push(campfireNode);
             } else {
                 campfireNode.properties = campfireNode.properties || {};
+                campfireNode.properties.backend = true;
+                campfireNode.properties.name = c.id;
                 campfireNode.properties.target = c.id;
                 campfireNode.properties.id = c.id;
                 campfireNode.properties.backend_type = c.type || "Campfire";
                 campfireNode.title = c.id;
             }
+            this.nodes.backendCampers.push(campfireNode);
+            localCampfireNodes.push(campfireNode);
             campfireNodeById.set(c.id, campfireNode);
 
             const auditor = LiteGraph.createNode("campfire/camper");
@@ -2080,10 +3275,7 @@ class CampfireValleyLiteGraph {
             auditor.properties.role_prompt = "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. You identify which campers are needed, create them, assign them ordered tasks, and coordinate their outputs. Ask clarifying questions when needed.";
             auditor.title = "Auditor";
             this.graph.add(auditor);
-            try {
-                this._connectNearestCampfireCamper(campfireNode, auditor);
-            } catch (e) {
-            }
+            auditorNodeByParent.set(c.id, auditor);
         });
 
         const childCampfires = (Array.isArray(campfires) ? campfires : [])
@@ -2112,28 +3304,31 @@ class CampfireValleyLiteGraph {
                 camperNode.title = child.id;
                 this.graph.add(camperNode);
                 created.push(camperNode);
-                try {
-                    this._connectNearestCampfireCamper(parentNode, camperNode);
-                } catch (e) {
-                }
             });
+            camperNodesByParent.set(parentId, created);
             try {
                 this._placeChildrenRadially(parentNode, created);
             } catch (e) {
             }
         });
 
-        if (this.nodes.valley && Array.isArray(this.nodes.backendCampers)) {
-            this.nodes.backendCampers.forEach((n) => {
-                if (n && n.type === "campfire/campfire") {
-                    try {
-                        this.nodes.valley.connect(1, n, 0);
-                    } catch (e) {
-                    }
-                }
-            });
+        this._ensureCampfireCamperSlots();
+        campfireNodeById.forEach((campfireNode, campfireId) => {
+            const targets = [];
+            const auditorNode = auditorNodeByParent.get(campfireId);
+            const camperNodes = camperNodesByParent.get(campfireId) || [];
+            if (auditorNode) targets.push(auditorNode);
+            targets.push(...camperNodes.filter(Boolean));
+            this._rebuildCampfireTeamLinks(campfireNode, targets);
+        });
+
+        if (this.nodes.valley) {
+            this._rebuildLocalValleyCampfireLinks(this.nodes.valley, localCampfireNodes);
         }
+        this._refreshStructuralLinkStyles();
         await this.syncRemoteValleyNodes(startX + 720, startY);
+        this._refreshStructuralLinkStyles();
+        this._scheduleStructuralLinkRefresh();
         if (this.canvas) {
             this.canvas.setDirty(true, true);
         }
@@ -2244,6 +3439,8 @@ class CampfireValleyLiteGraph {
                     } catch (e) {
                     }
                 }, 250);
+                this._scheduleBackendGraphSync([500, 1200, 2200]);
+                this._scheduleStructuralLinkRefresh([200, 600, 1200]);
             }
         } catch (e) {
             this.appendChatMessage(node, { role: "system", text: "Error: failed to reach backend", ts: Date.now() });

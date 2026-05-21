@@ -11,6 +11,7 @@ import random
 import uuid
 from .interfaces import IDock, IValley, IMCPBroker, IPartyBox
 from .models import Torch, DockMode, FederationMembership, CampfireConfig
+from .service_catalog import build_discovery_service_summaries, build_service_catalog, get_valley_identity
 
 
 logger = logging.getLogger(__name__)
@@ -73,21 +74,26 @@ class Dock(IDock):
             if self.federation_manager:
                 await self._initialize_federation_discovery()
             
-            # Start discovery broadcasts if in public mode
-            if self.dock_mode == DockMode.PUBLIC:
-                asyncio.create_task(self._discovery_loop())
+            # Mark running before startup broadcasts/tasks so the loops do not exit immediately.
+            self._running = True
+
+            # Send an immediate discovery announcement for all dock modes.
+            # Exposure is still controlled by dock_mode inside broadcast_discovery().
+            await self.broadcast_discovery()
+
+            # Keep discovery announcements fresh regardless of exposure mode.
+            self._discovery_task = asyncio.create_task(self._discovery_loop())
             
             # Start federation valley discovery if enabled
             if self.federation_manager and self.dock_mode != DockMode.PRIVATE:
-                asyncio.create_task(self._federation_discovery_loop())
+                self._federation_discovery_task = asyncio.create_task(self._federation_discovery_loop())
             
             # Start periodic cleanup task
-            asyncio.create_task(self._cleanup_loop())
-            
-            self._running = True
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             logger.info("Dock gateway started successfully")
             
         except Exception as e:
+            self._running = False
             logger.error(f"Failed to start dock gateway: {e}")
             raise
     
@@ -237,9 +243,6 @@ class Dock(IDock):
     
     async def broadcast_discovery(self) -> None:
         """Broadcast discovery information to the community with federation capabilities"""
-        if self.dock_mode == DockMode.PRIVATE:
-            return  # No discovery in private mode
-        
         valley_config = self.valley.get_config()
         valley_id = ""
         try:
@@ -286,11 +289,24 @@ class Dock(IDock):
             except Exception as e:
                 logger.warning(f"Error including VALI services in discovery: {e}")
         
-        # Include exposed campfires based on dock mode
+        # Exposure is controlled by dock mode, but all modes announce their presence
+        # so valleys can discover peers and decide whether they can route to them.
+        discovery_info["exposed_campfires"] = []
+        discovery_info["exposed_services"] = []
         if self.dock_mode == DockMode.PUBLIC:
             discovery_info["exposed_campfires"] = valley_config.campfires.get("visible", [])
         elif self.dock_mode == DockMode.PARTIAL:
             discovery_info["exposed_campfires"] = []  # Limited exposure
+        if self.dock_mode != DockMode.PRIVATE:
+            try:
+                visible = list(discovery_info.get("exposed_campfires") or [])
+                discovery_info["exposed_services"] = build_discovery_service_summaries(
+                    self.valley,
+                    include_auditors=False,
+                    visible_names=visible,
+                )
+            except Exception as e:
+                logger.warning(f"Error including exposed services in discovery: {e}")
         
         # Broadcast to dock:invite channel
         await self.mcp_broker.publish("dock:invite", discovery_info)
@@ -314,8 +330,11 @@ class Dock(IDock):
                 sender_membership = await self._get_valley_federation_membership(torch.sender_valley)
                 if sender_membership:
                     # Verify digital signature using sender's public key
-                    if await self._verify_torch_signature(torch, sender_membership.public_key):
+                    if sender_membership.public_key and await self._verify_torch_signature(torch, sender_membership.public_key):
                         logger.debug(f"Validated torch {torch.id} from federated valley {torch.sender_valley}")
+                        return True
+                    if not sender_membership.public_key:
+                        logger.debug(f"Accepted torch {torch.id} from federated valley {torch.sender_valley} without public key")
                         return True
                     else:
                         logger.warning(f"Invalid signature for torch {torch.id} from {torch.sender_valley}")
@@ -324,8 +343,11 @@ class Dock(IDock):
             # Check if sender is in our known valleys (discovery cache)
             if torch.sender_valley in self._known_valleys:
                 valley_info = self._known_valleys[torch.sender_valley]
-                if await self._verify_torch_signature(torch, valley_info.public_key):
+                if valley_info.public_key and await self._verify_torch_signature(torch, valley_info.public_key):
                     logger.debug(f"Validated torch {torch.id} from known valley {torch.sender_valley}")
+                    return True
+                if not valley_info.public_key:
+                    logger.debug(f"Accepted torch {torch.id} from discovery-known valley {torch.sender_valley} without public key")
                     return True
                 else:
                     logger.warning(f"Invalid signature for torch {torch.id} from known valley {torch.sender_valley}")
@@ -364,10 +386,10 @@ class Dock(IDock):
             await self.mcp_broker.subscribe(incoming_channel_id, self._handle_incoming_message)
             self._subscriptions[incoming_channel_id] = True
         
-        # Subscribe to discovery channel if not in private mode
-        if self.dock_mode != DockMode.PRIVATE:
-            await self.mcp_broker.subscribe("dock:invite", self._handle_discovery_message)
-            self._subscriptions["dock:invite"] = True
+        # Subscribe to discovery channel for all modes so even private valleys can
+        # discover peers while still exposing no services of their own.
+        await self.mcp_broker.subscribe("dock:invite", self._handle_discovery_message)
+        self._subscriptions["dock:invite"] = True
         
         logger.debug(f"Subscribed to {len(self._subscriptions)} channels")
     
@@ -408,6 +430,7 @@ class Dock(IDock):
                     "valley_id": message.get("valley_id") or "",
                     "protocol_version": message.get("protocol_version", "unknown"),
                     "exposed_campfires": message.get("exposed_campfires", []),
+                    "exposed_services": message.get("exposed_services", []),
                     "vali_services": message.get("vali_services", []),
                     "federations": message.get("federations", [])
                 }
@@ -426,6 +449,7 @@ class Dock(IDock):
                         "dock_mode": message.get("dock_mode", existing.metadata.get("dock_mode")),
                         "protocol_version": message.get("protocol_version", existing.metadata.get("protocol_version")),
                         "exposed_campfires": message.get("exposed_campfires", existing.metadata.get("exposed_campfires", [])),
+                        "exposed_services": message.get("exposed_services", existing.metadata.get("exposed_services", [])),
                         "vali_services": message.get("vali_services", existing.metadata.get("vali_services", [])),
                         "federations": message.get("federations", existing.metadata.get("federations", []))
                     })
@@ -529,38 +553,24 @@ class Dock(IDock):
 
     def _build_service_catalog(self) -> dict:
         try:
+            visible = []
             cfg = self.valley.get_config()
-            vname = getattr(cfg, "name", None) or "valley"
+            if getattr(cfg, "campfires", None):
+                visible = list((cfg.campfires or {}).get("visible") or [])
         except Exception:
-            vname = "valley"
-        vid = self._valley_identifier()
-        services = []
-        try:
-            campfires = self.valley.get_campfires() or {}
-        except Exception:
-            campfires = {}
-        for name, cf in campfires.items():
-            nm = str(name)
-            cfg = getattr(cf, "config", None)
-            conf: Dict[str, Any] = {}
-            if isinstance(cfg, CampfireConfig):
-                conf = cfg.config or {}
-            elif isinstance(cfg, dict):
-                conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
-            dock_cfg = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
-            identifier = (dock_cfg.get("identifier") or "").strip() if isinstance(dock_cfg, dict) else ""
-            addr_key = identifier or nm
-            services.append({
-                "name": nm,
-                "identifier": identifier,
-                "type": cf.__class__.__name__,
-                "addresses": {
-                    "valley_id": f"valley:{vid}/{addr_key}",
-                    "valley_name": f"valley:{vname}/{addr_key}",
-                },
-            })
-        services.sort(key=lambda s: s.get("name") or "")
-        return {"status": "ok", "type": "services", "valley": {"name": vname, "identifier": vid}, "services": services}
+            visible = []
+        catalog = build_service_catalog(
+            self.valley,
+            include_auditors=False,
+            parent_lookup=None,
+            visible_names=visible,
+            exposed_only=True,
+        )
+        valley_info = catalog.get("valley") if isinstance(catalog, dict) else None
+        if isinstance(valley_info, dict):
+            identity = get_valley_identity(self.valley)
+            valley_info["identifier"] = identity.get("identifier") or self._valley_identifier()
+        return catalog
 
     def _resolve_campfire_by_identifier(self, campfires: Dict[str, Any], identifier: str) -> Optional[str]:
         ident = (identifier or "").strip()

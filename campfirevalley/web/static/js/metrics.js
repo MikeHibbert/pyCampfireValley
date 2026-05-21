@@ -56,17 +56,19 @@ class MetricsDashboard {
 
     async fetchDock() {
         try {
-            const [mcpRes, dockRes, valleysRes] = await Promise.all([
+            const [mcpRes, dockRes, valleysRes, valleyRes] = await Promise.all([
                 fetch('/api/mcp/status'),
                 fetch('/api/dock/status'),
-                fetch('/api/dock/valleys')
+                fetch('/api/dock/valleys'),
+                fetch('/api/valley/details')
             ]);
             const mcp = mcpRes.ok ? await mcpRes.json() : null;
             const dock = dockRes.ok ? await dockRes.json() : null;
             const valleys = valleysRes.ok ? await valleysRes.json() : null;
-            return { mcp, dock, valleys };
+            const valley = valleyRes.ok ? await valleyRes.json() : null;
+            return { mcp, dock, valleys, valley };
         } catch (e) {
-            return { mcp: null, dock: null, valleys: null };
+            return { mcp: null, dock: null, valleys: null, valley: null };
         }
     }
     
@@ -111,68 +113,60 @@ class MetricsDashboard {
     }
 
     updateDockDisplay(dockData) {
+        const valleySummary = document.getElementById('valleySummary');
         const dockMetrics = document.getElementById('dockMetrics');
         const dockValleys = document.getElementById('dockValleys');
         const dockModeSelect = document.getElementById('dockMode');
-        if (!dockMetrics || !dockValleys) return;
+        const dockEnable = document.getElementById('dockEnable');
+        if (!valleySummary || !dockMetrics || !dockValleys) return;
 
+        valleySummary.innerHTML = '';
         dockMetrics.innerHTML = '';
         dockValleys.innerHTML = '';
 
         const mcp = dockData && dockData.mcp;
         const dock = dockData && dockData.dock;
         const valleys = dockData && dockData.valleys;
+        const valley = dockData && dockData.valley && dockData.valley.valley ? dockData.valley.valley : null;
 
-        const line = (label, value) => {
-            const el = document.createElement('div');
-            el.className = 'node-metric';
-            const left = document.createElement('span');
-            left.className = 'node-name';
-            left.textContent = label;
-            const right = document.createElement('span');
-            right.className = 'node-status idle';
-            right.textContent = value;
-            el.appendChild(left);
-            el.appendChild(right);
-            return el;
-        };
+        if (valley) {
+            valleySummary.appendChild(this.createValleySummaryCard(valley));
+        } else {
+            valleySummary.appendChild(this.createEmptyCard('Valley data unavailable'));
+        }
 
         if (!mcp || !dock) {
-            dockMetrics.appendChild(line('MCP', 'Unavailable'));
+            dockMetrics.appendChild(this.createStatusCard('MCP Broker', 'Unavailable', 'error', 'Could not load dock state from the backend.'));
+            if (dockEnable) {
+                dockEnable.disabled = false;
+                dockEnable.textContent = 'Enable Dock';
+            }
             return;
         }
 
-        dockMetrics.appendChild(line('MCP', mcp.connected ? 'Connected' : 'Disconnected'));
-        dockMetrics.appendChild(line('Dock', dock.running ? `Running (${dock.mode || 'unknown'})` : 'Stopped'));
-        dockMetrics.appendChild(line('Known Valleys', String(dock.known_valleys ?? 0)));
+        dockMetrics.appendChild(this.createStatusCard(
+            'MCP Broker',
+            mcp.connected ? 'Connected' : 'Disconnected',
+            mcp.connected ? 'good' : 'warn',
+            mcp.connected ? 'Dock messaging is available.' : 'Dock messaging is currently unavailable.'
+        ));
+        dockMetrics.appendChild(this.createDockStatusCard(dock));
         if (dockModeSelect && dock.mode) {
             dockModeSelect.value = dock.mode;
+        }
+        if (dockEnable) {
+            dockEnable.disabled = !!dock.running;
+            dockEnable.textContent = dock.running ? 'Dock Running' : 'Enable Dock';
         }
 
         const list = (valleys && valleys.valleys) || [];
         if (!Array.isArray(list) || list.length === 0) {
-            const el = document.createElement('div');
-            el.className = 'node-metric';
-            const left = document.createElement('span');
-            left.className = 'node-name';
-            left.textContent = 'No remote valleys';
-            el.appendChild(left);
-            dockValleys.appendChild(el);
+            dockValleys.appendChild(this.createEmptyCard('No remote valleys discovered yet.'));
             return;
         }
 
         list.forEach((v) => {
-            const el = document.createElement('div');
-            el.className = 'node-metric';
-            const left = document.createElement('span');
-            left.className = 'node-name';
-            left.textContent = v.name;
-            const right = document.createElement('span');
-            right.className = 'node-status active';
-            right.textContent = `${(v.exposed_campfires || []).length} campfires`;
-            el.appendChild(left);
-            el.appendChild(right);
-            dockValleys.appendChild(el);
+            dockValleys.appendChild(this.createRemoteValleyCard(v));
         });
     }
     
@@ -259,7 +253,8 @@ class MetricsDashboard {
         
         // If no nodes, show placeholder
         if (Object.keys(nodeData).length === 0) {
-            nodeMetricsContainer.innerHTML = '<div class="node-metric"><span class="node-name">No active nodes</span></div>';
+            nodeMetricsContainer.innerHTML = '';
+            nodeMetricsContainer.appendChild(this.createEmptyCard('No campfire health metrics yet.'));
         }
     }
     
@@ -270,41 +265,192 @@ class MetricsDashboard {
     
     createNodeMetricElement(nodeId, data) {
         const element = document.createElement('div');
-        element.className = 'node-metric';
-        
-        const nodeName = document.createElement('span');
-        nodeName.className = 'node-name';
+        element.className = 'sidebar-card';
+
+        const head = document.createElement('div');
+        head.className = 'sidebar-card-head';
+
+        const nodeName = document.createElement('div');
+        nodeName.className = 'sidebar-card-title';
         nodeName.textContent = nodeId;
-        
+
         const nodeStatus = document.createElement('span');
-        nodeStatus.className = 'node-status';
-        
-        // Determine status based on metrics
+        nodeStatus.className = 'sidebar-badge';
+
         if (data.throughput > 0) {
-            nodeStatus.className += ' active';
+            nodeStatus.className += ' good';
             nodeStatus.textContent = 'Active';
         } else if (data.queueSize > 0) {
-            nodeStatus.className += ' idle';
+            nodeStatus.className += ' warn';
             nodeStatus.textContent = 'Queued';
         } else {
-            nodeStatus.className += ' idle';
+            nodeStatus.className += ' warn';
             nodeStatus.textContent = 'Idle';
         }
-        
-        element.appendChild(nodeName);
-        element.appendChild(nodeStatus);
-        
-        // Add tooltip with detailed info
-        const details = [];
-        if (data.queueSize !== undefined) details.push(`Queue: ${data.queueSize}`);
-        if (data.camperCount !== undefined) details.push(`Campers: ${data.camperCount}`);
-        if (data.throughput !== undefined) details.push(`Throughput: ${data.throughput.toFixed(2)}/s`);
-        
-        if (details.length > 0) {
-            element.title = details.join(', ');
-        }
-        
+        head.appendChild(nodeName);
+        head.appendChild(nodeStatus);
+        element.appendChild(head);
+
+        const rows = [
+            ['Queue', data.queueSize !== undefined ? String(data.queueSize) : '0'],
+            ['Campers', data.camperCount !== undefined ? String(data.camperCount) : '0'],
+            ['Throughput', data.throughput !== undefined ? `${data.throughput.toFixed(2)}/s` : '0.00/s']
+        ];
+        rows.forEach(([label, value]) => element.appendChild(this.createSidebarRow(label, value)));
         return element;
+    }
+
+    shortId(value) {
+        const text = String(value || '').trim();
+        if (!text) return '';
+        if (text.length <= 18) return text;
+        return `${text.slice(0, 8)}...${text.slice(-8)}`;
+    }
+
+    createSidebarRow(label, value) {
+        const row = document.createElement('div');
+        row.className = 'sidebar-row';
+        const left = document.createElement('span');
+        left.textContent = label;
+        const right = document.createElement('span');
+        right.textContent = value;
+        row.appendChild(left);
+        row.appendChild(right);
+        return row;
+    }
+
+    createEmptyCard(text) {
+        const card = document.createElement('div');
+        card.className = 'sidebar-card warn';
+        const body = document.createElement('div');
+        body.className = 'sidebar-meta';
+        body.textContent = text;
+        card.appendChild(body);
+        return card;
+    }
+
+    createStatusCard(title, statusText, tone, detail) {
+        const card = document.createElement('div');
+        card.className = 'sidebar-card';
+        const head = document.createElement('div');
+        head.className = 'sidebar-card-head';
+        const name = document.createElement('div');
+        name.className = 'sidebar-card-title';
+        name.textContent = title;
+        const badge = document.createElement('span');
+        badge.className = `sidebar-badge ${tone || 'warn'}`;
+        badge.textContent = statusText;
+        head.appendChild(name);
+        head.appendChild(badge);
+        card.appendChild(head);
+        if (detail) {
+            const meta = document.createElement('div');
+            meta.className = 'sidebar-meta';
+            meta.textContent = detail;
+            card.appendChild(meta);
+        }
+        return card;
+    }
+
+    createValleySummaryCard(valley) {
+        const card = document.createElement('div');
+        card.className = 'sidebar-card local';
+
+        const head = document.createElement('div');
+        head.className = 'sidebar-card-head';
+        const title = document.createElement('div');
+        title.className = 'sidebar-card-title';
+        title.textContent = String(valley.name || 'Local Valley');
+        const badge = document.createElement('span');
+        badge.className = 'sidebar-badge local';
+        badge.textContent = 'Local';
+        head.appendChild(title);
+        head.appendChild(badge);
+        card.appendChild(head);
+
+        const meta = document.createElement('div');
+        meta.className = 'sidebar-meta';
+        meta.textContent = `Stable ID: ${this.shortId(valley.identifier) || '(not set)'}`;
+        card.appendChild(meta);
+
+        const kpis = document.createElement('div');
+        kpis.className = 'sidebar-kpi-grid';
+        [
+            ['Campfires', String(valley.campfire_total ?? 0)],
+            ['Campers', String(valley.camper_total ?? 0)],
+            ['Auditors', String((valley.auditor_campfires || []).length)]
+        ].forEach(([label, value]) => {
+            const item = document.createElement('div');
+            item.className = 'sidebar-kpi';
+            item.innerHTML = `<div class="sidebar-kpi-label">${label}</div><div class="sidebar-kpi-value">${value}</div>`;
+            kpis.appendChild(item);
+        });
+        card.appendChild(kpis);
+
+        const campfireNames = document.createElement('div');
+        campfireNames.className = 'sidebar-list';
+        const names = Array.isArray(valley.campfires) && valley.campfires.length ? valley.campfires.join(', ') : '(none)';
+        campfireNames.textContent = `Campfires: ${names}`;
+        card.appendChild(campfireNames);
+        return card;
+    }
+
+    createDockStatusCard(dock) {
+        const card = document.createElement('div');
+        card.className = 'sidebar-card';
+
+        const head = document.createElement('div');
+        head.className = 'sidebar-card-head';
+        const title = document.createElement('div');
+        title.className = 'sidebar-card-title';
+        title.textContent = 'Dock Routing';
+        const badge = document.createElement('span');
+        const running = !!dock.running;
+        badge.className = `sidebar-badge ${running ? 'good' : 'warn'}`;
+        badge.textContent = running ? 'Running' : 'Idle';
+        head.appendChild(title);
+        head.appendChild(badge);
+        card.appendChild(head);
+
+        card.appendChild(this.createSidebarRow('Mode', String(dock.mode || 'unknown')));
+        card.appendChild(this.createSidebarRow('Known Valleys', String(dock.known_valleys ?? 0)));
+        return card;
+    }
+
+    createRemoteValleyCard(valley) {
+        const card = document.createElement('div');
+        card.className = 'sidebar-card remote';
+
+        const head = document.createElement('div');
+        head.className = 'sidebar-card-head';
+        const title = document.createElement('div');
+        title.className = 'sidebar-card-title';
+        title.textContent = String(valley.name || 'Remote Valley');
+        const badge = document.createElement('span');
+        badge.className = 'sidebar-badge remote';
+        badge.textContent = 'Remote';
+        head.appendChild(title);
+        head.appendChild(badge);
+        card.appendChild(head);
+
+        const meta = document.createElement('div');
+        meta.className = 'sidebar-meta';
+        const route = String(valley.public_address || '').trim();
+        meta.textContent = `Route: ${route || '(not advertised)'}`;
+        card.appendChild(meta);
+
+        card.appendChild(this.createSidebarRow('Stable ID', this.shortId(valley.valley_id) || '(not advertised)'));
+        card.appendChild(this.createSidebarRow('Campfires', String((valley.exposed_campfires || []).length)));
+        card.appendChild(this.createSidebarRow('Services', String((valley.exposed_services || []).length)));
+
+        const visible = document.createElement('div');
+        visible.className = 'sidebar-list';
+        const campfires = Array.isArray(valley.exposed_campfires) && valley.exposed_campfires.length
+            ? valley.exposed_campfires.slice(0, 4).join(', ')
+            : '(none advertised)';
+        visible.textContent = `Visible: ${campfires}`;
+        card.appendChild(visible);
+        return card;
     }
     
     updateElement(elementId, value) {
@@ -315,6 +461,9 @@ class MetricsDashboard {
     }
     
     startMetricsUpdates() {
+        if (this.updateInterval) {
+            return;
+        }
         // Initial fetch
         this.updateMetrics();
         
@@ -347,7 +496,6 @@ class MetricsDashboard {
 // Initialize metrics dashboard when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     window.metricsDashboard = new MetricsDashboard();
-    window.metricsDashboard.startMetricsUpdates();
 
     const dockEnable = document.getElementById('dockEnable');
     const dockMode = document.getElementById('dockMode');

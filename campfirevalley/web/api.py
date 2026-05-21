@@ -31,6 +31,7 @@ from ..stt import get_engine
 import base64
 from ..models import CampfireConfig, Torch
 from ..monitoring import get_monitoring_system, LogLevel
+from ..service_catalog import build_service_catalog
 
 
 class WebSocketManager:
@@ -159,6 +160,10 @@ def _get_logs_dir() -> Path:
     return Path(os.getenv("LOGS_DIR", "/app/data/logs"))
 
 
+def _get_rounds_dir() -> Path:
+    return _get_config_dir() / "rounds_plans"
+
+
 def _log_path_for(campfire_name: str) -> Path:
     log_dir = _get_logs_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -208,6 +213,54 @@ def _write_logs(campfire_name: str, entries: List[dict]) -> None:
 def _slugify(text: str) -> str:
     t = re.sub(r"[^a-zA-Z0-9_\-]+", "_", text.strip())
     return t.strip("_") or "campfire"
+
+
+def _rounds_plan_path(plan_name: str) -> Path:
+    rounds_dir = _get_rounds_dir()
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    return rounds_dir / f"rounds_plan_{_slugify(plan_name)}.yaml"
+
+
+def _list_rounds_plans() -> List[Dict[str, Any]]:
+    rounds_dir = _get_rounds_dir()
+    rounds_dir.mkdir(parents=True, exist_ok=True)
+    plans: List[Dict[str, Any]] = []
+    for path in sorted(rounds_dir.glob("rounds_plan_*.yaml")):
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        plan_name = str(raw.get("name") or "").strip()
+        if not plan_name:
+            continue
+        plans.append({
+            "name": plan_name,
+            "description": str(raw.get("description") or "").strip(),
+            "campfire": str(raw.get("campfire") or "").strip(),
+            "round_count": len(raw.get("rounds") or []),
+            "updated_at": str(raw.get("updated_at") or ""),
+            "created_at": str(raw.get("created_at") or ""),
+        })
+    plans.sort(key=lambda p: ((p.get("name") or "").lower(), p.get("updated_at") or ""), reverse=False)
+    return plans
+
+
+def _load_rounds_plan(plan_name: str) -> Dict[str, Any]:
+    name = (plan_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing plan name")
+    path = _rounds_plan_path(name)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Rounds plan not found")
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load rounds plan: {e}")
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=500, detail="Rounds plan file is invalid")
+    return raw
 
 
 def _hash_embed(texts: List[str], dims: int = 384) -> List[List[float]]:
@@ -285,7 +338,7 @@ def _extract_beliefs(campfire_name: str, campfire_config: Optional[CampfireConfi
                 beliefs.append(f"User preference: {pref.group(0).strip()[:220]}")
             if "my name is" in text.lower():
                 beliefs.append(f"User identity: {text.strip()[:180]}")
-        if role in {"system", "assistant"}:
+        if role == "system":
             if "you are" in text.lower() or "rules" in text.lower():
                 beliefs.append(f"Instruction: {text.strip()[:220]}")
 
@@ -308,11 +361,28 @@ def _default_rag_documents(campfire_name: str, persona: Optional[str] = None) ->
     return [
         head
         + "\n\nUse this as your working context:\n"
+          "- In CampfireValley, a campfire is a software role/module or collaborative workspace, not a physical fire.\n"
+          "- Treat campers, auditors, torches, and rounds as software orchestration concepts unless the user explicitly says otherwise.\n"
           "- Ask 1-2 clarifying questions when requirements are ambiguous.\n"
           "- Prefer concrete, step-by-step answers.\n"
           "- When you make an assumption, state it plainly.\n"
           "- If the user asks for changes, propose the minimal safe change that satisfies the request.\n"
     ]
+
+
+def _software_campfire_system_prompt(name: str, persona: Optional[str] = None) -> str:
+    campfire_name = (name or "Campfire").strip() or "Campfire"
+    role = (persona or "").strip()
+    role_line = f"Primary role/persona: {role}.\n" if role else ""
+    return (
+        f"You are {campfire_name}, a software campfire inside the CampfireValley Python system.\n"
+        "In this context, a campfire is an AI role/module or collaborative workspace, not a literal outdoor fire.\n"
+        "Campers are specialized sub-roles, auditors coordinate work, torches carry requests and results, and rounds chain outputs across campfires.\n"
+        f"{role_line}"
+        "Help with software tasks, orchestration, analysis, planning, and implementation work in that context.\n"
+        "If a request is ambiguous, ask a brief clarifying question instead of inventing physical campfire details.\n"
+        "Respond concisely and use CampfireValley terminology correctly."
+    )
 
 
 def _is_auditor_target(target: Any) -> bool:
@@ -455,6 +525,46 @@ def _campers_for_parent(parent: str) -> List[str]:
             continue
         out.append(name)
     return sorted(out)
+
+
+def _top_level_campfires() -> List[str]:
+    if not current_valley:
+        return []
+    child_names = set(campfire_parent.keys())
+    out: List[str] = []
+    for name in sorted(current_valley.campfires.keys()):
+        if _is_auditor_target(name):
+            continue
+        if name in child_names:
+            continue
+        out.append(name)
+    return out
+
+
+def _parse_run_rounds_command(text: str) -> Optional[dict]:
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip().strip("`").strip()
+    low = t.lower()
+    preview = False
+    prefix = ""
+    for p, is_preview in (
+        ("preview rounds", True),
+        ("run rounds", False),
+        ("execute rounds", False),
+    ):
+        if low.startswith(p):
+            preview = is_preview
+            prefix = p
+            break
+    if not prefix:
+        return None
+    rest = t[len(prefix):].strip()
+    if ":" not in rest:
+        return {"preview": preview, "rounds": [], "task": ""}
+    chain_part, task = rest.split(":", 1)
+    rounds = [p.strip().strip("\"'").strip() for p in re.split(r"\s*->\s*", chain_part) if p and p.strip()]
+    return {"preview": preview, "rounds": rounds, "task": task.strip()}
 
 
 def _cleanup_campfire_artifacts(campfire_name: str) -> None:
@@ -676,6 +786,26 @@ def _extract_first_json_object(text: str) -> Optional[dict]:
         return None
 
 
+def _clear_beliefs_for_campfire(campfire_name: str) -> Dict[str, Any]:
+    name = (campfire_name or "").strip()
+    if not name:
+        return {"cleared": False, "reason": "missing_campfire"}
+    file_removed = False
+    try:
+        belief_path = _get_config_dir() / f"camper_{_slugify(name)}_beliefs.yaml"
+        if belief_path.exists():
+            belief_path.unlink()
+            file_removed = True
+    except Exception:
+        file_removed = False
+    try:
+        collection = _get_beliefs_collection()
+        collection.delete(where={"campfire": name})
+    except Exception:
+        pass
+    return {"cleared": True, "campfire": name, "belief_file_removed": file_removed}
+
+
 graph_node_context: Dict[str, Dict[str, Any]] = {"campfires": {}, "campers": {}}
 
 
@@ -816,6 +946,53 @@ def _parse_add_camper_command(text: str) -> Optional[str]:
         name = (m3.group(1) or "").strip().strip("\"'").strip()
         return name if name else None
     return ""
+
+
+def _looks_like_orchestration_action_request(text: str) -> bool:
+    if not text or not isinstance(text, str):
+        return False
+    low = text.strip().lower()
+    if not low:
+        return False
+    explicit_prefixes = (
+        "add camper",
+        "add a camper",
+        "create camper",
+        "create a camper",
+        "create a campfire",
+        "create campfire",
+        "make a campfire",
+        "build a campfire",
+        "set up a campfire",
+        "setup a campfire",
+        "camp plan",
+        "plan workflow",
+        "move ",
+        "reorder ",
+        "swap ",
+        "remove camper",
+        "delete campfire",
+        "remove campfire",
+        "delete team",
+        "remove team",
+        "rename camper",
+        "run rounds",
+        "execute rounds",
+        "preview rounds",
+        "set workflow",
+        "clear workflow",
+        "set schedule",
+        "clear schedule",
+    )
+    if any(low.startswith(prefix) for prefix in explicit_prefixes):
+        return True
+    natural_action_patterns = (
+        r"^(?:please\s+)?(?:add|added|adding|create|created|creating|make|made|making|build|built|building|set\s*up|setup|configure|configured|configuring)\b.*\b(?:camper|campfire|team)\b",
+        r"^(?:please\s+)?(?:plan|planned|planning|set|clear|update|updated|updating)\b.*\b(?:workflow|schedule)\b",
+        r"^(?:please\s+)?(?:run|running|execute|executing|preview|previewing)\b.*\brounds\b",
+        r"^(?:please\s+)?(?:remove|removed|removing|delete|deleted|deleting|rename|renamed|renaming|move|moved|moving|reorder|reordered|reordering|swap|swapped|swapping)\b.*\b(?:camper|campfire|team|workflow|schedule)\b",
+    )
+    return any(re.match(pattern, low) for pattern in natural_action_patterns)
 
 
 def _parse_create_campfire_request(text: str) -> Optional[dict]:
@@ -987,9 +1164,15 @@ def _parse_reorder_steps(text: str, campers: List[str]) -> List[tuple[str, int]]
 
 def set_valley(valley: Valley):
     """Set the valley instance for visualization"""
-    global current_valley, visualizer
+    global current_valley, visualizer, dock_enable_state
     current_valley = valley
     visualizer = ValleyVisualizer(valley)
+    dock_running = bool(getattr(valley, "dock", None) and getattr(valley.dock, "is_running", None) and valley.dock.is_running())
+    dock_enable_state = {
+        "status": "enabled" if dock_running else "idle",
+        "detail": None,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
     
 @app.get("/", response_class=HTMLResponse)
 async def get_main_page():
@@ -1155,10 +1338,13 @@ async def get_dock_valleys():
         md = getattr(membership, "metadata", None)
         valleys.append({
             "name": name,
+            "valley_id": (getattr(md, "get", None) and md.get("valley_id")) or (md.get("valley_id") if isinstance(md, dict) else "") or "",
+            "public_address": (getattr(md, "get", None) and md.get("public_address")) or (md.get("public_address") if isinstance(md, dict) else "") or "",
             "trust_level": getattr(membership, "trust_level", None).value if getattr(membership, "trust_level", None) else None,
             "last_seen": getattr(membership, "last_seen", None).isoformat() if getattr(membership, "last_seen", None) else None,
             "capabilities": getattr(membership, "capabilities", None) or [],
             "exposed_campfires": (getattr(md, "get", None) and md.get("exposed_campfires")) or (md.get("exposed_campfires") if isinstance(md, dict) else []) or [],
+            "exposed_services": (getattr(md, "get", None) and md.get("exposed_services")) or (md.get("exposed_services") if isinstance(md, dict) else []) or [],
         })
     valleys.sort(key=lambda v: v["name"])
     return {"status": "ok", "valleys": valleys}
@@ -1358,62 +1544,17 @@ async def list_services(include_auditors: bool = False):
                 pass
         except Exception:
             vid = current_valley.name
-    services = []
-    for campfire_name, cf in (current_valley.campfires or {}).items():
-        nm = str(campfire_name)
-        if not include_auditors and nm.endswith(" Auditor"):
-            continue
-        cfg = getattr(cf, "config", None)
-        conf: Dict[str, Any] = {}
-        if isinstance(cfg, CampfireConfig):
-            conf = cfg.config or {}
-        elif isinstance(cfg, dict):
-            conf = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
-        dock_cfg = conf.get("dock") if isinstance(conf.get("dock"), dict) else {}
-        identifier = (dock_cfg.get("identifier") or "").strip() if isinstance(dock_cfg, dict) else ""
-        llm = conf.get("llm") if isinstance(conf.get("llm"), dict) else {}
-        tools = (conf.get("tools") or {}).get("zeitgeist") if isinstance(conf.get("tools"), dict) else {}
-        kind = "camper" if (nm in campfire_parent or nm.lower().endswith(" camper")) else "campfire"
-        parent = campfire_parent.get(nm)
-        addr_key = identifier or nm
-        capabilities = []
-        if kind == "camper":
-            capabilities.append("camper")
-        else:
-            capabilities.append("campfire")
-        if nm.endswith(" Auditor"):
-            capabilities.append("auditor")
-        if isinstance(tools, dict) and tools:
-            capabilities.append("tools")
-        if isinstance(llm, dict) and llm.get("model"):
-            capabilities.append("llm")
-        if getattr(current_valley, "get_workflow", None) and kind == "campfire":
-            wf = current_valley.get_workflow(nm)
-            if wf:
-                capabilities.append("workflow")
-        if getattr(current_valley, "get_schedule", None) and kind == "campfire":
-            sched = current_valley.get_schedule(nm)
-            if sched and isinstance(sched, dict) and sched.get("enabled"):
-                capabilities.append("schedule")
-        services.append({
-            "name": nm,
-            "kind": kind,
-            "type": cf.__class__.__name__,
-            "running": bool(getattr(cf, "_running", False)),
-            "parent": parent,
-            "identifier": identifier,
-            "addresses": {
-                "valley_id": f"valley:{vid}/{addr_key}",
-                "valley_name": f"valley:{current_valley.name}/{addr_key}",
-            },
-            "llm": {
-                "provider": (llm.get("provider") or "").strip() if isinstance(llm, dict) else "",
-                "model": (llm.get("model") or "").strip() if isinstance(llm, dict) else "",
-            },
-            "capabilities": sorted(set([c for c in capabilities if c])),
-        })
-    services.sort(key=lambda s: (s.get("kind") or "", s.get("parent") or "", s.get("name") or ""))
-    return {"status": "ok", "valley": {"name": current_valley.name, "identifier": vid}, "services": services}
+    visible = []
+    try:
+        visible = list((current_valley.config.campfires or {}).get("visible") or [])
+    except Exception:
+        visible = []
+    return build_service_catalog(
+        current_valley,
+        include_auditors=include_auditors,
+        parent_lookup=campfire_parent,
+        visible_names=visible,
+    )
 
 
 @app.get("/api/campfire/tools")
@@ -2000,6 +2141,232 @@ async def set_campfire_identifier(payload: dict = Body(...)):
     }
 
 
+def _normalize_round_specs(rounds: List[Any]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, Any]] = []
+    if not current_valley:
+        return normalized
+
+    local_aliases = {str(current_valley.name)}
+    try:
+        env = current_valley.config.env or {}
+        local_id = (env.get("valley_id") or "").strip()
+        if local_id:
+            local_aliases.add(local_id)
+    except Exception:
+        pass
+
+    def _local_round_services() -> List[Dict[str, Any]]:
+        visible = []
+        try:
+            visible = list((current_valley.config.campfires or {}).get("visible") or [])
+        except Exception:
+            visible = []
+        catalog = build_service_catalog(
+            current_valley,
+            include_auditors=False,
+            parent_lookup=campfire_parent,
+            visible_names=visible,
+        )
+        return list(catalog.get("services") or [])
+
+    def _remote_round_services() -> List[Dict[str, Any]]:
+        dock = getattr(current_valley, "dock", None)
+        if not dock or not getattr(dock, "get_known_valleys", None):
+            return []
+        known = dock.get_known_valleys() or {}
+        services: List[Dict[str, Any]] = []
+        for valley_name, membership in known.items():
+            md = getattr(membership, "metadata", None)
+            data = md if isinstance(md, dict) else {}
+            for raw_service in data.get("exposed_services") or []:
+                if not isinstance(raw_service, dict):
+                    continue
+                service = dict(raw_service)
+                service["_remote"] = True
+                service["_valley_name"] = valley_name
+                services.append(service)
+        return services
+
+    def _matches_task(service: Dict[str, Any], task_type: str) -> bool:
+        wanted = (task_type or "").strip().lower()
+        if not wanted:
+            return True
+        values = []
+        values.extend(service.get("task_types") or [])
+        accepts = service.get("accepts") if isinstance(service.get("accepts"), dict) else {}
+        values.extend(accepts.get("task_types") or [])
+        for raw_value in values:
+            text = str(raw_value or "").strip().lower()
+            if not text:
+                continue
+            if text == wanted or wanted in text or text in wanted:
+                return True
+        return False
+
+    def _service_address(service: Dict[str, Any]) -> str:
+        addresses = service.get("addresses") if isinstance(service.get("addresses"), dict) else {}
+        return str(addresses.get("valley_id") or addresses.get("valley_name") or "").strip()
+
+    def _service_label(service: Dict[str, Any]) -> str:
+        name = str(service.get("name") or service.get("service_id") or "service").strip()
+        task_bits = [str(v).strip() for v in (service.get("task_types") or []) if str(v).strip()]
+        if task_bits:
+            return f"{name} [{', '.join(task_bits[:2])}]"
+        return name
+
+    def _resolve_explicit_target(target: str, mode: str, instruction: str, idx: int) -> Optional[Dict[str, Any]]:
+        raw_target = str(target or "").strip()
+        if not raw_target:
+            return None
+        if raw_target.lower().startswith("valley:"):
+            parts = [p.strip() for p in raw_target.split(":", 1)[1].split("/") if p.strip()]
+            target_valley = parts[0] if parts else ""
+            target_name = parts[1] if len(parts) >= 2 else (parts[0] if parts else raw_target)
+            return {
+                "campfire": target_name,
+                "label": target_name,
+                "mode": mode,
+                "instruction": instruction,
+                "target_address": raw_target,
+                "target_valley": target_valley,
+                "source": "remote" if target_valley and target_valley not in local_aliases else "local",
+            }
+        resolved = current_valley._resolve_campfire_by_identifier(raw_target) if getattr(current_valley, "_resolve_campfire_by_identifier", None) else None
+        target_name = resolved or raw_target
+        if target_name not in current_valley.campfires or _is_auditor_target(target_name):
+            return None
+        return {
+            "campfire": target_name,
+            "label": target_name,
+            "mode": mode,
+            "instruction": instruction,
+            "target_address": f"valley:{current_valley.name}/{target_name}",
+            "target_valley": current_valley.name,
+            "source": "local",
+        }
+
+    def _resolve_service_match(service_id: str, task_type: str, mode: str, instruction: str) -> Optional[Dict[str, Any]]:
+        sid = str(service_id or "").strip().lower()
+        task = str(task_type or "").strip()
+        local_services = [s for s in _local_round_services() if bool(s.get("supports_rounds"))]
+        remote_services = [s for s in _remote_round_services() if bool(s.get("supports_rounds"))]
+
+        def _matches_service_id(service: Dict[str, Any]) -> bool:
+            if not sid:
+                return True
+            identifiers = [
+                service.get("service_id"),
+                service.get("identifier"),
+                service.get("name"),
+            ]
+            identifiers.append(_service_address(service))
+            for value in identifiers:
+                text = str(value or "").strip().lower()
+                if text and text == sid:
+                    return True
+            return False
+
+        candidates: List[Dict[str, Any]] = []
+        for service in local_services + remote_services:
+            if not _matches_service_id(service):
+                continue
+            if not _matches_task(service, task):
+                continue
+            candidates.append(service)
+        if not candidates:
+            return None
+        chosen = candidates[0]
+        address = _service_address(chosen)
+        if not address:
+            return None
+        label = _service_label(chosen)
+        target_name = str(chosen.get("name") or chosen.get("service_id") or address).strip()
+        target_valley = ""
+        if address.lower().startswith("valley:"):
+            parts = [p.strip() for p in address.split(":", 1)[1].split("/") if p.strip()]
+            target_valley = parts[0] if parts else ""
+        return {
+            "campfire": target_name,
+            "label": label,
+            "mode": mode,
+            "instruction": instruction,
+            "target_address": address,
+            "target_valley": target_valley,
+            "source": "remote" if chosen.get("_remote") and target_valley not in local_aliases else "local",
+            "service_id": chosen.get("service_id") or "",
+            "task_type": task,
+            "service_kind": chosen.get("service_kind") or chosen.get("kind") or "",
+            "role_tags": chosen.get("role_tags") or [],
+        }
+
+    total = len(rounds or [])
+    for idx, raw in enumerate(rounds or []):
+        if isinstance(raw, str):
+            mode = "final" if idx == total - 1 else "replace"
+            instruction = ""
+            resolved_spec = _resolve_explicit_target(raw, mode, instruction, idx)
+        elif isinstance(raw, dict):
+            mode = str(raw.get("mode") or "").strip().lower() or ("final" if idx == total - 1 else "replace")
+            instruction = str(raw.get("instruction") or raw.get("task") or raw.get("prompt") or "").strip()
+            explicit_target = str(
+                raw.get("target_address")
+                or raw.get("address")
+                or raw.get("target")
+                or raw.get("campfire")
+                or raw.get("name")
+                or ""
+            ).strip()
+            service_id = str(raw.get("service_id") or "").strip()
+            task_type = str(raw.get("task_type") or "").strip()
+            resolved_spec = None
+            if explicit_target:
+                resolved_spec = _resolve_explicit_target(explicit_target, mode, instruction, idx)
+            if resolved_spec is None and (service_id or task_type):
+                resolved_spec = _resolve_service_match(service_id, task_type, mode, instruction)
+            if resolved_spec and service_id and not resolved_spec.get("service_id"):
+                resolved_spec["service_id"] = service_id
+            if resolved_spec and task_type and not resolved_spec.get("task_type"):
+                resolved_spec["task_type"] = task_type
+        else:
+            continue
+        if not resolved_spec:
+            continue
+        if mode not in {"replace", "augment", "merge", "final"}:
+            mode = "replace"
+        resolved_spec["mode"] = mode
+        resolved_spec["instruction"] = instruction
+        normalized.append(resolved_spec)
+    if normalized:
+        normalized[-1]["mode"] = "final"
+    return normalized[:12]
+
+
+async def _run_round_chain_request(rounds: List[Any], text: str, sender: str = "service", correlation_id: Optional[str] = None):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    goal = (text or "").strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="Missing text")
+    normalized = _normalize_round_specs(rounds)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="No valid round services supplied")
+    first_target = normalized[0].get("target_address") or normalized[0].get("campfire")
+    corr = (correlation_id or "").strip() or f"rounds_{uuid.uuid4().hex}"
+    torch = Torch(
+        claim="round_chain",
+        source_campfire="service",
+        channel="service",
+        torch_id=f"service_{uuid.uuid4().hex}",
+        sender_valley=sender,
+        target_address=first_target if str(first_target).lower().startswith("valley:") else f"valley:{current_valley.name}/{first_target}",
+        data={"text": goal, "original_text": goal},
+        signature="service_placeholder",
+        metadata={"correlation_id": corr, "rounds": normalized, "round_index": 0},
+    )
+    resp = await current_valley.process_torch(torch)
+    return getattr(resp, "data", None) if resp is not None else None
+
+
 @app.post("/api/voice/ingest")
 async def voice_ingest(payload: dict = Body(...)):
     if not current_valley:
@@ -2079,34 +2446,10 @@ async def voice_ingest(payload: dict = Body(...)):
         low = cmd.lower()
         create_campfire_request = _parse_create_campfire_request(cmd)
         delete_campfire_request = _parse_delete_campfire_command(cmd)
-        allow_actions = any(
-            low.startswith(p)
-            for p in (
-                "add camper",
-                "create a campfire",
-                "create campfire",
-                "create camper",
-                "make a campfire",
-                "build a campfire",
-                "set up a campfire",
-                "setup a campfire",
-                "camp plan",
-                "plan workflow",
-                "move ",
-                "reorder ",
-                "swap ",
-                "remove camper",
-                "delete campfire",
-                "remove campfire",
-                "delete team",
-                "remove team",
-                "rename camper",
-                "set workflow",
-                "clear workflow",
-                "set schedule",
-                "clear schedule",
-            )
-        ) or (create_campfire_request is not None) or (delete_campfire_request is not None)
+        run_rounds_request = _parse_run_rounds_command(cmd)
+        allow_actions = _looks_like_orchestration_action_request(cmd) or (
+            create_campfire_request is not None
+        ) or (delete_campfire_request is not None) or (run_rounds_request is not None)
         if delete_campfire_request is not None:
             target_campfire = str(delete_campfire_request.get("name") or "").strip()
             if not target_campfire:
@@ -2152,6 +2495,53 @@ async def voice_ingest(payload: dict = Body(...)):
             }
             _append_log(target, "assistant", msg)
             return {"status": "ok", "campfire": target, "response": final_payload}
+        if run_rounds_request is not None:
+            requested_rounds = run_rounds_request.get("rounds") or []
+            round_task = str(run_rounds_request.get("task") or "").strip()
+            preview_only = bool(run_rounds_request.get("preview"))
+            if not requested_rounds or not round_task:
+                available = [str(s.get("name") or s.get("service_id") or "") for s in (build_service_catalog(current_valley, include_auditors=False, parent_lookup=campfire_parent, visible_names=list((current_valley.config.campfires or {}).get("visible") or [])).get("services") or [])]
+                msg = (
+                    "Use `run rounds Campfire A -> Campfire B -> Campfire C: your task`.\n"
+                    "Or call the API with `service_id` and `task_type` fields in each round.\n"
+                    "Use `preview rounds ...` to inspect the chain without running it.\n"
+                    "Available local services: "
+                    + (", ".join(available) if available else "(none)")
+                )
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": False, "available": available}}
+            normalized_rounds = _normalize_round_specs(requested_rounds)
+            if not normalized_rounds:
+                available = [str(s.get("name") or s.get("service_id") or "") for s in (build_service_catalog(current_valley, include_auditors=False, parent_lookup=campfire_parent, visible_names=list((current_valley.config.campfires or {}).get("visible") or [])).get("services") or [])]
+                msg = (
+                    "No valid round services were found in that rounds chain.\n"
+                    "Available local services: "
+                    + (", ".join(available) if available else "(none)")
+                )
+                _append_log(target, "assistant", msg)
+                return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": False, "available": available}}
+            round_lines = [f"{i+1}. {r.get('label') or r.get('campfire') or r.get('service_id') or r.get('target_address')} ({r.get('mode')})" for i, r in enumerate(normalized_rounds)]
+            plan_text = "Rounds chain:\n" + "\n".join(round_lines) + f"\n\nTask:\n{round_task}"
+            corr = f"rounds_{uuid.uuid4().hex}"
+            if preview_only:
+                msg = plan_text + f"\n\nCorrelation: {corr}"
+                _append_log(target, "assistant", msg)
+                return {
+                    "status": "ok",
+                    "campfire": target,
+                    "response": {"text": msg, "ok": True, "correlation_id": corr, "rounds": normalized_rounds},
+                }
+            final_data = await _run_round_chain_request(normalized_rounds, round_task, sender=current_valley.name, correlation_id=corr)
+            final_text = ""
+            if isinstance(final_data, dict):
+                final_text = (final_data.get("text") or final_data.get("llm_response") or "").strip()
+            msg = plan_text + f"\n\nCorrelation: {corr}\n\n---\n\nFinal response:\n" + (final_text or "(no response)")
+            _append_log(target, "assistant", msg)
+            return {
+                "status": "ok",
+                "campfire": target,
+                "response": {"text": msg, "ok": bool(final_text), "correlation_id": corr, "rounds": normalized_rounds, "final": final_data},
+            }
         if parent and (low.startswith("camp plan") or low.startswith("plan workflow")):
             plan_only = low.startswith("camp plan only") or low.startswith("plan workflow only")
             goal = cmd
@@ -2741,7 +3131,7 @@ async def voice_ingest(payload: dict = Body(...)):
                     type="LLMCampfire",
                     config={
                         "llm": {"provider": "ollama", "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"), "model": "gemma3:4b"},
-                        "prompts": {"system": f"You are {new_name}. Respond concisely and helpfully."},
+                        "prompts": {"system": _software_campfire_system_prompt(new_name, "generic")},
                         "persona": {"name": new_name, "persona": "generic", "model": "gemma3:4b"},
                         "rag": {"documents": _default_rag_documents(new_name, "generic")},
                     },
@@ -2829,7 +3219,7 @@ async def voice_ingest(payload: dict = Body(...)):
                 type="LLMCampfire",
                 config={
                     "llm": {"provider": provider, "base_url": base_url, "model": model},
-                    "prompts": {"system": f"You are {name}. Respond concisely and helpfully."},
+                    "prompts": {"system": _software_campfire_system_prompt(name, "generic")},
                     "persona": {"name": name, "persona": "generic", "model": model},
                     "rag": {"documents": _default_rag_documents(name, "generic")},
                 },
@@ -2957,7 +3347,7 @@ async def voice_ingest(payload: dict = Body(...)):
                 camper_name_map[original_name] = name
                 persona = raw.get("persona")
                 provider, model = _pick_provider_and_model(raw.get("model"))
-                sys_prompt = (raw.get("system_prompt") or f"You are {name}.").strip()
+                sys_prompt = (raw.get("system_prompt") or _software_campfire_system_prompt(name, str(persona) if persona else None)).strip()
                 rag_template = raw.get("rag_template")
                 rag_docs = [str(rag_template).strip()] if isinstance(rag_template, str) and rag_template.strip() else _default_rag_documents(name, str(persona) if persona else None)
                 cfg = CampfireConfig(
@@ -3071,7 +3461,7 @@ async def voice_ingest(payload: dict = Body(...)):
                     "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
                     "model": "gemma3:4b",
                 },
-                "prompts": {"system": f"You are {target}. Respond concisely and helpfully."},
+                "prompts": {"system": _software_campfire_system_prompt(str(target), "concise, helpful")},
                 "persona": {"name": target, "provider": "ollama", "model": "gemma3:4b"},
                 "rag": {"documents": _default_rag_documents(str(target), "concise, helpful")},
             }
@@ -3091,6 +3481,156 @@ async def voice_ingest(payload: dict = Body(...)):
     if response_text:
         _append_log(target or "Unknown", "assistant", str(response_text))
     return result
+
+
+@app.get("/api/rounds/plans")
+async def list_rounds_plans():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    return {"status": "ok", "plans": _list_rounds_plans()}
+
+
+@app.get("/api/rounds/plans/{plan_name}")
+async def get_rounds_plan(plan_name: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    plan = _load_rounds_plan(plan_name)
+    return {"status": "ok", "plan": plan}
+
+
+@app.post("/api/rounds/plans")
+async def save_rounds_plan(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing plan name")
+    rounds = payload.get("rounds") or []
+    if not isinstance(rounds, list) or not rounds:
+        raise HTTPException(status_code=400, detail="Missing rounds")
+    normalized_rounds = _normalize_round_specs(rounds)
+    if not normalized_rounds:
+        raise HTTPException(status_code=400, detail="No valid round services supplied")
+    existing = None
+    path = _rounds_plan_path(name)
+    if path.exists():
+        try:
+            existing = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            existing = None
+    now = datetime.utcnow().isoformat()
+    plan = {
+        "name": name,
+        "description": str(payload.get("description") or "").strip(),
+        "campfire": str(payload.get("campfire") or "").strip(),
+        "task": str(payload.get("task") or "").strip(),
+        "rounds": normalized_rounds,
+        "updated_at": now,
+        "created_at": str((existing or {}).get("created_at") or now),
+    }
+    try:
+        path.write_text(yaml.safe_dump(plan, sort_keys=False), encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save rounds plan: {e}")
+    return {"status": "ok", "plan": plan}
+
+
+@app.delete("/api/rounds/plans/{plan_name}")
+async def delete_rounds_plan(plan_name: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    path = _rounds_plan_path(plan_name)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Rounds plan not found")
+    try:
+        path.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete rounds plan: {e}")
+    return {"status": "ok", "deleted": plan_name}
+
+
+@app.post("/api/rounds/plans/run")
+async def run_saved_rounds_plan(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    plan_name = str(payload.get("name") or "").strip()
+    if not plan_name:
+        raise HTTPException(status_code=400, detail="Missing plan name")
+    plan = _load_rounds_plan(plan_name)
+    text = str(payload.get("text") or plan.get("task") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Missing text")
+    preview = bool(payload.get("preview"))
+    sender = (payload.get("sender_valley") or current_valley.name or "service").strip()
+    corr = (payload.get("correlation_id") or "").strip() or f"rounds_{uuid.uuid4().hex}"
+    rounds = _normalize_round_specs(plan.get("rounds") or [])
+    if not rounds:
+        raise HTTPException(status_code=400, detail="Saved rounds plan has no valid services")
+    if preview:
+        return {"status": "ok", "correlation_id": corr, "plan": plan, "rounds": rounds}
+    data = await _run_round_chain_request(rounds, text, sender=sender, correlation_id=corr)
+    return {"status": "ok", "correlation_id": corr, "plan": plan, "rounds": rounds, "response": data}
+
+
+@app.get("/api/rounds/catalog")
+async def get_rounds_catalog():
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    visible = []
+    try:
+        visible = list((current_valley.config.campfires or {}).get("visible") or [])
+    except Exception:
+        visible = []
+    local_catalog = build_service_catalog(
+        current_valley,
+        include_auditors=False,
+        parent_lookup=campfire_parent,
+        visible_names=visible,
+    )
+    local_services = [s for s in (local_catalog.get("services") or []) if bool(s.get("supports_rounds"))]
+    remote_services: List[Dict[str, Any]] = []
+    dock = getattr(current_valley, "dock", None)
+    if dock and getattr(dock, "get_known_valleys", None):
+        known = dock.get_known_valleys() or {}
+        for valley_name, membership in known.items():
+            md = getattr(membership, "metadata", None)
+            data = md if isinstance(md, dict) else {}
+            for raw_service in data.get("exposed_services") or []:
+                if not isinstance(raw_service, dict):
+                    continue
+                svc = dict(raw_service)
+                svc["_remote"] = True
+                svc["_valley_name"] = valley_name
+                remote_services.append(svc)
+    return {
+        "status": "ok",
+        "local": local_services,
+        "remote": remote_services,
+        "dock": {
+            "running": bool(dock and getattr(dock, "is_running", None) and dock.is_running()),
+            "known_valleys": len((dock.get_known_valleys() or {}) if dock and getattr(dock, "get_known_valleys", None) else {}),
+        },
+    }
+
+
+@app.post("/api/rounds/run")
+async def run_rounds(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    rounds = payload.get("rounds") or []
+    text = (payload.get("text") or "").strip()
+    preview = bool(payload.get("preview"))
+    sender = (payload.get("sender_valley") or "service").strip() or "service"
+    corr = (payload.get("correlation_id") or "").strip() or f"rounds_{uuid.uuid4().hex}"
+    normalized_rounds = _normalize_round_specs(rounds)
+    if not normalized_rounds:
+        raise HTTPException(status_code=400, detail="No valid round services supplied")
+    if not text:
+        raise HTTPException(status_code=400, detail="Missing text")
+    if preview:
+        return {"status": "ok", "correlation_id": corr, "rounds": normalized_rounds}
+    data = await _run_round_chain_request(normalized_rounds, text, sender=sender, correlation_id=corr)
+    return {"status": "ok", "correlation_id": corr, "rounds": normalized_rounds, "response": data}
 
 
 @app.post("/api/service/call")
@@ -3433,6 +3973,17 @@ async def freeze_beliefs(payload: dict = Body(...)):
     return {"status": "ok", "campfire": campfire_name, "count": len(beliefs), "filename": out_name, "beliefs": beliefs[:10]}
 
 
+@app.post("/api/beliefs/clear")
+async def clear_beliefs(payload: dict = Body(...)):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    campfire_name = (payload.get("campfire") or "").strip()
+    if not campfire_name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    result = _clear_beliefs_for_campfire(campfire_name)
+    return {"status": "ok", **result}
+
+
 @app.post("/api/beliefs/query")
 async def query_beliefs(payload: dict = Body(...)):
     campfire_name = (payload.get("campfire") or "").strip()
@@ -3478,7 +4029,7 @@ async def _handle_auditor_conversation(text: str) -> str:
         from ..models import CampfireConfig
         cfg = {
             "llm": {"model": f.get("model", "gemma3:4b")},
-            "prompts": {"system": f.get("system_prompt") or f"You are {f.get('name')}. Persona: {f.get('persona')}."},
+            "prompts": {"system": f.get("system_prompt") or _software_campfire_system_prompt(str(f.get("name") or "Camper"), str(f.get("persona") or ""))},
             "persona": {"name": f.get("name"), "persona": f.get("persona"), "model": f.get("model")},
             "rag": {"documents": _default_rag_documents(f.get("name") or "Camper", f.get("persona"))},
         }
@@ -3504,7 +4055,7 @@ async def team_organize(request: dict = Body(...)):
                 "model": p.get("model") or "gemma3:4b"
             },
             "prompts": {
-                "system": p.get("system_prompt") or f"You are {name}. Persona: {p.get('persona','generic')}."
+                "system": p.get("system_prompt") or _software_campfire_system_prompt(name, str(p.get("persona", "generic")))
             },
             "persona": p,
             "rag": {"documents": _default_rag_documents(name, p.get("persona"))},
@@ -3537,7 +4088,7 @@ async def team_add(request: dict = Body(...)):
             "model": p.get("model") or "gemma3:4b"
         },
         "prompts": {
-            "system": p.get("system_prompt") or f"You are {name}. Persona: {p.get('persona','generic')}."
+            "system": p.get("system_prompt") or _software_campfire_system_prompt(name, str(p.get("persona", "generic")))
         },
         "persona": p,
         "rag": {"documents": rag_docs or _default_rag_documents(name, p.get("persona"))},

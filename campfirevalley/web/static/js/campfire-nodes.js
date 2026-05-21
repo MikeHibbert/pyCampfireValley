@@ -2889,29 +2889,55 @@ HexagonalValleyNode.prototype.onDrawForeground = function(ctx) {
     const centerX = this.size[0] / 2;
     const centerY = this.size[1] / 2;
     const radius = Math.min(this.size[0], this.size[1]) * 0.4; // Adjusted for larger size
+    const props = this.properties || {};
+    const isRemote = !!props.remote;
+    const originLabel = String(props.origin_label || (isRemote ? "REMOTE" : "LOCAL"));
+    const displayName = String(props.display_name || props.name || props.valley_name || (isRemote ? "Remote Valley" : "Local Valley"));
+    const routeName = String(props.route_name || (props.identifier ? ("valley:" + props.identifier) : ""));
+    const shortRoute = routeName.length > 34 ? `${routeName.slice(0, 16)}...${routeName.slice(-14)}` : routeName;
+    const identityText = String(props.identifier || props.route_key || "");
     
     // Draw valley type icon (much larger)
-    this.drawValleyIcon(ctx, centerX, centerY - 40, radius * 0.5);
-    
-    // Draw valley name (much larger font)
+    this.drawValleyIcon(ctx, centerX, centerY - 24, radius * 0.42);
+
+    // Draw origin badge
+    const badgeWidth = 114;
+    const badgeHeight = 30;
+    const badgeX = centerX - badgeWidth / 2;
+    const badgeY = centerY - radius + 26;
+    ctx.save();
+    ctx.fillStyle = isRemote ? "rgba(37, 99, 235, 0.9)" : "rgba(34, 197, 94, 0.92)";
+    ctx.beginPath();
+    ctx.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, 14);
+    ctx.fill();
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 32px Arial";
+    ctx.font = "bold 16px Arial";
     ctx.textAlign = "center";
-    ctx.fillText(this.properties.valley_name, centerX, centerY + 20);
+    ctx.fillText(originLabel, centerX, badgeY + 20);
+    ctx.restore();
     
-    // Draw valley type
-    ctx.font = "24px Arial";
-    ctx.fillText(this.properties.valley_type.charAt(0).toUpperCase() + this.properties.valley_type.slice(1), centerX, centerY + 50);
-    
-    // Draw prosperity and status info
-    ctx.font = "20px Arial";
-    ctx.fillText(`Prosperity: ${this.properties.prosperity}%`, centerX, centerY + 80);
-    ctx.fillText(`Status: ${this.properties.status}`, centerX, centerY + 104);
+    // Draw valley display name
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 24px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(displayName, centerX, centerY + 26);
+
+    // Draw route identity
+    ctx.fillStyle = "#d7e9ff";
+    ctx.font = "15px Arial";
+    ctx.fillText(shortRoute || "No route address", centerX, centerY + 52);
+
+    // Draw stable identifier hint
+    ctx.fillStyle = "#cbd5e1";
+    ctx.font = "13px Arial";
+    ctx.fillText(identityText ? `ID ${identityText}` : "No stable ID advertised", centerX, centerY + 74);
     
     // Draw campfire and camper counts if available
     if (this.properties.total_campfires > 0 || this.properties.total_campers > 0) {
-        ctx.font = "18px Arial";
-        ctx.fillText(`🔥 ${this.properties.total_campfires} | 👥 ${this.properties.total_campers}`, centerX, centerY + 128);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "16px Arial";
+        const camperTotal = Number(this.properties.total_campers || 0);
+        ctx.fillText(`Campfires ${this.properties.total_campfires} | Campers ${camperTotal}`, centerX, centerY + 100);
     }
     
     // Draw status indicators around the hexagon
@@ -3131,11 +3157,13 @@ HexagonalValleyNode.prototype.drawConnectionPoints = function(ctx, centerX, cent
 };
 
 HexagonalValleyNode.prototype.getValleyColor = function() {
-    // Uniform color by node type: valley = green
-    return "#2ECC71";
+    return this.properties && this.properties.remote ? "#2563EB" : "#2ECC71";
 };
 
 HexagonalValleyNode.prototype.getValleyBorderColor = function() {
+    if (this.properties && this.properties.remote) {
+        return "#93C5FD";
+    }
     return this.properties.status === "active" ? "#FFD700" : 
            this.properties.status === "inactive" ? "#808080" : "#FF4444";
 };
@@ -3671,7 +3699,25 @@ const HexNodeBaseMixin = {
         const isCampfireOrCamper = (t === "campfire/campfire" || t === "campfire/camper" || /_campfire$/.test(t) || /_camper$/.test(t));
         let angle = 0;
         if (isCampfireOrCamper) {
-            const angles = [-Math.PI / 2, -Math.PI / 6, Math.PI / 6, Math.PI / 2, (5 * Math.PI) / 6, (-5 * Math.PI) / 6];
+            // Keep inputs on the left hemisphere and outputs on the right hemisphere
+            // so rerouted links remain visually distinct as campers are added.
+            const inputAngles = [
+                Math.PI,
+                (5 * Math.PI) / 6,
+                (-5 * Math.PI) / 6,
+                (2 * Math.PI) / 3,
+                (-2 * Math.PI) / 3,
+                Math.PI
+            ];
+            const outputAngles = [
+                0,
+                -Math.PI / 6,
+                Math.PI / 6,
+                -Math.PI / 3,
+                Math.PI / 3,
+                0
+            ];
+            const angles = is_input ? inputAngles : outputAngles;
             angle = angles[slot_number % angles.length];
         } else {
             const anglesInput = [Math.PI, (2 * Math.PI) / 3, (4 * Math.PI) / 3];

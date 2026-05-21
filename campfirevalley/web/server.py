@@ -28,7 +28,7 @@ async def create_demo_valley():
     """Create a demo valley for testing the web interface"""
     
     valley_name = os.environ.get("VALLEY_NAME", "Demo Valley")
-    enable_dock = os.environ.get("ENABLE_DOCK_ON_START", "false").strip().lower() in {"1", "true", "yes"}
+    enable_dock = os.environ.get("ENABLE_DOCK_ON_START", "true").strip().lower() in {"1", "true", "yes"}
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
     broker = redis_url if enable_dock else None
     valley = Valley(name=valley_name, mcp_broker=broker)
@@ -96,14 +96,34 @@ async def create_demo_valley():
         pass
     
     ollama_base = os.environ.get("OLLAMA_HOST", "http://host.docker.internal:11434")
+    main_system_prompt = (
+        "You are Main Campfire, a software campfire inside the CampfireValley Python system. "
+        "In this context, campfires are AI roles/modules and collaborative workspaces, not literal outdoor fires. "
+        "Campers are specialized sub-roles, auditors coordinate work, torches carry requests and results, and rounds chain outputs across campfires. "
+        "Help the user with software-oriented CampfireValley tasks, design, orchestration, debugging, and implementation. "
+        "If a request is ambiguous, ask a brief clarifying question instead of inventing physical campfire details."
+    )
     main_cfg = CampfireConfig(
         name="Main Campfire",
         type="LLMCampfire",
         config={
             "llm": {"provider": "ollama", "base_url": ollama_base, "model": "gemma3:4b"},
-            "prompts": {"system": "You are the main Campfire. Help the user build and refine their campfire setup."},
+            "prompts": {"system": main_system_prompt},
         },
     )
+    try:
+        existing_main = valley.campfires.get("Main Campfire")
+        existing_cfg = getattr(existing_main, "config", None) if existing_main else None
+        if isinstance(existing_cfg, CampfireConfig):
+            conf = existing_cfg.config if isinstance(existing_cfg.config, dict) else {}
+            prompts = conf.get("prompts") if isinstance(conf.get("prompts"), dict) else {}
+            prompts["system"] = main_system_prompt
+            conf["prompts"] = prompts
+            existing_cfg.config = conf
+            if isinstance(existing_cfg.prompts, dict):
+                existing_cfg.prompts["system"] = main_system_prompt
+    except Exception:
+        pass
     persisted_ident = ""
     try:
         cfg_dir = Path(os.environ.get("CONFIG_DIR", "/app/data/configs"))

@@ -1,112 +1,161 @@
-# Web UI Guide (LiteGraph)
+# Web UI Guide
 
-CampfireValley includes a LiteGraph-based web UI at `http://localhost:8000` for visually managing a valley and chatting with campfires/campers.
+CampfireValley includes a LiteGraph-based web UI at `http://localhost:8000` for managing a local valley and inspecting remote valleys discovered through Dock.
 
-## Snapshots
+## Main Areas Of The UI
 
-### Load Valley
+### Left Sidebar
 
-- Click **Load Valley**
-- Pick a snapshot from the searchable list
-  - Click to select
-  - Double-click to load
-  - Type in the filter box to narrow long filenames
-  - Use ↑/↓ to move selection, Enter to load, Esc to cancel
-- Optional: delete old snapshots from the same dialog
+The sidebar shows:
 
-Notes:
-- Snapshot load restores backend campfires from the snapshot and reloads the saved graph.
-- Workflow/schedule are persisted separately from snapshots. If you load a snapshot and the workflow doesn’t match what you expect, use the Auditor chat commands `show workflow`, `set workflow ...`, `clear workflow`, `show schedule`, `set schedule ...`, `clear schedule`.
+- the local valley summary card
+- the local valley stable ID
+- dock status and current mode
+- the number of known valleys
+- discovered remote valleys with route address, stable ID, visible campfire count, and visible service count
 
-## Layout
+### Graph Canvas
 
-### Reset Layout
+The graph shows:
 
-**Reset Layout** performs a radial auto-arrange:
-- Valley node stays central
-- Campfires place on hex-terminal anchors around the valley
-- Campers place around their campfire using hex-terminal anchors
+- the local valley
+- local campfires
+- an Auditor node for each local campfire
+- camper nodes attached to that campfire
+- remote valley nodes and remote campfire nodes when discovered
 
-Connections are re-routed so campfire ↔ camper links attach to the nearest connector terminals.
+Structural links are rebuilt from backend state so the valley, campfire, auditor, and camper connections stay in sync after refreshes and camper creation.
 
-## Chat (Markdown)
+## Local Campfires
 
-Chat messages render markdown:
-- headings, lists, blockquotes
-- inline code and fenced code blocks
+### Auditor Role
+
+The Auditor is the orchestration node for a local campfire.
+
+You can use it to:
+
+- ask for workflow and execution order
+- inspect settings, tools, and model state
+- create campers
+- update workflow order with natural language
+- run `self audit`
+
+### Creating A Camper
+
+1. Select the Auditor for a local campfire
+2. Use the message box at the bottom of the UI
+3. Send a request like:
+
+```text
+Create a new camper called summary-bot for this campfire.
+```
+
+The graph should refresh and show the new camper connected to the parent campfire.
+
+### Legacy Auditor Cleanup
+
+If older builds created standalone backend auditor campfires, use:
+
+- `Valley Details -> Cleanup Legacy Auditors`
+
+## Remote Valleys And Remote Campfires
+
+Remote nodes are read-only from the local valley's point of view.
+
+### Remote Valley Details
+
+Selecting a remote valley shows:
+
+- remote route address
+- remote stable ID
+- visible campfires
+- visible services
+- discovery metadata from Dock
+
+### Remote Campfire Details
+
+Selecting a remote campfire shows a remote-safe details panel with:
+
+- route
+- remote valley name and stable ID
+- service ID
+- kind and exposure
+- supported task types and capabilities
+- visible campfires in the remote valley
+- visible services in the remote valley
+- visible remote campers when they are advertised
+
+### Remote Campfire Actions
+
+The remote campfire panel includes these actions:
+
+- `Message This Campfire`
+- `Use In Rounds`
+- `Open Remote Valley`
+- `Show Visible Services`
+
+Remote admin actions are intentionally disabled.
+
+## Rounds Builder
+
+The `Rounds` panel can be used to build ordered service chains.
+
+You can:
+
+- load the service catalog
+- add local services
+- add remote services that are advertised through Dock discovery
+- save a rounds plan
+- preview it
+- run it
+
+## Snapshots And Transfer
+
+### Save And Load Valley
+
+- `Save Valley` stores a graph snapshot and backend configuration state
+- `Load Valley` opens a searchable snapshot picker
+- snapshots can be selected with mouse or keyboard
+- old snapshots can be deleted from the picker
+
+### Export And Import Campfires
+
+- export a campfire's config, beliefs, and logs
+- import a previously exported campfire into the running valley
+
+## Chat, Logs, Voice, And Tools
+
+### Chat Rendering
+
+Chat responses render markdown, including:
+
+- headings
+- lists
+- inline code
+- fenced code blocks
 - links
 
-This is intended for readable workflow/config output and tool responses.
+### Logs
 
-## Chat (TTS)
+Use `Logs` to view the selected campfire or camper log stream.
 
-- Use **⏹️ Stop Audio** to stop any in-progress text-to-speech playback immediately.
+### Voice
 
-## Auditor Behavior
+The UI uses `POST /api/voice/ingest` for text and voice-style interactions.
 
-Auditors are campers with a special role (they are not backend campfires).
+### Tools And Model Selection
 
-### Read-only questions (no mutations)
+The tools panel allows per-node tool toggles and model selection when supported by that node.
 
-These queries respond deterministically and do not create/rename campers or change workflow/schedule:
-- “What’s the execution order?”
-- “What’s the workflow?”
-- “What are the settings / environment / config?”
-- “What model/tools are enabled?”
+## Useful API Endpoints
 
-If there is no valid stored workflow for the linked campers, the UI reports **Execution order (visual)** derived from the current graph layout.
-
-### Reordering steps
-
-You can reorder workflow steps using natural language:
-
-- `move Intake Camper to the first step and then editor/reporter camper 2nd`
-- `move Risk Assessor Camper to 1st`
-
-This persists a workflow for the parent campfire, and subsequent “what’s the workflow?” queries will return **Execution order (workflow)**.
-
-### CAMP planning mode
-
-Use this to have the Auditor query each camper for proposed steps, compile a plan, then execute the plan immediately (without changing the persisted workflow):
-
-- `camp plan <your goal>`
-
-To generate a plan without executing:
-
-- `camp plan only <your goal>`
-
-### Auditing execution
-
-Use `self audit` to confirm that each camper actually ran (and in the correct order) for the last 30 minutes. To inspect a specific run, use:
-
-- `self audit cid:<correlation_id>`
-
-### Final report synthesis (Role Contributions)
-
-The final step in the workflow is treated as the final report author. The orchestrator automatically requires the final report to include a `Role Contributions` section with step-numbered quotes from the upstream campers. This makes it easy to verify that the final report is a synthesis of multiple perspectives, not a single generic response.
-
-## Service Discovery
-
-You can list the services (campfires/campers) addressable inside a valley.
-
-### REST
-
+- `GET /api/campfires`
 - `GET /api/services`
-
-This returns a list of services including:
-- `identifier` (dock identifier, if configured)
-- `addresses.valley_id` and `addresses.valley_name`
-
-### Torch (Dock)
-
-External callers can query a valley via Dock by sending a torch to:
-
-- `valley:<VALLEY_IDENTIFIER>/services`
-
-with claim `valley_discovery` (or `service_discovery`) and a `reply_channel` in torch metadata. The reply payload includes the same `services` list and addresses.
-
-## Legacy Cleanup
-
-If older builds provisioned `* Auditor` as separate backend campfires, you can remove them via:
-
-- **Valley Details → Cleanup Legacy Auditors**
+- `GET /api/dock/status`
+- `GET /api/dock/valleys`
+- `GET /api/campfire/details`
+- `GET /api/valley/details`
+- `POST /api/voice/ingest`
+- `POST /api/auditors/cleanup`
+- `GET /api/rounds/catalog`
+- `POST /api/rounds/run`

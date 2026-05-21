@@ -635,6 +635,389 @@ class Valley(IValley):
         except Exception:
             return False
 
+    def _extract_torch_response_text(self, resp: Optional['Torch']) -> Optional[str]:
+        if resp is None:
+            return None
+        try:
+            data = getattr(resp, "data", None)
+            if isinstance(data, dict):
+                text = (data.get("llm_response") or data.get("text") or "").strip()
+                return text or None
+        except Exception:
+            pass
+        return None
+
+    def _normalize_rounds(self, rounds: Any) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for raw in rounds or []:
+            if isinstance(raw, str):
+                campfire = raw.strip()
+                if not campfire:
+                    continue
+                out.append({"campfire": campfire, "label": campfire, "mode": "replace", "instruction": ""})
+                continue
+            if not isinstance(raw, dict):
+                continue
+            campfire = (
+                raw.get("resolved_name")
+                or raw.get("campfire")
+                or raw.get("label")
+                or raw.get("campfire")
+                or raw.get("name")
+                or raw.get("target")
+                or raw.get("address")
+                or raw.get("target_address")
+                or ""
+            ).strip()
+            if not campfire:
+                continue
+            mode = (raw.get("mode") or "replace").strip().lower()
+            if mode not in {"replace", "augment", "merge", "final"}:
+                mode = "replace"
+            instruction = (
+                raw.get("instruction")
+                or raw.get("task")
+                or raw.get("prompt")
+                or ""
+            ).strip()
+            spec: Dict[str, Any] = {
+                "campfire": campfire,
+                "mode": mode,
+                "instruction": instruction,
+            }
+            for key in (
+                "label",
+                "target_address",
+                "address",
+                "target_valley",
+                "source",
+                "service_id",
+                "task_type",
+                "service_kind",
+                "resolved_name",
+                "role_tags",
+            ):
+                value = raw.get(key)
+                if value is not None and value != "":
+                    spec[key] = value
+            out.append(spec)
+        return out[:20]
+
+    def _round_prompt(
+        self,
+        original_text: str,
+        current_text: str,
+        history: List[Dict[str, Any]],
+        round_spec: Dict[str, str],
+        round_number: int,
+    ) -> str:
+        mode = (round_spec.get("mode") or "replace").strip().lower()
+        instruction = (round_spec.get("instruction") or "").strip()
+        history_lines: List[str] = []
+        for item in history[-8:]:
+            if not isinstance(item, dict):
+                continue
+            rn = item.get("round")
+            nm = item.get("campfire")
+            summary = item.get("summary") or item.get("output") or ""
+            summary = str(summary).strip()
+            if not summary:
+                continue
+            history_lines.append(f"Round {rn}: {nm}\n{summary}")
+        history_text = "\n\n---\n\n".join(history_lines) if history_lines else "(none)"
+        instruction_block = f"\n\nRound instruction:\n{instruction}" if instruction else ""
+        label = str(round_spec.get("label") or round_spec.get("campfire") or "").strip()
+        service_id = str(round_spec.get("service_id") or "").strip()
+        task_type = str(round_spec.get("task_type") or "").strip()
+        target_address = str(round_spec.get("target_address") or "").strip()
+        target_context_lines: List[str] = []
+        if label:
+            target_context_lines.append(f"Selected service: {label}")
+        if service_id:
+            target_context_lines.append(f"Service ID: {service_id}")
+        if task_type:
+            target_context_lines.append(f"Declared task type: {task_type}")
+        if target_address:
+            target_context_lines.append(f"Target address: {target_address}")
+        target_context = ""
+        if target_context_lines:
+            target_context = "Round target:\n" + "\n".join(target_context_lines) + "\n\n"
+        if mode == "augment":
+            return (
+                f"You are working in round {round_number} of a campfire chain.\n\n"
+                f"{target_context}"
+                f"Original request:\n{original_text}\n\n"
+                f"Previous round output:\n{current_text or '(none)'}"
+                f"{instruction_block}\n\n"
+                f"Return the next improved output for the following campfire."
+            )
+        if mode in {"merge", "final"}:
+            final_hint = ""
+            if mode == "final":
+                final_hint = (
+                    "\n\nThis is the final round. Return the final client-facing response. "
+                    "Do not describe internal routing or ask the user what to do next."
+                )
+            return (
+                f"You are working in round {round_number} of a campfire chain.\n\n"
+                f"{target_context}"
+                f"Original request:\n{original_text}\n\n"
+                f"Current input:\n{current_text or '(none)'}\n\n"
+                f"Prior round history:\n{history_text}"
+                f"{instruction_block}{final_hint}"
+            )
+        return (
+            f"You are working in round {round_number} of a campfire chain.\n\n"
+            f"{target_context}"
+            f"Original request:\n{original_text}\n\n"
+            f"Current input:\n{current_text or original_text or '(none)'}"
+            f"{instruction_block}\n\n"
+            "Use the selected service context when producing this round's output."
+        )
+
+    async def _process_target_campfire(self, campfire_name: str, torch: 'Torch') -> Optional['Torch']:
+        campfire = self.campfires[campfire_name]
+        service_resp = await self.process_service_call(campfire_name, torch)
+        if service_resp is not None:
+            return service_resp
+        return await campfire.process_torch(torch)
+
+    async def _process_remote_round_target(self, target_address: str, torch: 'Torch') -> Optional['Torch']:
+        dock = getattr(self, "dock", None)
+        broker = getattr(self, "mcp_broker", None)
+        if not dock or not getattr(dock, "is_running", None) or not dock.is_running():
+            raise RuntimeError("Dock is not running for remote rounds")
+        if not broker or not getattr(broker, "is_connected", None) or not broker.is_connected():
+            raise RuntimeError("MCP broker is not connected for remote rounds")
+
+        reply_channel = f"reply:{self.name}:{uuid.uuid4().hex}"
+        future = asyncio.get_running_loop().create_future()
+
+        async def _reply_cb(_channel: str, msg: dict):
+            if not future.done():
+                future.set_result(msg)
+
+        await broker.subscribe(reply_channel, _reply_cb)
+        try:
+            if not isinstance(torch.metadata, dict):
+                torch.metadata = {}
+            torch.metadata["reply_channel"] = reply_channel
+            ok = await dock.send_torch(target_address, torch)
+            if not ok:
+                raise RuntimeError(f"Failed to send round torch to remote target '{target_address}'")
+            try:
+                msg = await asyncio.wait_for(future, timeout=45)
+            except asyncio.TimeoutError as e:
+                raise RuntimeError(f"Timed out waiting for remote round response from '{target_address}'") from e
+        finally:
+            try:
+                await broker.unsubscribe(reply_channel)
+            except Exception:
+                pass
+
+        target_valley = ""
+        try:
+            target_valley = target_address.split(":", 1)[1].split("/", 1)[0]
+        except Exception:
+            target_valley = ""
+        return type(torch)(
+            claim="service_response",
+            source_campfire=target_valley or "Remote Round",
+            channel="service",
+            torch_id=f"service_{uuid.uuid4().hex}",
+            sender_valley=target_valley or self.name,
+            target_address=f"valley:{self.name}",
+            data=msg if isinstance(msg, dict) else {"text": str(msg or "")},
+            signature="service_placeholder",
+            metadata={"correlation_id": (torch.metadata or {}).get("correlation_id", "")},
+        )
+
+    async def process_round_chain(self, torch: 'Torch') -> Optional['Torch']:
+        metadata = getattr(torch, "metadata", None)
+        if not isinstance(metadata, dict):
+            return None
+        rounds = self._normalize_rounds(metadata.get("rounds"))
+        if getattr(torch, "claim", None) != "round_chain" and not rounds:
+            return None
+        if not rounds:
+            return None
+
+        corr = (metadata.get("correlation_id") or "").strip() or getattr(torch, "torch_id", None) or getattr(torch, "id", None)
+        original_text = ""
+        if isinstance(getattr(torch, "data", None), dict):
+            original_text = str(torch.data.get("original_text") or torch.data.get("text") or "").strip()
+        original_text = original_text or self._torch_text(torch)
+        current_text = ""
+        if isinstance(getattr(torch, "data", None), dict):
+            current_text = str(torch.data.get("text") or "").strip()
+        current_text = current_text or original_text
+        history = metadata.get("round_history") if isinstance(metadata.get("round_history"), list) else []
+        try:
+            start_index = int(metadata.get("round_index") or 0)
+        except Exception:
+            start_index = 0
+        start_index = max(0, min(start_index, len(rounds) - 1))
+
+        for idx in range(start_index, len(rounds)):
+            spec = rounds[idx]
+            raw_target = str(spec.get("target_address") or spec.get("address") or spec.get("campfire") or "").strip()
+            if not raw_target:
+                continue
+            target_name = raw_target
+            target_address = raw_target if raw_target.lower().startswith("valley:") else str(spec.get("target_address") or "").strip()
+            target_valley = str(spec.get("target_valley") or "").strip()
+            local_aliases = {self.name}
+            try:
+                env = getattr(self.config, "env", None) or {}
+                local_id = (env.get("valley_id") or "").strip() if isinstance(env, dict) else ""
+                if local_id:
+                    local_aliases.add(local_id)
+            except Exception:
+                pass
+            if raw_target.lower().startswith("valley:"):
+                rest = raw_target.split(":", 1)[1].strip()
+                parts = [p.strip() for p in rest.split("/") if p.strip()]
+                target_valley = parts[0] if parts else target_valley
+                if len(parts) >= 2:
+                    target_name = parts[1]
+                elif target_valley:
+                    target_name = target_valley
+            if not target_address:
+                target_address = f"valley:{self.name}/{target_name}"
+            is_remote = bool(target_valley and target_valley not in local_aliases)
+            if not is_remote:
+                target_name = self._resolve_campfire_by_identifier(target_name) or target_name
+            if not is_remote and target_name not in self.campfires:
+                result = {
+                    "ok": False,
+                    "text": f"Round {idx + 1} failed: campfire '{raw_target}' was not found.",
+                    "rounds": history,
+                    "correlation_id": corr,
+                }
+                return type(torch)(
+                    claim="service_response",
+                    source_campfire="Round Chain",
+                    channel="service",
+                    torch_id=f"service_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{torch.sender_valley}",
+                    data=result,
+                    signature="service_placeholder",
+                    metadata={"correlation_id": corr},
+                )
+
+            prompt = self._round_prompt(original_text, current_text, history, spec, idx + 1)
+            round_torch = type(torch)(
+                claim="service_request",
+                source_campfire=f"Round {idx + 1}",
+                channel="service",
+                torch_id=f"round_{uuid.uuid4().hex}",
+                sender_valley=self.name,
+                target_address=target_address if target_address else f"valley:{self.name}/{target_name}",
+                data={
+                    "text": prompt,
+                    "original_text": original_text,
+                    "round_input": current_text,
+                    "round_history": history,
+                    "service_mode": True,
+                },
+                signature="service_placeholder",
+                metadata={
+                    "correlation_id": corr,
+                    "round_number": idx + 1,
+                    "round_mode": spec.get("mode") or "replace",
+                    "round_instruction": spec.get("instruction") or "",
+                    "round_service_id": spec.get("service_id") or "",
+                    "round_task_type": spec.get("task_type") or "",
+                    "round_target_address": target_address or "",
+                },
+            )
+            if is_remote:
+                try:
+                    resp = await self._process_remote_round_target(target_address, round_torch)
+                except Exception as e:
+                    result = {
+                        "ok": False,
+                        "text": f"Round {idx + 1} failed for remote target '{raw_target}': {e}",
+                        "rounds": history,
+                        "correlation_id": corr,
+                    }
+                    return type(torch)(
+                        claim="service_response",
+                        source_campfire="Round Chain",
+                        channel="service",
+                        torch_id=f"service_{uuid.uuid4().hex}",
+                        sender_valley=self.name,
+                        target_address=f"valley:{torch.sender_valley}",
+                        data=result,
+                        signature="service_placeholder",
+                        metadata={"correlation_id": corr},
+                    )
+            else:
+                resp = await self._process_target_campfire(target_name, round_torch)
+            text = self._extract_torch_response_text(resp)
+            if not text:
+                result = {
+                    "ok": False,
+                    "text": f"Round {idx + 1} ({spec.get('label') or target_name}) returned no response.",
+                    "rounds": history,
+                    "correlation_id": corr,
+                }
+                return type(torch)(
+                    claim="service_response",
+                    source_campfire="Round Chain",
+                    channel="service",
+                    torch_id=f"service_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{torch.sender_valley}",
+                    data=result,
+                    signature="service_placeholder",
+                    metadata={"correlation_id": corr},
+                )
+            history.append(
+                {
+                    "round": idx + 1,
+                    "campfire": spec.get("label") or target_name,
+                    "mode": spec.get("mode") or "replace",
+                    "instruction": spec.get("instruction") or "",
+                    "service_id": spec.get("service_id") or "",
+                    "task_type": spec.get("task_type") or "",
+                    "target_address": target_address or "",
+                    "output": text,
+                    "summary": text[:400],
+                }
+            )
+            current_text = text
+
+        result = {
+            "ok": True,
+            "text": current_text or original_text or "Round chain completed.",
+            "rounds": history,
+            "correlation_id": corr,
+            "campfire": history[-1]["campfire"] if history else "",
+        }
+        try:
+            await self.monitoring.log(
+                LogLevel.INFO,
+                "Round chain completed",
+                "rounds",
+                context={"rounds_total": len(rounds), "completed": len(history)},
+                correlation_id=corr,
+            )
+        except Exception:
+            pass
+        return type(torch)(
+            claim="service_response",
+            source_campfire="Round Chain",
+            channel="service",
+            torch_id=f"service_{uuid.uuid4().hex}",
+            sender_valley=self.name,
+            target_address=f"valley:{torch.sender_valley}",
+            data=result,
+            signature="service_placeholder",
+            metadata={"correlation_id": corr},
+        )
+
     def get_schedule(self, campfire_name: str) -> Optional[Dict[str, Any]]:
         wf = self.get_workflow(campfire_name) or {}
         schedule = wf.get("schedule") if isinstance(wf, dict) else None
@@ -1079,6 +1462,10 @@ class Valley(IValley):
             target_parts = campfire_name.split('/')
             if len(target_parts) >= 2:
                 campfire_name = target_parts[1]
+
+            round_resp = await self.process_round_chain(torch)
+            if round_resp is not None:
+                return round_resp
             
             # Remove any "campfire:" prefix if present
             if campfire_name.startswith("campfire:"):
@@ -1089,12 +1476,8 @@ class Valley(IValley):
             if resolved_name not in self.campfires:
                 resolved_name = self._resolve_campfire_by_identifier(campfire_name) or campfire_name
             if resolved_name in self.campfires:
-                campfire = self.campfires[resolved_name]
                 logger.info(f"Routing torch {torch.torch_id} to campfire '{resolved_name}'")
-                service_resp = await self.process_service_call(resolved_name, torch)
-                if service_resp is not None:
-                    return service_resp
-                return await campfire.process_torch(torch)
+                return await self._process_target_campfire(resolved_name, torch)
             else:
                 # If no specific campfire found, try to route through dock if available
                 if self.dock:
