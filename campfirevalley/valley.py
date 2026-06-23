@@ -3,17 +3,19 @@ Valley manager implementation.
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
 import re
 import uuid
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime
 import yaml
 from .interfaces import IValley, IDock, IPartyBox, IMCPBroker, IFederationManager, IKeyManager
-from .models import ValleyConfig, CampfireConfig, CommunityMembership, FederationMembership
+from .llm_defaults import get_default_ollama_model
+from .models import Torch, ValleyConfig, CampfireConfig, CommunityMembership, FederationMembership
 from .config import ConfigManager
 from .config_manager import (
     get_config_manager, ConfigSource, ConfigFormat, 
@@ -58,6 +60,8 @@ class Valley(IValley):
         self._schedule_tasks: Dict[str, asyncio.Task] = {}
         self._schedule_locks: Dict[str, asyncio.Lock] = {}
         self._last_schedule_run: Dict[str, Dict[str, Any]] = {}
+        self._watch_runs: Dict[str, Dict[str, Any]] = {}
+        self._watch_learnings: Dict[str, Dict[str, Any]] = {}
         
         # Initialize configuration management
         self.config_manager = get_config_manager()
@@ -158,6 +162,7 @@ class Valley(IValley):
             # Initialize VALI coordinator
             if self.mcp_broker:
                 from .vali import VALICoordinator, VALIServiceRegistry
+                from .llm_service import AIInferenceService, get_llm_timeout_seconds
                 registry = VALIServiceRegistry()
                 self.vali_coordinator = VALICoordinator(
                     mcp_broker=self.mcp_broker,
@@ -167,6 +172,12 @@ class Valley(IValley):
                 )
                 try:
                     await asyncio.wait_for(self.vali_coordinator.start(), timeout=6)
+                    await self.vali_coordinator.register_service(
+                        AIInferenceService(
+                            default_ollama_host=os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
+                            default_timeout_seconds=get_llm_timeout_seconds(),
+                        )
+                    )
                     logger.info("VALI coordinator started")
                 except Exception as e:
                     logger.warning(f"VALI coordinator start failed: {e}")
@@ -407,7 +418,7 @@ class Valley(IValley):
                 provider = (llm_config.get("provider") or os.getenv("LLM_PROVIDER") or "").strip().lower()
                 if not provider:
                     provider = "ollama" if not os.getenv("OPENROUTER_API_KEY") else "openrouter"
-                model = llm_config.get('model', 'gemma3:4b')
+                model = llm_config.get('model', get_default_ollama_model())
 
                 if provider == "openrouter":
                     from .llm_campfire import create_openrouter_campfire
@@ -415,6 +426,7 @@ class Valley(IValley):
                     campfire = create_openrouter_campfire(
                         campfire_config,
                         self.mcp_broker,
+                        vali_coordinator=self.vali_coordinator,
                         api_key=api_key,
                         default_model=model
                     )
@@ -425,6 +437,7 @@ class Valley(IValley):
                     campfire = create_ollama_campfire(
                         campfire_config,
                         self.mcp_broker,
+                        vali_coordinator=self.vali_coordinator,
                         base_url=base_url,
                         default_model=model
                     )
@@ -471,7 +484,7 @@ class Valley(IValley):
                     provider = (llm_cfg.get("provider") or os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
                     if provider not in {"ollama", "openrouter"}:
                         provider = "ollama"
-                    model = llm_cfg.get("model") or "gemma3:4b"
+                    model = llm_cfg.get("model") or get_default_ollama_model()
                     base_url = llm_cfg.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
                     system_prompt = (
                         "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. "
@@ -647,6 +660,1388 @@ class Valley(IValley):
             pass
         return None
 
+    def _extract_first_json_object(self, text: str) -> Optional[Dict[str, Any]]:
+        if not text or not isinstance(text, str):
+            return None
+        s = text.strip()
+        if not s:
+            return None
+        try:
+            parsed = json.loads(s)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            pass
+        start = s.find("{")
+        end = s.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            parsed = json.loads(s[start : end + 1])
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    def _campfire_config_dict(self, campfire_name: str) -> Dict[str, Any]:
+        cf = (self.campfires or {}).get(campfire_name)
+        if not cf:
+            return {}
+        cfg = getattr(cf, "config", None)
+        if isinstance(cfg, CampfireConfig):
+            return cfg.config or {}
+        if isinstance(cfg, dict):
+            inner = cfg.get("config")
+            return inner if isinstance(inner, dict) else cfg
+        return {}
+
+    def _watch_settings_for(self, campfire_name: str) -> Dict[str, Any]:
+        raw = self._campfire_config_dict(campfire_name)
+        behavior = raw.get("behavior") if isinstance(raw.get("behavior"), dict) else {}
+        watch = behavior.get("watch") if isinstance(behavior.get("watch"), dict) else {}
+        settings = {
+            "enabled": True,
+            "round_order": ["discover", "plan", "execute", "verify", "improve"],
+            "max_retries": 2,
+            "default_fail_reroute": "plan",
+            "save_trace": True,
+            "save_learning": True,
+        }
+        if isinstance(watch, dict):
+            settings.update(watch)
+        try:
+            settings["max_retries"] = max(0, int(settings.get("max_retries") or 0))
+        except Exception:
+            settings["max_retries"] = 2
+        order = settings.get("round_order")
+        if not isinstance(order, list) or not order:
+            settings["round_order"] = ["discover", "plan", "execute", "verify", "improve"]
+        return settings
+
+    def _is_watch_generated_torch(self, torch: 'Torch') -> bool:
+        try:
+            metadata = getattr(torch, "metadata", None)
+            if isinstance(metadata, dict) and metadata.get("watch_generated"):
+                return True
+        except Exception:
+            pass
+        claim = str(getattr(torch, "claim", "") or "").strip().lower()
+        return claim.startswith("watch_")
+
+    def _watch_enabled_for_torch(self, campfire_name: str, torch: 'Torch') -> bool:
+        if not campfire_name or campfire_name not in (self.campfires or {}):
+            return False
+        if str(campfire_name).endswith(" Auditor"):
+            return False
+        if self._is_watch_generated_torch(torch):
+            return False
+        claim = str(getattr(torch, "claim", "") or "").strip().lower()
+        if claim in {"round_chain", "workflow_step", "service_response"}:
+            return False
+        try:
+            metadata = getattr(torch, "metadata", None)
+            if isinstance(metadata, dict) and metadata.get("watch_bypass"):
+                return False
+        except Exception:
+            pass
+        settings = self._watch_settings_for(campfire_name)
+        return bool(settings.get("enabled", True))
+
+    def _available_watch_campers(self, campfire_name: str) -> List[str]:
+        available: List[str] = []
+        if campfire_name in self.campfires:
+            available.append(campfire_name)
+        auditor_name = f"{campfire_name} Auditor"
+        if auditor_name in self.campfires:
+            available.append(auditor_name)
+        wf = self.get_workflow(campfire_name) or {}
+        for step in (wf.get("steps") if isinstance(wf, dict) else []) or []:
+            if not isinstance(step, dict):
+                continue
+            camper = str(step.get("camper") or "").strip()
+            if camper and camper in self.campfires and camper not in available:
+                available.append(camper)
+        return available
+
+    def _is_watch_auditor_camper(self, camper_name: str) -> bool:
+        lower_name = str(camper_name or "").strip().lower()
+        return lower_name == "auditor" or lower_name.endswith(" auditor")
+
+    def _watch_camper_profile_text(self, camper_name: str) -> str:
+        campfire = self.campfires.get(camper_name)
+        config = getattr(campfire, "config", None)
+        if config is None and hasattr(campfire, "get_config"):
+            try:
+                config = campfire.get_config()
+            except Exception:
+                config = None
+
+        parts: List[str] = [str(camper_name or "").strip()]
+
+        def add_value(value: Any) -> None:
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    parts.append(text)
+            elif isinstance(value, list):
+                for item in value:
+                    add_value(item)
+            elif isinstance(value, dict):
+                for key in (
+                    "role",
+                    "description",
+                    "specialty",
+                    "specialization",
+                    "type",
+                    "role_tags",
+                    "capabilities",
+                    "channels",
+                    "tags",
+                ):
+                    add_value(value.get(key))
+
+        if isinstance(config, dict):
+            add_value(config)
+        elif config is not None:
+            for attr in ("name", "type", "description", "channels", "behavior"):
+                add_value(getattr(config, attr, None))
+            add_value(getattr(config, "config", None))
+
+        return " ".join(parts).lower()
+
+    def _preferred_watch_specialist_campers(self, campfire_name: str) -> List[str]:
+        available = self._available_watch_campers(campfire_name)
+        workflow = self.get_workflow(campfire_name) or {}
+        workflow_order: List[str] = []
+        for step in (workflow.get("steps") if isinstance(workflow, dict) else []) or []:
+            if not isinstance(step, dict):
+                continue
+            camper = str(step.get("camper") or "").strip()
+            if (
+                camper
+                and camper in self.campfires
+                and camper not in workflow_order
+                and not self._is_watch_auditor_camper(camper)
+            ):
+                workflow_order.append(camper)
+
+        learning_bucket = self._watch_learnings.get(campfire_name) if isinstance(self._watch_learnings, dict) else {}
+        camper_effectiveness = (
+            learning_bucket.get("camper_effectiveness")
+            if isinstance(learning_bucket, dict) and isinstance(learning_bucket.get("camper_effectiveness"), dict)
+            else {}
+        )
+        specialization_keywords = (
+            "backend",
+            "frontend",
+            "testing",
+            "devops",
+            "research",
+            "researcher",
+            "specialist",
+            "developer",
+            "engineer",
+            "strategist",
+            "decomposer",
+            "validator",
+            "sanitizer",
+            "mcp",
+            "design",
+            "ux",
+        )
+
+        ranked: List[Tuple[int, int, str]] = []
+        for index, camper_name in enumerate(available):
+            if self._is_watch_auditor_camper(camper_name) or camper_name == campfire_name:
+                continue
+            score = 0
+            score += 25
+            if camper_name in workflow_order:
+                score += 50 - min(20, workflow_order.index(camper_name) * 5)
+            stats = camper_effectiveness.get(camper_name) if isinstance(camper_effectiveness, dict) else {}
+            if isinstance(stats, dict):
+                score += int(stats.get("helpful") or 0) * 6
+                score -= int(stats.get("harmful") or 0) * 8
+            profile = self._watch_camper_profile_text(camper_name)
+            if any(keyword in profile for keyword in specialization_keywords):
+                score += 12
+            ranked.append((-score, index, camper_name))
+
+        ranked.sort()
+        ordered: List[str] = []
+        for _, _, camper_name in ranked:
+            if camper_name not in ordered:
+                ordered.append(camper_name)
+        return ordered
+
+    def _normalize_watch_campers(
+        self,
+        campfire_name: str,
+        campers: Any,
+        default: Optional[List[str]] = None,
+    ) -> List[str]:
+        available = set(self._available_watch_campers(campfire_name))
+        out: List[str] = []
+        for raw in campers or []:
+            name = str(raw or "").strip()
+            if not name or name not in available or name in out:
+                continue
+            out.append(name)
+        if out:
+            return out
+        fallback = default or [campfire_name]
+        normalized: List[str] = []
+        for raw in fallback:
+            name = str(raw or "").strip()
+            if name and name in self.campfires and name not in normalized:
+                normalized.append(name)
+        return normalized or ([campfire_name] if campfire_name in self.campfires else [])
+
+    def _strict_watch_campers(self, campfire_name: str, campers: Any) -> List[str]:
+        available = set(self._available_watch_campers(campfire_name))
+        out: List[str] = []
+        for raw in campers or []:
+            name = str(raw or "").strip()
+            if not name or name not in available or name in out:
+                continue
+            out.append(name)
+        return out
+
+    def _is_authoritative_watch_plan_usable(self, campfire_name: str, plan: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
+        if not isinstance(plan, dict):
+            return False, "planner_response_not_json"
+        rounds = plan.get("rounds")
+        if not isinstance(rounds, dict):
+            return False, "planner_missing_rounds"
+        for stage in ("discover", "plan", "execute", "verify", "improve"):
+            spec = rounds.get(stage)
+            if not isinstance(spec, dict):
+                return False, f"planner_missing_{stage}_round"
+            campers = self._strict_watch_campers(campfire_name, spec.get("campers"))
+            if not campers:
+                return False, f"planner_missing_{stage}_campers"
+            if stage == "execute":
+                steps = []
+                for raw in spec.get("steps") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    camper = str(raw.get("camper") or "").strip()
+                    task = str(raw.get("task") or "").strip()
+                    if camper and task and camper in self.campfires:
+                        steps.append({"camper": camper, "task": task})
+                if not steps:
+                    return False, "planner_missing_execute_steps"
+        return True, ""
+
+    def _default_watch_plan(self, campfire_name: str) -> Dict[str, Any]:
+        auditor_name = f"{campfire_name} Auditor"
+        workflow = self.get_workflow(campfire_name) or {}
+        workflow_steps = []
+        for raw in (workflow.get("steps") if isinstance(workflow, dict) else []) or []:
+            if not isinstance(raw, dict):
+                continue
+            camper = str(raw.get("camper") or "").strip()
+            task = str(raw.get("task") or "").strip()
+            if camper and task and camper in self.campfires:
+                workflow_steps.append({"camper": camper, "task": task})
+        preferred_specialists = self._preferred_watch_specialist_campers(campfire_name)
+        execute_steps = workflow_steps or [
+            {
+                "camper": preferred_specialists[0] if preferred_specialists else campfire_name,
+                "task": "Answer the torch request using the discovered context and provide a complete user-facing result.",
+            }
+        ]
+        execute_campers = []
+        for step in execute_steps:
+            camper = str(step.get("camper") or "").strip()
+            if camper and not self._is_watch_auditor_camper(camper) and camper not in execute_campers:
+                execute_campers.append(camper)
+        for camper in preferred_specialists:
+            if camper not in execute_campers:
+                execute_campers.append(camper)
+        planner = auditor_name if auditor_name in self.campfires else campfire_name
+        discover_default = preferred_specialists[:2] or execute_campers[:2] or [campfire_name]
+        return {
+            "rounds": {
+                "discover": {
+                    "goal": "Gather relevant context and source material for this torch.",
+                    "campers": self._normalize_watch_campers(campfire_name, discover_default, discover_default or [campfire_name]),
+                },
+                "plan": {
+                    "goal": "Choose the campers and tasks needed for this torch.",
+                    "campers": self._normalize_watch_campers(campfire_name, [planner], [campfire_name]),
+                },
+                "execute": {
+                    "goal": "Carry out the work and produce a candidate final result.",
+                    "campers": self._normalize_watch_campers(campfire_name, execute_campers, [campfire_name]),
+                    "steps": execute_steps,
+                },
+                "verify": {
+                    "goal": "Check the result and decide whether to ship or reroute.",
+                    "campers": self._normalize_watch_campers(campfire_name, [planner], [campfire_name]),
+                    "pass_criteria": [
+                        "The result answers the torch request.",
+                        "Important context is included.",
+                        "The output is ready to send to the requester.",
+                    ],
+                },
+                "improve": {
+                    "goal": "Capture learning signals that improve future watch runs for similar torches.",
+                    "campers": self._normalize_watch_campers(campfire_name, [planner], [campfire_name]),
+                    "focus_areas": [
+                        "camper selection",
+                        "task wording",
+                        "reroute policy",
+                        "workflow ordering",
+                    ],
+                },
+            },
+            "failure_policy": {
+                "default_reroute_to": "plan",
+                "rules": {
+                    "missing_context": "discover",
+                    "bad_plan": "plan",
+                    "weak_result": "execute",
+                },
+            },
+        }
+
+    def _normalize_watch_plan(self, campfire_name: str, plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        default_plan = self._default_watch_plan(campfire_name)
+        usable, reason = self._is_authoritative_watch_plan_usable(campfire_name, plan)
+        if not usable:
+            normalized = dict(default_plan)
+            normalized["_planner_source"] = "fallback"
+            normalized["_planner_fallback_reason"] = reason or "planner_unusable"
+            return normalized
+        rounds = plan.get("rounds") if isinstance(plan, dict) and isinstance(plan.get("rounds"), dict) else {}
+        failure_policy = plan.get("failure_policy") if isinstance(plan, dict) and isinstance(plan.get("failure_policy"), dict) else {}
+        normalized = {"rounds": {}, "failure_policy": dict(default_plan["failure_policy"])}
+        normalized["failure_policy"].update(failure_policy or {})
+        for stage in ("discover", "plan", "execute", "verify", "improve"):
+            spec = rounds.get(stage) if isinstance(rounds.get(stage), dict) else {}
+            default_stage = dict(default_plan["rounds"][stage])
+            current = {"goal": str(spec.get("goal") or default_stage.get("goal") or "").strip()}
+            current["campers"] = self._strict_watch_campers(campfire_name, spec.get("campers"))
+            if stage == "execute":
+                steps = []
+                for raw in spec.get("steps") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    camper = str(raw.get("camper") or "").strip()
+                    task = str(raw.get("task") or "").strip()
+                    if camper and task and camper in self.campfires:
+                        steps.append({"camper": camper, "task": task})
+                current["steps"] = steps
+            if stage == "verify":
+                criteria = spec.get("pass_criteria")
+                if isinstance(criteria, list):
+                    clean = [str(item).strip() for item in criteria if str(item or "").strip()]
+                    if clean:
+                        current["pass_criteria"] = clean[:8]
+                if "pass_criteria" not in current:
+                    current["pass_criteria"] = list(default_stage.get("pass_criteria") or [])
+            if stage == "improve":
+                focus = spec.get("focus_areas")
+                if isinstance(focus, list):
+                    clean = [str(item).strip() for item in focus if str(item or "").strip()]
+                    if clean:
+                        current["focus_areas"] = clean[:8]
+                if "focus_areas" not in current:
+                    current["focus_areas"] = list(default_stage.get("focus_areas") or [])
+            normalized["rounds"][stage] = current
+        reroute = str(normalized["failure_policy"].get("default_reroute_to") or "").strip().lower()
+        if reroute not in {"discover", "plan", "execute"}:
+            normalized["failure_policy"]["default_reroute_to"] = "plan"
+        rules = normalized["failure_policy"].get("rules")
+        if not isinstance(rules, dict):
+            normalized["failure_policy"]["rules"] = default_plan["failure_policy"]["rules"]
+        return normalized
+
+    async def _request_watch_plan(
+        self,
+        campfire_name: str,
+        torch: 'Torch',
+        correlation_id: str,
+        discover_context: str = "",
+        feedback: str = "",
+        retry_count: int = 0,
+    ) -> Dict[str, Any]:
+        default_plan = self._default_watch_plan(campfire_name)
+        auditor_name = f"{campfire_name} Auditor"
+        if auditor_name not in self.campfires:
+            default_plan["_planner"] = auditor_name
+            default_plan["_planner_source"] = "fallback"
+            default_plan["_planner_fallback_reason"] = "auditor_missing"
+            return default_plan
+        available = self._available_watch_campers(campfire_name)
+        preferred_specialists = self._preferred_watch_specialist_campers(campfire_name)
+        workflow = self.get_workflow(campfire_name) or {}
+        workflow_steps = workflow.get("steps") if isinstance(workflow, dict) else []
+        prompt = (
+            f"You are {auditor_name}. Create a watch plan for the campfire '{campfire_name}'.\n\n"
+            "This is orchestration metadata for the runtime, not a user-facing document.\n"
+            "Do not answer the user's task directly.\n"
+            "Do not ask clarifying questions.\n"
+            "Do not describe what you might do.\n"
+            "Do not return markdown, code fences, prose, or explanations.\n"
+            "Return exactly one JSON object and nothing else.\n\n"
+            f"Original torch request:\n{self._torch_text(torch)}\n\n"
+            f"Discovered context:\n{discover_context or '(none yet)'}\n\n"
+            f"Retry count: {retry_count}\n"
+            f"Verifier feedback:\n{feedback or '(none)'}\n\n"
+            f"Available campers:\n- " + "\n- ".join(available) + "\n\n"
+            f"Preferred non-auditor campers for discover/execute:\n- "
+            + ("\n- ".join(preferred_specialists) if preferred_specialists else "(none)")
+            + "\n\n"
+            f"Existing workflow steps:\n{json.dumps(workflow_steps or [], ensure_ascii=True)}\n\n"
+            "Interpret \"watch plan\" to mean the machine-readable watch execution plan.\n"
+            "It is not a report, checklist, explanation, or deliverable for the requester.\n"
+            "Use the torch request only to decide orchestration: which rounds run, who participates, and what the execute steps do.\n"
+            "If the request is ambiguous, still produce the best usable plan instead of asking a question.\n\n"
+            "Return ONLY valid JSON with this schema:\n"
+            "{"
+            "\"rounds\": {"
+            "\"discover\": {\"goal\": \"...\", \"campers\": [\"...\"]},"
+            "\"plan\": {\"goal\": \"...\", \"campers\": [\"...\"]},"
+            "\"execute\": {\"goal\": \"...\", \"campers\": [\"...\"], \"steps\": [{\"camper\": \"...\", \"task\": \"...\"}]},"
+            "\"verify\": {\"goal\": \"...\", \"campers\": [\"...\"], \"pass_criteria\": [\"...\"]},"
+            "\"improve\": {\"goal\": \"...\", \"campers\": [\"...\"], \"focus_areas\": [\"...\"]}"
+            "},"
+            "\"failure_policy\": {\"default_reroute_to\": \"discover|plan|execute\", \"rules\": {\"missing_context\": \"discover\", \"bad_plan\": \"plan\", \"weak_result\": \"execute\"}}"
+            "}\n"
+            "Rules:\n"
+            "- Only use camper names from the available campers list.\n"
+            "- Every round must include at least one camper.\n"
+            "- The execute round must include at least one step.\n"
+            "- Prefer the auditor for plan, verify, and improve.\n"
+            "- Keep the auditor out of discover and execute unless there is no usable non-auditor option.\n"
+            "- For discover and execute, choose preferred non-auditor campers before the parent campfire whenever they are available.\n"
+            "- Prefer domain or specialist campers for discover and execute when possible.\n"
+            "- Do not invent new campers.\n"
+            "- Do not include comments or trailing text outside the JSON object."
+        )
+        plan_torch = type(torch)(
+            claim="watch_plan",
+            source_campfire=f"{campfire_name} Watch",
+            channel="watch",
+            torch_id=f"watch_{uuid.uuid4().hex}",
+            sender_valley=self.name,
+            target_address=f"valley:{self.name}/{auditor_name}",
+            data={"text": prompt, "service_mode": True, "parent": campfire_name},
+            signature="watch_placeholder",
+            metadata={
+                "correlation_id": correlation_id,
+                "parent": campfire_name,
+                "watch_generated": True,
+                "watch_round": "plan",
+            },
+        )
+        resp = await self.campfires[auditor_name].process_torch(plan_torch)
+        raw = self._extract_torch_response_text(resp) or ""
+        parsed = self._extract_first_json_object(raw)
+        normalized = self._normalize_watch_plan(campfire_name, parsed)
+        normalized["_planner_raw"] = raw
+        normalized["_planner"] = auditor_name
+        if not normalized.get("_planner_source"):
+            normalized["_planner_source"] = "auditor"
+        return normalized
+
+    def _watch_round_prompt(
+        self,
+        campfire_name: str,
+        round_name: str,
+        goal: str,
+        original_text: str,
+        current_input: str,
+        prior_rounds: List[Dict[str, Any]],
+    ) -> str:
+        prior_lines: List[str] = []
+        for item in prior_rounds[-6:]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("round") or "").strip()
+            summary = str(item.get("summary") or item.get("output") or "").strip()
+            if label and summary:
+                prior_lines.append(f"{label}:\n{summary}")
+        prior_text = "\n\n---\n\n".join(prior_lines) if prior_lines else "(none)"
+        return (
+            f"You are helping campfire '{campfire_name}' in the '{round_name}' watch round.\n\n"
+            f"Round goal:\n{goal}\n\n"
+            f"Original torch request:\n{original_text}\n\n"
+            f"Current working context:\n{current_input or '(none)'}\n\n"
+            f"Prior watch round summaries:\n{prior_text}\n\n"
+            "Return a concise, useful contribution for this round only."
+        )
+
+    async def _run_watch_round_with_campers(
+        self,
+        campfire_name: str,
+        round_name: str,
+        campers: List[str],
+        goal: str,
+        original_text: str,
+        current_input: str,
+        correlation_id: str,
+        watch_id: str,
+        prior_rounds: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        outputs: List[Dict[str, Any]] = []
+        prompt = self._watch_round_prompt(campfire_name, round_name, goal, original_text, current_input, prior_rounds)
+        for camper in campers:
+            cf = self.campfires.get(camper)
+            if not cf:
+                continue
+            round_torch = Torch(
+                claim=f"watch_{round_name}",
+                source_campfire=f"{campfire_name} Watch",
+                channel="watch",
+                torch_id=f"watch_{uuid.uuid4().hex}",
+                sender_valley=self.name,
+                target_address=f"valley:{self.name}/{camper}",
+                data={"text": prompt, "service_mode": True, "parent": campfire_name, "watch_round": round_name},
+                signature="watch_placeholder",
+                metadata={
+                    "correlation_id": correlation_id,
+                    "parent": campfire_name,
+                    "watch_generated": True,
+                    "watch_run_id": watch_id,
+                    "watch_round": round_name,
+                },
+            )
+            resp = await cf.process_torch(round_torch)
+            text = self._extract_torch_response_text(resp)
+            outputs.append({"camper": camper, "ok": bool(text), "text": text or ""})
+        summary = "\n\n---\n\n".join(
+            [f"{item['camper']}:\n{item['text']}" for item in outputs if item.get("text")]
+        ).strip()
+        return {
+            "round": round_name,
+            "status": "completed" if summary else "empty",
+            "campers_used": list(campers),
+            "summary": summary,
+            "details": outputs,
+        }
+
+    async def _run_watch_execute_round(
+        self,
+        campfire_name: str,
+        torch: 'Torch',
+        execute_steps: List[Dict[str, Any]],
+        discover_summary: str,
+        correlation_id: str,
+        watch_id: str,
+    ) -> Dict[str, Any]:
+        original_text = self._torch_text(torch)
+        execute_input = original_text
+        if discover_summary:
+            execute_input = (
+                f"Original request:\n{original_text}\n\n"
+                f"Discovered context:\n{discover_summary}"
+            )
+        execute_torch = Torch(
+            claim="service_request",
+            source_campfire=f"{campfire_name} Watch",
+            channel="service",
+            torch_id=f"watch_{uuid.uuid4().hex}",
+            sender_valley=self.name,
+            target_address=f"valley:{self.name}/{campfire_name}",
+            data={"text": execute_input, "service_mode": True, "watch_round": "execute"},
+            signature="watch_placeholder",
+            metadata={
+                "correlation_id": correlation_id,
+                "parent": campfire_name,
+                "watch_generated": True,
+                "watch_run_id": watch_id,
+                "watch_round": "execute",
+                "workflow_override_steps": execute_steps,
+            },
+        )
+        resp = await self.process_service_call(campfire_name, execute_torch)
+        text = self._extract_torch_response_text(resp) or ""
+        return {
+            "round": "execute",
+            "status": "completed" if text else "empty",
+            "campers_used": [str(step.get("camper") or "").strip() for step in execute_steps if str(step.get("camper") or "").strip()],
+            "summary": text,
+            "details": getattr(resp, "data", None),
+        }
+
+    async def _run_watch_verify_round(
+        self,
+        campfire_name: str,
+        torch: 'Torch',
+        verify_spec: Dict[str, Any],
+        discover_summary: str,
+        execute_summary: str,
+        correlation_id: str,
+        watch_id: str,
+        prior_rounds: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        campers = list(verify_spec.get("campers") or [])
+        criteria = list(verify_spec.get("pass_criteria") or [])
+        original_text = self._torch_text(torch)
+        if not campers:
+            return {
+                "round": "verify",
+                "status": "completed",
+                "campers_used": [],
+                "summary": execute_summary,
+                "decision": {
+                    "pass": bool(execute_summary),
+                    "reason": "weak_result" if not execute_summary else "pass",
+                    "feedback": "" if execute_summary else "The execute round returned no response.",
+                    "reroute_to": "execute",
+                },
+            }
+        verifier = campers[0]
+        cf = self.campfires.get(verifier)
+        if not cf:
+            return {
+                "round": "verify",
+                "status": "empty",
+                "campers_used": campers,
+                "summary": "",
+                "decision": {"pass": bool(execute_summary), "reason": "pass" if execute_summary else "weak_result", "feedback": "", "reroute_to": "execute"},
+            }
+        prior_lines = []
+        for item in prior_rounds[-6:]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("round") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            if label and summary:
+                prior_lines.append(f"{label}:\n{summary}")
+        prompt = (
+            f"You are verifying a watch run for campfire '{campfire_name}'.\n\n"
+            f"Original torch request:\n{original_text}\n\n"
+            f"Discovered context:\n{discover_summary or '(none)'}\n\n"
+            f"Execute round result:\n{execute_summary or '(none)'}\n\n"
+            f"Pass criteria:\n- " + "\n- ".join(criteria or ["Result answers the request", "Result is ready to ship"]) + "\n\n"
+            f"Prior round summaries:\n{chr(10).join(prior_lines) if prior_lines else '(none)'}\n\n"
+            "Return ONLY valid JSON with keys: pass (boolean), reason (string), feedback (string), reroute_to (discover|plan|execute)."
+        )
+        verify_torch = Torch(
+            claim="watch_verify",
+            source_campfire=f"{campfire_name} Watch",
+            channel="watch",
+            torch_id=f"watch_{uuid.uuid4().hex}",
+            sender_valley=self.name,
+            target_address=f"valley:{self.name}/{verifier}",
+            data={"text": prompt, "service_mode": True, "parent": campfire_name},
+            signature="watch_placeholder",
+            metadata={
+                "correlation_id": correlation_id,
+                "parent": campfire_name,
+                "watch_generated": True,
+                "watch_run_id": watch_id,
+                "watch_round": "verify",
+            },
+        )
+        resp = await cf.process_torch(verify_torch)
+        raw = self._extract_torch_response_text(resp) or ""
+        parsed = self._extract_first_json_object(raw) or {}
+        decision = {
+            "pass": bool(parsed.get("pass")) if isinstance(parsed.get("pass"), bool) else bool(execute_summary),
+            "reason": str(parsed.get("reason") or ("pass" if execute_summary else "weak_result")).strip(),
+            "feedback": str(parsed.get("feedback") or "").strip(),
+            "reroute_to": str(parsed.get("reroute_to") or "execute").strip().lower(),
+        }
+        if decision["reroute_to"] not in {"discover", "plan", "execute"}:
+            decision["reroute_to"] = "execute"
+        return {
+            "round": "verify",
+            "status": "completed",
+            "campers_used": campers,
+            "summary": raw or decision["feedback"] or ("pass" if decision["pass"] else "fail"),
+            "decision": decision,
+        }
+
+    def _heuristic_watch_learning(
+        self,
+        campfire_name: str,
+        verify_result: Dict[str, Any],
+        execute_result: Dict[str, Any],
+        retry_count: int,
+        history: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        decision = verify_result.get("decision") if isinstance(verify_result.get("decision"), dict) else {}
+        passed = bool(decision.get("pass"))
+        execute_summary = str(execute_result.get("summary") or "").strip()
+        strengths: List[str] = []
+        weaknesses: List[str] = []
+        recommendations: List[str] = []
+        if passed:
+            strengths.append("The watch completed with a verifier-approved result.")
+        else:
+            weaknesses.append("The watch ended without a verifier-approved result.")
+        if retry_count:
+            weaknesses.append(f"The watch needed {retry_count} retry cycle(s) before finishing.")
+            recommendations.append("Tighten plan quality and reroute hints for similar torches.")
+        else:
+            strengths.append("The watch completed without retries.")
+        if execute_summary:
+            strengths.append("The execute round returned a non-empty final candidate.")
+        else:
+            weaknesses.append("The execute round returned an empty result.")
+            recommendations.append("Add stronger execute tasks or richer discovered context.")
+        feedback = str(decision.get("feedback") or "").strip()
+        if feedback:
+            recommendations.append(feedback)
+        camper_feedback: List[Dict[str, Any]] = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            round_name = str(item.get("round") or "").strip()
+            if not round_name or round_name == "improve":
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            for camper in item.get("campers_used") or []:
+                name = str(camper or "").strip()
+                if not name:
+                    continue
+                rating = "helpful" if status == "completed" else "neutral"
+                note = f"Contributed during the {round_name} round."
+                camper_feedback.append({"campfire": name, "rating": rating, "notes": note})
+        if not recommendations:
+            recommendations.append("Keep the current watch shape, but keep monitoring verify feedback trends.")
+        return {
+            "outcome_summary": (
+                f"Watch {'passed' if passed else 'failed'} after {retry_count} retr{'y' if retry_count == 1 else 'ies'}."
+            ),
+            "effectiveness": {
+                "task_fit": 4 if passed else 2,
+                "quality": 4 if passed and execute_summary else 2,
+                "efficiency": 4 if retry_count == 0 else max(1, 4 - retry_count),
+                "coordination": 4 if passed else 2,
+            },
+            "strengths": strengths[:6],
+            "weaknesses": weaknesses[:6],
+            "recommendations": recommendations[:8],
+            "camper_feedback": camper_feedback[:12],
+            "learned_policy": {
+                "prefer_campers": [],
+                "avoid_campers": [],
+                "reroute_hints": {},
+                "workflow_suggestions": recommendations[:4],
+            },
+        }
+
+    def _normalize_watch_learning(
+        self,
+        campfire_name: str,
+        learning: Optional[Dict[str, Any]],
+        verify_result: Dict[str, Any],
+        execute_result: Dict[str, Any],
+        retry_count: int,
+        history: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        normalized = self._heuristic_watch_learning(campfire_name, verify_result, execute_result, retry_count, history)
+        if not isinstance(learning, dict):
+            return normalized
+        summary = str(learning.get("outcome_summary") or "").strip()
+        if summary:
+            normalized["outcome_summary"] = summary
+        effectiveness = learning.get("effectiveness")
+        if isinstance(effectiveness, dict):
+            clean_scores: Dict[str, int] = {}
+            for key in ("task_fit", "quality", "efficiency", "coordination"):
+                try:
+                    score = int(effectiveness.get(key))
+                except Exception:
+                    continue
+                clean_scores[key] = max(1, min(5, score))
+            normalized["effectiveness"].update(clean_scores)
+        for key in ("strengths", "weaknesses", "recommendations"):
+            value = learning.get(key)
+            if isinstance(value, list):
+                clean = [str(item).strip() for item in value if str(item or "").strip()]
+                if clean:
+                    normalized[key] = clean[:8]
+        available = set(self._available_watch_campers(campfire_name))
+        camper_feedback = []
+        for raw in learning.get("camper_feedback") or []:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("campfire") or raw.get("camper") or "").strip()
+            if not name or (available and name not in available):
+                continue
+            rating = str(raw.get("rating") or "").strip().lower()
+            if rating not in {"helpful", "neutral", "harmful"}:
+                rating = "neutral"
+            notes = str(raw.get("notes") or "").strip()
+            camper_feedback.append({"campfire": name, "rating": rating, "notes": notes})
+        if camper_feedback:
+            normalized["camper_feedback"] = camper_feedback[:12]
+        learned_policy = learning.get("learned_policy")
+        if isinstance(learned_policy, dict):
+            policy = dict(normalized["learned_policy"])
+            for field in ("prefer_campers", "avoid_campers"):
+                clean_names = []
+                for raw in learned_policy.get(field) or []:
+                    name = str(raw or "").strip()
+                    if not name or (available and name not in available) or name in clean_names:
+                        continue
+                    clean_names.append(name)
+                if clean_names:
+                    policy[field] = clean_names[:8]
+            hints = {}
+            raw_hints = learned_policy.get("reroute_hints")
+            if isinstance(raw_hints, dict):
+                for key, value in raw_hints.items():
+                    reason = str(key or "").strip()
+                    stage = str(value or "").strip().lower()
+                    if reason and stage in {"discover", "plan", "execute"}:
+                        hints[reason] = stage
+            if hints:
+                policy["reroute_hints"] = hints
+            suggestions = [str(item).strip() for item in learned_policy.get("workflow_suggestions") or [] if str(item or "").strip()]
+            if suggestions:
+                policy["workflow_suggestions"] = suggestions[:8]
+            normalized["learned_policy"] = policy
+        return normalized
+
+    async def _run_watch_improve_round(
+        self,
+        campfire_name: str,
+        torch: 'Torch',
+        improve_spec: Dict[str, Any],
+        verify_result: Dict[str, Any],
+        execute_result: Dict[str, Any],
+        correlation_id: str,
+        watch_id: str,
+        prior_rounds: List[Dict[str, Any]],
+        retry_count: int,
+    ) -> Dict[str, Any]:
+        campers = list(improve_spec.get("campers") or [])
+        focus_areas = list(improve_spec.get("focus_areas") or [])
+        heuristic = self._heuristic_watch_learning(campfire_name, verify_result, execute_result, retry_count, prior_rounds)
+        original_text = self._torch_text(torch)
+        decision = verify_result.get("decision") if isinstance(verify_result.get("decision"), dict) else {}
+        prior_lines = []
+        for item in prior_rounds[-8:]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("round") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            if label and summary:
+                prior_lines.append(f"{label}:\n{summary}")
+        prompt = (
+            f"You are capturing self-improvement signals for campfire '{campfire_name}'.\n\n"
+            f"Original torch request:\n{original_text}\n\n"
+            f"Retry count: {retry_count}\n\n"
+            f"Verify decision:\n{json.dumps(decision or {}, ensure_ascii=True)}\n\n"
+            f"Execute result:\n{str(execute_result.get('summary') or '(none)')}\n\n"
+            f"Focus areas:\n- " + "\n- ".join(focus_areas or ["camper selection", "task wording", "reroute policy", "workflow ordering"]) + "\n\n"
+            f"Prior watch round summaries:\n{chr(10).join(prior_lines) if prior_lines else '(none)'}\n\n"
+            "Return ONLY valid JSON with keys: outcome_summary (string), effectiveness "
+            "({task_fit:1-5, quality:1-5, efficiency:1-5, coordination:1-5}), strengths "
+            "([string]), weaknesses ([string]), recommendations ([string]), camper_feedback "
+            "([{campfire:string, rating:helpful|neutral|harmful, notes:string}]), learned_policy "
+            "({prefer_campers:[string], avoid_campers:[string], reroute_hints:{reason:stage}, "
+            "workflow_suggestions:[string]}). Do not apply changes; recommend them only."
+        )
+        raw = ""
+        if campers:
+            improver = str(campers[0] or "").strip()
+            cf = self.campfires.get(improver)
+            if cf is not None:
+                improve_torch = Torch(
+                    claim="watch_improve",
+                    source_campfire=f"{campfire_name} Watch",
+                    channel="watch",
+                    torch_id=f"watch_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{self.name}/{improver}",
+                    data={"text": prompt, "service_mode": True, "parent": campfire_name},
+                    signature="watch_placeholder",
+                    metadata={
+                        "correlation_id": correlation_id,
+                        "parent": campfire_name,
+                        "watch_generated": True,
+                        "watch_run_id": watch_id,
+                        "watch_round": "improve",
+                    },
+                )
+                resp = await cf.process_torch(improve_torch)
+                raw = self._extract_torch_response_text(resp) or ""
+        parsed = self._extract_first_json_object(raw)
+        normalized = self._normalize_watch_learning(
+            campfire_name,
+            parsed,
+            verify_result,
+            execute_result,
+            retry_count,
+            prior_rounds,
+        )
+        return {
+            "round": "improve",
+            "status": "completed" if (raw or normalized) else "empty",
+            "campers_used": campers[:1],
+            "summary": raw or normalized.get("outcome_summary") or "Improvement signals captured.",
+            "learning": normalized,
+        }
+
+    def _record_watch_learning(
+        self,
+        campfire_name: str,
+        watch_id: str,
+        correlation_id: str,
+        learning: Dict[str, Any],
+        passed: bool,
+        retry_count: int,
+    ) -> Dict[str, Any]:
+        bucket = self._watch_learnings.setdefault(
+            campfire_name,
+            {
+                "campfire": campfire_name,
+                "runs": 0,
+                "passes": 0,
+                "failures": 0,
+                "total_retries": 0,
+                "effectiveness_totals": {"task_fit": 0, "quality": 0, "efficiency": 0, "coordination": 0},
+                "average_effectiveness": {"task_fit": 0.0, "quality": 0.0, "efficiency": 0.0, "coordination": 0.0},
+                "camper_effectiveness": {},
+                "recommendation_counts": {},
+                "recent_runs": [],
+            },
+        )
+        bucket["runs"] = int(bucket.get("runs") or 0) + 1
+        bucket["passes"] = int(bucket.get("passes") or 0) + (1 if passed else 0)
+        bucket["failures"] = int(bucket.get("failures") or 0) + (0 if passed else 1)
+        bucket["total_retries"] = int(bucket.get("total_retries") or 0) + max(0, retry_count)
+        totals = bucket.get("effectiveness_totals") if isinstance(bucket.get("effectiveness_totals"), dict) else {}
+        averages = bucket.get("average_effectiveness") if isinstance(bucket.get("average_effectiveness"), dict) else {}
+        scores = learning.get("effectiveness") if isinstance(learning.get("effectiveness"), dict) else {}
+        for key in ("task_fit", "quality", "efficiency", "coordination"):
+            try:
+                score = int(scores.get(key))
+            except Exception:
+                score = 0
+            totals[key] = int(totals.get(key) or 0) + max(0, score)
+            averages[key] = round(float(totals[key]) / max(1, int(bucket["runs"])), 2)
+        bucket["effectiveness_totals"] = totals
+        bucket["average_effectiveness"] = averages
+        recommendation_counts = bucket.get("recommendation_counts") if isinstance(bucket.get("recommendation_counts"), dict) else {}
+        for item in learning.get("recommendations") or []:
+            rec = str(item or "").strip()
+            if not rec:
+                continue
+            recommendation_counts[rec] = int(recommendation_counts.get(rec) or 0) + 1
+        bucket["recommendation_counts"] = recommendation_counts
+        camper_effectiveness = bucket.get("camper_effectiveness") if isinstance(bucket.get("camper_effectiveness"), dict) else {}
+        for entry in learning.get("camper_feedback") or []:
+            if not isinstance(entry, dict):
+                continue
+            camper = str(entry.get("campfire") or "").strip()
+            if not camper:
+                continue
+            stats = camper_effectiveness.setdefault(camper, {"helpful": 0, "neutral": 0, "harmful": 0, "notes": []})
+            rating = str(entry.get("rating") or "neutral").strip().lower()
+            if rating not in {"helpful", "neutral", "harmful"}:
+                rating = "neutral"
+            stats[rating] = int(stats.get(rating) or 0) + 1
+            notes = stats.get("notes") if isinstance(stats.get("notes"), list) else []
+            note = str(entry.get("notes") or "").strip()
+            if note:
+                notes.append(note)
+            stats["notes"] = notes[-5:]
+        bucket["camper_effectiveness"] = camper_effectiveness
+        recent_runs = bucket.get("recent_runs") if isinstance(bucket.get("recent_runs"), list) else []
+        recent_runs.append(
+            {
+                "watch_id": watch_id,
+                "correlation_id": correlation_id,
+                "passed": passed,
+                "retry_count": retry_count,
+                "outcome_summary": str(learning.get("outcome_summary") or "").strip(),
+                "recommendations": list(learning.get("recommendations") or [])[:4],
+            }
+        )
+        bucket["recent_runs"] = recent_runs[-20:]
+        return {
+            "runs": bucket["runs"],
+            "passes": bucket["passes"],
+            "failures": bucket["failures"],
+            "average_effectiveness": dict(bucket["average_effectiveness"]),
+            "recent_recommendations": list((learning.get("recommendations") or []))[:4],
+        }
+
+    def _watch_reports_dir(self) -> Path:
+        reports_dir = Path(os.getenv("REPORTS_DIR") or "./reports")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        return reports_dir
+
+    def _watch_report_path(self, watch_id: str) -> Path:
+        safe_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", str(watch_id or "").strip()) or "watch"
+        return self._watch_reports_dir() / f"{safe_id}.html"
+
+    def _watch_report_json(self, value: Any) -> str:
+        try:
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        except Exception:
+            return str(value)
+
+    def get_watch_run(self, watch_id: str) -> Optional[Dict[str, Any]]:
+        run = self._watch_runs.get(str(watch_id or "").strip())
+        return dict(run) if isinstance(run, dict) else None
+
+    def render_watch_report_html(self, watch_id: str) -> Optional[str]:
+        run = self._watch_runs.get(str(watch_id or "").strip())
+        if not isinstance(run, dict):
+            return None
+        watch = run.get("watch") if isinstance(run.get("watch"), dict) else {}
+        history = watch.get("history") if isinstance(watch.get("history"), list) else []
+        learning = watch.get("learning") if isinstance(watch.get("learning"), dict) else {}
+        learning_summary = watch.get("learning_summary") if isinstance(watch.get("learning_summary"), dict) else {}
+        esc = html.escape
+
+        round_cards: List[str] = []
+        for idx, item in enumerate(history, start=1):
+            if not isinstance(item, dict):
+                continue
+            round_name = str(item.get("round") or f"round_{idx}").strip()
+            status = str(item.get("status") or "").strip() or "unknown"
+            campers = [str(raw).strip() for raw in (item.get("campers_used") or []) if str(raw or "").strip()]
+            summary = str(item.get("summary") or "").strip()
+            details = item.get("details")
+            decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+            learning_block = item.get("learning") if isinstance(item.get("learning"), dict) else {}
+            detail_html = ""
+            if isinstance(details, list):
+                rows = []
+                for raw in details:
+                    if not isinstance(raw, dict):
+                        continue
+                    rows.append(
+                        "<tr>"
+                        f"<td>{esc(str(raw.get('camper') or ''))}</td>"
+                        f"<td>{esc(str(raw.get('ok') or ''))}</td>"
+                        f"<td><pre>{esc(str(raw.get('text') or ''))}</pre></td>"
+                        "</tr>"
+                    )
+                if rows:
+                    detail_html = (
+                        "<h4>Round Contributions</h4>"
+                        "<table><thead><tr><th>Camper</th><th>OK</th><th>Output</th></tr></thead>"
+                        f"<tbody>{''.join(rows)}</tbody></table>"
+                    )
+            elif details:
+                detail_html = "<h4>Round Details</h4><pre>" + esc(self._watch_report_json(details)) + "</pre>"
+            decision_html = ""
+            if decision:
+                decision_html = "<h4>Verify Decision</h4><pre>" + esc(self._watch_report_json(decision)) + "</pre>"
+            learning_html = ""
+            if learning_block:
+                learning_html = "<h4>Improve Output</h4><pre>" + esc(self._watch_report_json(learning_block)) + "</pre>"
+            round_cards.append(
+                "<section class='round-card'>"
+                f"<div class='round-head'><span class='round-index'>Round {idx}</span><span class='round-name'>{esc(round_name.title())}</span><span class='round-status status-{esc(status.lower())}'>{esc(status)}</span></div>"
+                f"<div class='round-meta'><strong>Participants:</strong> {esc(', '.join(campers) if campers else '(none recorded)')}</div>"
+                f"<div class='round-summary'><strong>Summary</strong><pre>{esc(summary or '(no summary)')}</pre></div>"
+                f"{detail_html}{decision_html}{learning_html}"
+                "</section>"
+            )
+
+        recommendations = "".join(
+            f"<li>{esc(str(item))}</li>" for item in (learning.get("recommendations") or []) if str(item or "").strip()
+        ) or "<li>(none)</li>"
+        strengths = "".join(
+            f"<li>{esc(str(item))}</li>" for item in (learning.get("strengths") or []) if str(item or "").strip()
+        ) or "<li>(none)</li>"
+        weaknesses = "".join(
+            f"<li>{esc(str(item))}</li>" for item in (learning.get("weaknesses") or []) if str(item or "").strip()
+        ) or "<li>(none)</li>"
+        camper_feedback_rows = []
+        for raw in learning.get("camper_feedback") or []:
+            if not isinstance(raw, dict):
+                continue
+            camper_feedback_rows.append(
+                "<tr>"
+                f"<td>{esc(str(raw.get('campfire') or ''))}</td>"
+                f"<td>{esc(str(raw.get('rating') or ''))}</td>"
+                f"<td>{esc(str(raw.get('notes') or ''))}</td>"
+                "</tr>"
+            )
+        camper_feedback_html = (
+            "<table><thead><tr><th>Camper</th><th>Rating</th><th>Notes</th></tr></thead>"
+            f"<tbody>{''.join(camper_feedback_rows)}</tbody></table>"
+            if camper_feedback_rows
+            else "<p>(none)</p>"
+        )
+
+        html_doc = (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            f"<title>Watch Report {esc(str(watch.get('watch_id') or watch_id))}</title>"
+            "<style>"
+            "body{font-family:Arial,sans-serif;background:#f5f1e8;color:#2d2418;margin:0;padding:24px;line-height:1.45;}"
+            ".wrap{max-width:1200px;margin:0 auto;}"
+            ".hero,.card,.round-card{background:#fff;border:1px solid #d9c9a8;border-radius:12px;padding:18px 20px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,0.05);}"
+            ".hero h1{margin:0 0 8px;font-size:28px;}.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:14px;}"
+            ".meta div,.grid div{background:#fbf8f0;border:1px solid #eadfc8;border-radius:10px;padding:10px 12px;}"
+            ".round-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;}.round-index{font-size:12px;text-transform:uppercase;color:#7d6641;}"
+            ".round-name{font-size:20px;font-weight:700;}.round-status{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;background:#eee;}"
+            ".status-completed{background:#dff2df;color:#1d6b2e;}.status-empty{background:#f8e0e0;color:#8a2d2d;}.status-unknown{background:#ececec;color:#555;}"
+            ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;}"
+            "pre{white-space:pre-wrap;word-break:break-word;background:#f7f4ee;border:1px solid #e8dcc8;border-radius:10px;padding:12px;overflow:auto;}"
+            "table{width:100%;border-collapse:collapse;margin-top:10px;}th,td{border:1px solid #e6d6bd;padding:8px 10px;text-align:left;vertical-align:top;}th{background:#f3ebdc;}"
+            "h2,h3,h4{margin:0 0 10px;}ul{margin:8px 0 0 20px;padding:0;}a{color:#7a4d00;text-decoration:none;}"
+            "</style></head><body><div class='wrap'>"
+            "<section class='hero'>"
+            "<h1>Watch Report</h1>"
+            f"<p><strong>Campfire:</strong> {esc(str(run.get('campfire') or ''))}</p>"
+            f"<p><strong>Final Output:</strong></p><pre>{esc(str(run.get('text') or ''))}</pre>"
+            "<div class='meta'>"
+            f"<div><strong>Watch ID</strong><br>{esc(str(watch.get('watch_id') or watch_id))}</div>"
+            f"<div><strong>Correlation ID</strong><br>{esc(str(run.get('correlation_id') or ''))}</div>"
+            f"<div><strong>Torch ID</strong><br>{esc(str(watch.get('torch_id') or ''))}</div>"
+            f"<div><strong>Retry Count</strong><br>{esc(str(watch.get('retry_count') if watch.get('retry_count') is not None else 0))}</div>"
+            f"<div><strong>Outcome</strong><br>{esc('passed' if bool(run.get('ok')) else 'failed')}</div>"
+            f"<div><strong>Rounds Recorded</strong><br>{esc(str(len(history)))}</div>"
+            "</div></section>"
+            "<section class='card'><h2>Round Overview</h2>"
+            + ("".join(round_cards) if round_cards else "<p>No watch rounds were recorded.</p>")
+            + "</section>"
+            "<section class='card'><h2>Learning Summary</h2><div class='grid'>"
+            f"<div><strong>Outcome Summary</strong><pre>{esc(str(learning.get('outcome_summary') or '(none)'))}</pre></div>"
+            f"<div><strong>Effectiveness</strong><pre>{esc(self._watch_report_json(learning.get('effectiveness') or {}))}</pre></div>"
+            f"<div><strong>Aggregate Learning</strong><pre>{esc(self._watch_report_json(learning_summary or {}))}</pre></div>"
+            f"<div><strong>Learned Policy</strong><pre>{esc(self._watch_report_json(learning.get('learned_policy') or {}))}</pre></div>"
+            "</div>"
+            f"<h3>Strengths</h3><ul>{strengths}</ul>"
+            f"<h3>Weaknesses</h3><ul>{weaknesses}</ul>"
+            f"<h3>Recommendations</h3><ul>{recommendations}</ul>"
+            f"<h3>Camper Feedback</h3>{camper_feedback_html}"
+            "</section></div></body></html>"
+        )
+        return html_doc
+
+    def save_watch_report(self, watch_id: str) -> Optional[str]:
+        html_doc = self.render_watch_report_html(watch_id)
+        if not html_doc:
+            return None
+        path = self._watch_report_path(watch_id)
+        path.write_text(html_doc, encoding="utf-8")
+        return str(path)
+
+    async def _run_watch_for_torch(self, campfire_name: str, torch: 'Torch') -> Optional['Torch']:
+        settings = self._watch_settings_for(campfire_name)
+        original_text = self._torch_text(torch)
+        if not original_text.strip():
+            return None
+        corr = None
+        try:
+            if isinstance(getattr(torch, "metadata", None), dict):
+                corr = (torch.metadata.get("correlation_id") or "").strip() or None
+        except Exception:
+            corr = None
+        corr = corr or getattr(torch, "torch_id", None) or getattr(torch, "id", None)
+        watch_id = f"watch_{uuid.uuid4().hex}"
+        max_retries = max(0, int(settings.get("max_retries") or 0))
+        retry_count = 0
+        reroute_to = "discover"
+        verifier_feedback = ""
+        discover_result: Dict[str, Any] = {"summary": ""}
+        plan_result: Dict[str, Any] = {}
+        execute_result: Dict[str, Any] = {"summary": ""}
+        history: List[Dict[str, Any]] = []
+
+        while True:
+            if reroute_to == "discover":
+                plan_result = await self._request_watch_plan(
+                    campfire_name,
+                    torch,
+                    corr,
+                    discover_context="",
+                    feedback=verifier_feedback,
+                    retry_count=retry_count,
+                )
+                discover_spec = plan_result.get("rounds", {}).get("discover", {})
+                discover_result = await self._run_watch_round_with_campers(
+                    campfire_name,
+                    "discover",
+                    list(discover_spec.get("campers") or [campfire_name]),
+                    str(discover_spec.get("goal") or "Gather context."),
+                    original_text,
+                    original_text,
+                    corr,
+                    watch_id,
+                    history,
+                )
+                if not discover_result.get("summary"):
+                    discover_result["summary"] = original_text
+                history.append(dict(discover_result))
+                reroute_to = "plan"
+
+            if reroute_to == "plan":
+                plan_result = await self._request_watch_plan(
+                    campfire_name,
+                    torch,
+                    corr,
+                    discover_context=str(discover_result.get("summary") or original_text),
+                    feedback=verifier_feedback,
+                    retry_count=retry_count,
+                )
+                plan_spec = dict(plan_result.get("rounds", {}).get("plan", {}) or {})
+                plan_input = (
+                    f"Discovered context:\n{str(discover_result.get('summary') or original_text)}\n\n"
+                    f"Verifier feedback:\n{verifier_feedback or '(none)'}"
+                )
+                plan_round = await self._run_watch_round_with_campers(
+                    campfire_name,
+                    "plan",
+                    list(plan_spec.get("campers") or [f"{campfire_name} Auditor"]),
+                    str(plan_spec.get("goal") or "Refine the watch plan and assign campers to the next rounds."),
+                    original_text,
+                    plan_input,
+                    corr,
+                    watch_id,
+                    history,
+                )
+                plan_round["planner"] = str(plan_result.get("_planner") or "")
+                plan_round["planner_source"] = str(plan_result.get("_planner_source") or "")
+                if plan_result.get("_planner_fallback_reason"):
+                    plan_round["planner_fallback_reason"] = str(plan_result.get("_planner_fallback_reason") or "")
+                if not str(plan_round.get("summary") or "").strip():
+                    plan_round["summary"] = str(plan_result.get("_planner_raw") or "Watch plan refreshed.")
+                history.append(plan_round)
+                reroute_to = "execute"
+
+            if reroute_to == "execute":
+                execute_steps = list(plan_result.get("rounds", {}).get("execute", {}).get("steps") or [])
+                execute_result = await self._run_watch_execute_round(
+                    campfire_name,
+                    torch,
+                    execute_steps,
+                    str(discover_result.get("summary") or original_text),
+                    corr,
+                    watch_id,
+                )
+                history.append(dict(execute_result))
+                reroute_to = "verify"
+
+            verify_spec = dict(plan_result.get("rounds", {}).get("verify", {}) or {})
+            verify_result = await self._run_watch_verify_round(
+                campfire_name,
+                torch,
+                verify_spec,
+                str(discover_result.get("summary") or original_text),
+                str(execute_result.get("summary") or ""),
+                corr,
+                watch_id,
+                history,
+            )
+            history.append(dict(verify_result))
+            decision = verify_result.get("decision") if isinstance(verify_result.get("decision"), dict) else {}
+            watch_payload = {
+                "watch_id": watch_id,
+                "campfire": campfire_name,
+                "torch_id": getattr(torch, "torch_id", ""),
+                "retry_count": retry_count,
+                "history": history,
+                "report_url": f"/api/watch/runs/{watch_id}/report",
+            }
+            if decision.get("pass"):
+                improve_spec = dict(plan_result.get("rounds", {}).get("improve", {}) or {})
+                improve_result = await self._run_watch_improve_round(
+                    campfire_name,
+                    torch,
+                    improve_spec,
+                    verify_result,
+                    execute_result,
+                    corr,
+                    watch_id,
+                    history,
+                    retry_count,
+                )
+                history.append(dict(improve_result))
+                learning = dict(improve_result.get("learning") or {})
+                learning_summary = None
+                if bool(settings.get("save_learning", True)):
+                    learning_summary = self._record_watch_learning(campfire_name, watch_id, str(corr or ""), learning, True, retry_count)
+                result = {
+                    "ok": True,
+                    "text": str(execute_result.get("summary") or original_text or "Watch completed."),
+                    "campfire": campfire_name,
+                    "watch": {
+                        **watch_payload,
+                        "learning": learning,
+                        "learning_summary": learning_summary,
+                    },
+                    "correlation_id": corr,
+                }
+                if bool(settings.get("save_trace", True)):
+                    self._watch_runs[watch_id] = result
+                    report_path = self.save_watch_report(watch_id)
+                    if report_path:
+                        result["watch"]["report_path"] = report_path
+                        self._watch_runs[watch_id] = result
+                return Torch(
+                    claim="service_response",
+                    source_campfire=f"{campfire_name} Watch",
+                    channel="service",
+                    torch_id=f"service_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{torch.sender_valley}",
+                    data=result,
+                    signature="service_placeholder",
+                    metadata={"correlation_id": corr, "parent": campfire_name, "watch_run_id": watch_id},
+                )
+            if retry_count >= max_retries:
+                improve_spec = dict(plan_result.get("rounds", {}).get("improve", {}) or {})
+                improve_result = await self._run_watch_improve_round(
+                    campfire_name,
+                    torch,
+                    improve_spec,
+                    verify_result,
+                    execute_result,
+                    corr,
+                    watch_id,
+                    history,
+                    retry_count,
+                )
+                history.append(dict(improve_result))
+                learning = dict(improve_result.get("learning") or {})
+                learning_summary = None
+                if bool(settings.get("save_learning", True)):
+                    learning_summary = self._record_watch_learning(campfire_name, watch_id, str(corr or ""), learning, False, retry_count)
+                result = {
+                    "ok": False,
+                    "text": str(decision.get("feedback") or execute_result.get("summary") or "Watch verification failed."),
+                    "campfire": campfire_name,
+                    "watch": {
+                        **watch_payload,
+                        "learning": learning,
+                        "learning_summary": learning_summary,
+                    },
+                    "correlation_id": corr,
+                }
+                if bool(settings.get("save_trace", True)):
+                    self._watch_runs[watch_id] = result
+                    report_path = self.save_watch_report(watch_id)
+                    if report_path:
+                        result["watch"]["report_path"] = report_path
+                        self._watch_runs[watch_id] = result
+                return Torch(
+                    claim="service_response",
+                    source_campfire=f"{campfire_name} Watch",
+                    channel="service",
+                    torch_id=f"service_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{torch.sender_valley}",
+                    data=result,
+                    signature="service_placeholder",
+                    metadata={"correlation_id": corr, "parent": campfire_name, "watch_run_id": watch_id},
+                )
+            retry_count += 1
+            verifier_feedback = str(decision.get("feedback") or "").strip()
+            reroute_to = str(
+                decision.get("reroute_to")
+                or plan_result.get("failure_policy", {}).get("default_reroute_to")
+                or settings.get("default_fail_reroute")
+                or "plan"
+            ).strip().lower()
+            if reroute_to not in {"discover", "plan", "execute"}:
+                reroute_to = "plan"
+
     def _normalize_rounds(self, rounds: Any) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         for raw in rounds or []:
@@ -777,6 +2172,10 @@ class Valley(IValley):
 
     async def _process_target_campfire(self, campfire_name: str, torch: 'Torch') -> Optional['Torch']:
         campfire = self.campfires[campfire_name]
+        if self._watch_enabled_for_torch(campfire_name, torch):
+            watch_resp = await self._run_watch_for_torch(campfire_name, torch)
+            if watch_resp is not None:
+                return watch_resp
         service_resp = await self.process_service_call(campfire_name, torch)
         if service_resp is not None:
             return service_resp
@@ -1444,6 +2843,13 @@ class Valley(IValley):
             # Parse target address to find the campfire
             # Format: valley:campfire or valley:name/campfire/camper or just campfire_name
             campfire_name = torch.target_address
+            raw_target = str(campfire_name or "")
+
+            # Prefer an exact local campfire name before interpreting ":" or "/"
+            # as routing syntax. Campfire names can legitimately contain URLs.
+            if raw_target in self.campfires:
+                logger.info(f"Routing torch {torch.torch_id} to campfire '{raw_target}' via exact target match")
+                return await self._process_target_campfire(raw_target, torch)
             
             # Handle valley:campfire format
             if ':' in campfire_name:

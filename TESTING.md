@@ -81,6 +81,24 @@ pytest tests/test_campfire.py::test_campfire_creation
 pytest -k "test_monitoring"
 ```
 
+### Focused Watch and Legal Checks
+
+Use these commands when validating the current watch-orchestration and legal-demo features:
+
+```bash
+# Specialist watch planning, fallback routing, and watch report rendering
+pytest tests/test_watch_mode.py -q
+
+# End-to-end legal request using the real agreement PDF
+pytest tests/test_legal_e2e.py -q
+
+# Run both focused suites together
+pytest tests/test_watch_mode.py tests/test_legal_e2e.py -q
+
+# Smoke-test the standalone legal demo without a full live run
+python examples/legal_team_demo.py --setup-only --workspace demo_workspace/legal_team_smoke
+```
+
 ### Test Categories
 
 ```bash
@@ -242,6 +260,17 @@ async def test_complete_torch_workflow():
 - VALI + Justice system integration
 - Monitoring + Configuration integration
 - Storage + Routing integration
+
+### Current End-to-End Coverage
+
+- `tests/test_watch_mode.py`
+  - verifies planner fallback behavior
+  - verifies specialist non-auditor campers are preferred for `discover` and `execute`
+  - verifies watch report HTML rendering includes round history and learning summaries
+- `tests/test_legal_e2e.py`
+  - loads `inspiration/Software Development Agreement - Hibbert IT Solutions (1).pdf`
+  - sends a normal user torch through the legal team watch path
+  - verifies the final answer, watch history, verification, and improvement flow
 
 ## Performance Tests
 

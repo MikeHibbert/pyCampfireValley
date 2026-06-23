@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
-- (none)
+- Demo: runnable `examples/legal_team_demo.py` that provisions a real legal watch team, reviews the sample software development agreement PDF, and emits direct file links for the watch report and saved result
+- Tests: focused legal end-to-end coverage in `tests/test_legal_e2e.py` using the real agreement PDF as input
 
 ### Changed
-- (none)
+- Watch orchestration: planner prompts and fallback behavior now push auditors toward specialist non-auditor campers for `discover` and `execute`
+- Demo/docs: updated README, demo guide, and testing guidance for the legal watch demo and report artifacts
 
 ### Fixed
-- (none)
+- Legal demo: tuned verifier/reporter prompt behavior so the live Ollama-backed watch run converges more reliably and records usable learning data
 
 ## [1.2.3] - 2026-05-04
 ### Added

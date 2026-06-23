@@ -27,6 +27,29 @@ The current demo path is focused on the web UI and live valley discovery:
 - rounds and snapshot workflows
 - stable valley IDs and service manifests
 
+## Legal Watch Demo
+
+For a standalone end-to-end example of the watch planner/reviewer loop, use the legal team demo:
+
+```bash
+python examples/legal_team_demo.py --setup-only --workspace demo_workspace/legal_team_smoke
+python examples/legal_team_demo.py --workspace demo_workspace/legal_team_full_tuned --watch-max-retries 1
+```
+
+What it demonstrates:
+
+- provisioning a real `Legal Team` plus specialist campers
+- extracting text from `inspiration/Software Development Agreement - Hibbert IT Solutions (1).pdf`
+- running `discover`, `plan`, `execute`, `verify`, and `improve`
+- saving a watch report HTML artifact and a JSON result artifact
+- emitting direct `file:///...` links for those artifacts at the end of the run
+
+Useful flags:
+
+- `--setup-only` verifies provisioning, workflow registration, and PDF extraction without requiring a full LLM-backed run
+- `--watch-max-retries 1` caps verifier reruns for the demo
+- `--show-watch` prints the final watch payload JSON
+
 ## Suggested Walkthrough
 
 1. Open `http://localhost:8000`
@@ -44,7 +67,7 @@ Create a new camper called demo-helper for this campfire.
 
 ## Legacy Demo Scripts
 
-The repository may still include older standalone demo scripts and notes. Treat those as exploratory or historical unless you have separately verified them in your environment.
+The repository may still include older standalone demo scripts and notes. Treat those as exploratory or historical unless you have separately verified them in your environment. The legal team demo is the current maintained standalone watch example.
 
 ## Useful Commands
 

@@ -35,6 +35,20 @@ Create a new camper called summary-bot for this campfire.
 - Run `self audit` and `self audit cid:<correlation_id>`
 - Clean up older legacy backend auditor campfires from the valley details panel
 
+### Watch Workflow Improvements
+
+- Watch planning now prefers specialist non-auditor campers for `discover` and `execute` when a suitable worker is available
+- Auditor verification and improvement rounds can feed learning back into future watch runs through the runtime learning bucket
+- Generated watch reports are saved as HTML files and can be opened directly from emitted `file:///...` links in demo output
+- Final watch answers can include a `Role Contributions` appendix so verification can confirm how specialist steps contributed to the result
+
+### Legal Contract Demo
+
+- `examples/legal_team_demo.py` provisions a real `Legal Team`, `Legal Team Auditor`, `Contract Researcher`, `Contract Analyst`, and `Legal Reporter`
+- The demo extracts text from `inspiration/Software Development Agreement - Hibbert IT Solutions (1).pdf` with `pypdf`
+- Full runs execute the normal watch flow: `discover -> plan -> execute -> verify -> improve`
+- Demo output now includes direct file links for the reports directory, watch report HTML, and saved JSON result
+
 ### Remote Valley and Campfire Discovery
 
 - Discover remote valleys through Dock broadcasts
@@ -169,6 +183,14 @@ Typical payload fields:
 ```bash
 pip install -e ".[dev]"
 pytest
+```
+
+Focused watch and legal checks:
+
+```bash
+pytest tests/test_watch_mode.py tests/test_legal_e2e.py -q
+python examples/legal_team_demo.py --setup-only --workspace demo_workspace/legal_team_smoke
+python examples/legal_team_demo.py --workspace demo_workspace/legal_team_full_tuned --watch-max-retries 1
 ```
 
 ### Rebuild the UI Stack
