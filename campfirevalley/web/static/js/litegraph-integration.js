@@ -1,6 +1,8 @@
 // LiteGraph Integration for CampfireValley
 // This file manages the LiteGraph canvas and integrates it with the existing CampfireValley functionality
 
+const DEFAULT_OLLAMA_MODEL_FALLBACK = "gemma4:e4b";
+
 class CampfireValleyLiteGraph {
     constructor() {
         this.buildId = "20260521-graph-link-rebuild-b2";
@@ -19,6 +21,8 @@ class CampfireValleyLiteGraph {
         this.isListening = false;
         this.backendCampfiresCache = { ts: 0, items: [] };
         this.backendSyncPromise = null;
+        this.defaultOllamaModel = null;
+        this.defaultOllamaModelPromise = null;
         this.connectorRefreshTimers = [];
         this.backendGraphRefreshTimers = [];
         
@@ -33,6 +37,31 @@ class CampfireValleyLiteGraph {
         this.createDefaultNodes = this.createDefaultNodes.bind(this);
         this.connectWebSocket = this.connectWebSocket.bind(this);
         this.updateFromWebSocket = this.updateFromWebSocket.bind(this);
+    }
+
+    async getDefaultOllamaModel() {
+        if (this.defaultOllamaModel) {
+            return this.defaultOllamaModel;
+        }
+        if (!this.defaultOllamaModelPromise) {
+            this.defaultOllamaModelPromise = (async () => {
+                try {
+                    const res = await fetch("/api/settings/defaults");
+                    if (res.ok) {
+                        const data = await res.json();
+                        const model = data && data.defaults && data.defaults.ollama_model;
+                        if (typeof model === "string" && model.trim()) {
+                            this.defaultOllamaModel = model.trim();
+                            return this.defaultOllamaModel;
+                        }
+                    }
+                } catch (e) {
+                }
+                this.defaultOllamaModel = DEFAULT_OLLAMA_MODEL_FALLBACK;
+                return this.defaultOllamaModel;
+            })();
+        }
+        return this.defaultOllamaModelPromise;
     }
     
     init(canvasElement) {
@@ -692,6 +721,24 @@ class CampfireValleyLiteGraph {
             <div class="chat-tools-row"><label>Enable Zeitgeist</label><input id="toolZeitgeistEnabled" type="checkbox"/></div>
             <div class="chat-tools-row"><label>Web Search</label><input id="toolWebSearch" type="checkbox"/></div>
             <div class="chat-tools-row"><label>Image OCR</label><input id="toolImageOCR" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Enable Gmail Plugin</label><input id="toolPluginGmailEnabled" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Enable Docs Plugin</label><input id="toolPluginDocsEnabled" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Enable Calendar Plugin</label><input id="toolPluginCalendarEnabled" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Enable Drive Plugin</label><input id="toolPluginDriveEnabled" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Enable Sheets Plugin</label><input id="toolPluginSheetsEnabled" type="checkbox"/></div>
+            <div class="chat-tools-row"><label>Subject Filter</label><input id="toolFilterSubject" type="text" placeholder="e.g. onboarding, contracts"/></div>
+            <div class="chat-tools-row"><label>Person Filter</label><input id="toolFilterPerson" type="text" placeholder="e.g. recruiter@company.com"/></div>
+            <div class="chat-tools-row"><label>Date Range</label><select id="toolFilterDateRange"><option value="">Auto</option><option value="last_7d">Last 7 Days</option><option value="last_30d">Last 30 Days</option><option value="last_90d">Last 90 Days</option><option value="upcoming_30d">Upcoming 30 Days</option><option value="custom">Custom</option></select></div>
+            <div class="chat-tools-row"><label>Custom Start</label><input id="toolFilterCustomStart" type="date"/></div>
+            <div class="chat-tools-row"><label>Custom End</label><input id="toolFilterCustomEnd" type="date"/></div>
+            <div class="chat-tools-row"><label>Google Auth</label><button id="toolPluginGoogleConnect" type="button">Connect Google</button></div>
+            <div class="chat-tools-row"><label>Google Auth Status</label><div id="toolPluginGoogleStatus">(not loaded)</div></div>
+            <div class="chat-tools-row"><label>Gmail Status</label><div id="toolPluginGmailStatus">(not loaded)</div></div>
+            <div class="chat-tools-row"><label>Docs Status</label><div id="toolPluginDocsStatus">(not loaded)</div></div>
+            <div class="chat-tools-row"><label>Calendar Status</label><div id="toolPluginCalendarStatus">(not loaded)</div></div>
+            <div class="chat-tools-row"><label>Drive Status</label><div id="toolPluginDriveStatus">(not loaded)</div></div>
+            <div class="chat-tools-row"><label>Sheets Status</label><div id="toolPluginSheetsStatus">(not loaded)</div></div>
+            <div class="chat-tools-row"><label>Plugin Actions</label><div id="toolPluginActions"></div></div>
             <div class="chat-tools-row"><label>Ollama Model</label><select id="toolModelSelect"></select></div>
         `;
         document.body.appendChild(toolsPanel);
@@ -2501,6 +2548,16 @@ class CampfireValleyLiteGraph {
             let enabled = false;
             let ws = false;
             let ocr = false;
+            let gmailEnabled = false;
+            let docsEnabled = false;
+            let calendarEnabled = false;
+            let driveEnabled = false;
+            let sheetsEnabled = false;
+            let subjectFilter = "";
+            let personFilter = "";
+            let dateRange = "";
+            let customStart = "";
+            let customEnd = "";
             const res = await fetch(`/api/campfire/tools?campfire=${encodeURIComponent(campfireId)}`);
             if (res.ok) {
                 const data = await res.json();
@@ -2508,16 +2565,148 @@ class CampfireValleyLiteGraph {
                 enabled = !!z.enabled;
                 ws = !!z.web_search;
                 ocr = !!z.image_ocr;
+                gmailEnabled = !!(z.plugins && z.plugins.gmail && z.plugins.gmail.enabled);
+                docsEnabled = !!(z.plugins && z.plugins.google_docs && z.plugins.google_docs.enabled);
+                calendarEnabled = !!(z.plugins && z.plugins.google_calendar && z.plugins.google_calendar.enabled);
+                driveEnabled = !!(z.plugins && z.plugins.google_drive && z.plugins.google_drive.enabled);
+                sheetsEnabled = !!(z.plugins && z.plugins.google_sheets && z.plugins.google_sheets.enabled);
+                subjectFilter = String((z.filters && z.filters.subject) || "");
+                personFilter = String((z.filters && z.filters.person) || "");
+                dateRange = String((z.filters && z.filters.date_range) || "");
+                customStart = String((z.filters && z.filters.custom_start) || "");
+                customEnd = String((z.filters && z.filters.custom_end) || "");
             }
             const enabledEl = document.getElementById("toolZeitgeistEnabled");
             const wsEl = document.getElementById("toolWebSearch");
             const ocrEl = document.getElementById("toolImageOCR");
+            const gmailEl = document.getElementById("toolPluginGmailEnabled");
+            const docsEl = document.getElementById("toolPluginDocsEnabled");
+            const calendarEl = document.getElementById("toolPluginCalendarEnabled");
+            const driveEl = document.getElementById("toolPluginDriveEnabled");
+            const sheetsEl = document.getElementById("toolPluginSheetsEnabled");
+            const subjectEl = document.getElementById("toolFilterSubject");
+            const personEl = document.getElementById("toolFilterPerson");
+            const dateRangeEl = document.getElementById("toolFilterDateRange");
+            const customStartEl = document.getElementById("toolFilterCustomStart");
+            const customEndEl = document.getElementById("toolFilterCustomEnd");
             if (enabledEl) enabledEl.checked = enabled;
             if (wsEl) wsEl.checked = ws;
             if (ocrEl) ocrEl.checked = ocr;
+            if (gmailEl) gmailEl.checked = gmailEnabled;
+            if (docsEl) docsEl.checked = docsEnabled;
+            if (calendarEl) calendarEl.checked = calendarEnabled;
+            if (driveEl) driveEl.checked = driveEnabled;
+            if (sheetsEl) sheetsEl.checked = sheetsEnabled;
+            if (subjectEl) subjectEl.value = subjectFilter;
+            if (personEl) personEl.value = personFilter;
+            if (dateRangeEl) dateRangeEl.value = dateRange;
+            if (customStartEl) customStartEl.value = customStart;
+            if (customEndEl) customEndEl.value = customEnd;
             this.bindToolsPanelEvents(campfireId);
+            await this.loadZeitgeistPluginsForCampfire(campfireId);
             await this.loadLlmModelForCampfire(campfireId);
         } catch (e) {
+        }
+    }
+
+    async loadZeitgeistPluginsForCampfire(campfireId) {
+        const googleStatusEl = document.getElementById("toolPluginGoogleStatus");
+        const gmailStatusEl = document.getElementById("toolPluginGmailStatus");
+        const docsStatusEl = document.getElementById("toolPluginDocsStatus");
+        const calendarStatusEl = document.getElementById("toolPluginCalendarStatus");
+        const driveStatusEl = document.getElementById("toolPluginDriveStatus");
+        const sheetsStatusEl = document.getElementById("toolPluginSheetsStatus");
+        const actionsEl = document.getElementById("toolPluginActions");
+        const connectBtn = document.getElementById("toolPluginGoogleConnect");
+        if (googleStatusEl) googleStatusEl.textContent = "(loading)";
+        if (gmailStatusEl) gmailStatusEl.textContent = "(loading)";
+        if (docsStatusEl) docsStatusEl.textContent = "(loading)";
+        if (calendarStatusEl) calendarStatusEl.textContent = "(loading)";
+        if (driveStatusEl) driveStatusEl.textContent = "(loading)";
+        if (sheetsStatusEl) sheetsStatusEl.textContent = "(loading)";
+        if (actionsEl) actionsEl.textContent = "";
+        if (connectBtn) connectBtn.disabled = false;
+        try {
+            const res = await fetch(`/api/zeitgeist/plugins?campfire=${encodeURIComponent(campfireId)}`);
+            if (!res.ok) {
+                if (googleStatusEl) googleStatusEl.textContent = "(unavailable)";
+                if (gmailStatusEl) gmailStatusEl.textContent = "(unavailable)";
+                if (docsStatusEl) docsStatusEl.textContent = "(unavailable)";
+                if (calendarStatusEl) calendarStatusEl.textContent = "(unavailable)";
+                if (driveStatusEl) driveStatusEl.textContent = "(unavailable)";
+                if (sheetsStatusEl) sheetsStatusEl.textContent = "(unavailable)";
+                return;
+            }
+            const data = await res.json();
+            const gmail = (data.plugins || {}).gmail || {};
+            const docs = (data.plugins || {}).google_docs || {};
+            const calendar = (data.plugins || {}).google_calendar || {};
+            const drive = (data.plugins || {}).google_drive || {};
+            const sheets = (data.plugins || {}).google_sheets || {};
+            const catalog = Array.isArray(data.catalog) ? data.catalog : [];
+            const actions = [];
+            catalog.forEach((item) => {
+                if (item && Array.isArray(item.actions)) {
+                    item.actions.forEach((action) => actions.push(action));
+                }
+            });
+            const statusText = (plugin) => {
+                if (!plugin || !plugin.enabled) return "disabled";
+                if (!plugin.credentials_present) return "missing credentials";
+                if (plugin.authorized && plugin.scopes_ready === false) return "connected, needs broader scopes";
+                if (plugin.authorized) return "connected";
+                return "ready to connect";
+            };
+            if (googleStatusEl) {
+                const anyEnabled = !!(gmail.enabled || docs.enabled || calendar.enabled || drive.enabled || sheets.enabled);
+                const anyAuthorized = !!(gmail.authorized || docs.authorized || calendar.authorized || drive.authorized || sheets.authorized);
+                if (!anyEnabled) {
+                    googleStatusEl.textContent = "disabled";
+                } else if (anyAuthorized && (gmail.scopes_ready === false || docs.scopes_ready === false || calendar.scopes_ready === false || drive.scopes_ready === false || sheets.scopes_ready === false)) {
+                    googleStatusEl.textContent = "connected, reconnect for more scopes";
+                } else if (anyAuthorized) {
+                    googleStatusEl.textContent = "connected";
+                } else if (gmail.credentials_present || docs.credentials_present || calendar.credentials_present || drive.credentials_present || sheets.credentials_present) {
+                    googleStatusEl.textContent = "ready to connect";
+                } else {
+                    googleStatusEl.textContent = "missing credentials";
+                }
+            }
+            if (gmailStatusEl) {
+                gmailStatusEl.textContent = statusText(gmail);
+            }
+            if (docsStatusEl) {
+                docsStatusEl.textContent = statusText(docs);
+            }
+            if (calendarStatusEl) {
+                calendarStatusEl.textContent = statusText(calendar);
+            }
+            if (driveStatusEl) {
+                driveStatusEl.textContent = statusText(drive);
+            }
+            if (sheetsStatusEl) {
+                sheetsStatusEl.textContent = statusText(sheets);
+            }
+            if (actionsEl) {
+                const labels = actions
+                    .map((item) => String((item && (item.label || item.id)) || "").trim())
+                    .filter(Boolean);
+                actionsEl.textContent = labels.length ? labels.join(", ") : "(none)";
+            }
+            if (connectBtn) {
+                const anyEnabled = !!(gmail.enabled || docs.enabled || calendar.enabled || drive.enabled || sheets.enabled);
+                const credsPresent = !!(gmail.credentials_present || docs.credentials_present || calendar.credentials_present || drive.credentials_present || sheets.credentials_present);
+                const anyAuthorized = !!(gmail.authorized || docs.authorized || calendar.authorized || drive.authorized || sheets.authorized);
+                connectBtn.disabled = !(anyEnabled && credsPresent);
+                connectBtn.textContent = anyAuthorized ? "Reconnect Google" : "Connect Google";
+            }
+        } catch (e) {
+            if (googleStatusEl) googleStatusEl.textContent = "(error)";
+            if (gmailStatusEl) gmailStatusEl.textContent = "(error)";
+            if (docsStatusEl) docsStatusEl.textContent = "(error)";
+            if (calendarStatusEl) calendarStatusEl.textContent = "(error)";
+            if (driveStatusEl) driveStatusEl.textContent = "(error)";
+            if (sheetsStatusEl) sheetsStatusEl.textContent = "(error)";
         }
     }
 
@@ -2582,13 +2771,48 @@ class CampfireValleyLiteGraph {
         const enabledEl = document.getElementById("toolZeitgeistEnabled");
         const wsEl = document.getElementById("toolWebSearch");
         const ocrEl = document.getElementById("toolImageOCR");
+        const gmailEl = document.getElementById("toolPluginGmailEnabled");
+        const docsEl = document.getElementById("toolPluginDocsEnabled");
+        const calendarEl = document.getElementById("toolPluginCalendarEnabled");
+        const driveEl = document.getElementById("toolPluginDriveEnabled");
+        const sheetsEl = document.getElementById("toolPluginSheetsEnabled");
+        const subjectEl = document.getElementById("toolFilterSubject");
+        const personEl = document.getElementById("toolFilterPerson");
+        const dateRangeEl = document.getElementById("toolFilterDateRange");
+        const customStartEl = document.getElementById("toolFilterCustomStart");
+        const customEndEl = document.getElementById("toolFilterCustomEnd");
+        const googleConnectEl = document.getElementById("toolPluginGoogleConnect");
         const sendUpdate = async () => {
             const payload = {
                 campfire: campfireId,
                 zeitgeist: {
                     enabled: !!enabledEl.checked,
                     web_search: !!wsEl.checked,
-                    image_ocr: !!ocrEl.checked
+                    image_ocr: !!ocrEl.checked,
+                    filters: {
+                        subject: String((subjectEl && subjectEl.value) || "").trim(),
+                        person: String((personEl && personEl.value) || "").trim(),
+                        date_range: String((dateRangeEl && dateRangeEl.value) || "").trim(),
+                        custom_start: String((customStartEl && customStartEl.value) || "").trim(),
+                        custom_end: String((customEndEl && customEndEl.value) || "").trim()
+                    },
+                    plugins: {
+                        gmail: {
+                            enabled: !!(gmailEl && gmailEl.checked)
+                        },
+                        google_docs: {
+                            enabled: !!(docsEl && docsEl.checked)
+                        },
+                        google_calendar: {
+                            enabled: !!(calendarEl && calendarEl.checked)
+                        },
+                        google_drive: {
+                            enabled: !!(driveEl && driveEl.checked)
+                        },
+                        google_sheets: {
+                            enabled: !!(sheetsEl && sheetsEl.checked)
+                        }
+                    }
                 }
             };
             try {
@@ -2597,12 +2821,37 @@ class CampfireValleyLiteGraph {
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(payload)
                 });
+                await this.loadZeitgeistPluginsForCampfire(campfireId);
             } catch (e) {
             }
         };
         enabledEl.onchange = sendUpdate;
         wsEl.onchange = sendUpdate;
         ocrEl.onchange = sendUpdate;
+        if (gmailEl) gmailEl.onchange = sendUpdate;
+        if (docsEl) docsEl.onchange = sendUpdate;
+        if (calendarEl) calendarEl.onchange = sendUpdate;
+        if (driveEl) driveEl.onchange = sendUpdate;
+        if (sheetsEl) sheetsEl.onchange = sendUpdate;
+        if (subjectEl) subjectEl.onchange = sendUpdate;
+        if (personEl) personEl.onchange = sendUpdate;
+        if (dateRangeEl) dateRangeEl.onchange = sendUpdate;
+        if (customStartEl) customStartEl.onchange = sendUpdate;
+        if (customEndEl) customEndEl.onchange = sendUpdate;
+        if (googleConnectEl) {
+            googleConnectEl.onclick = async () => {
+                try {
+                    const res = await fetch(`/api/zeitgeist/plugins/google/auth/start?campfire=${encodeURIComponent(campfireId)}`);
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    const authUrl = String((data && data.auth_url) || "").trim();
+                    if (authUrl) {
+                        window.open(authUrl, "_blank", "noopener");
+                    }
+                } catch (e) {
+                }
+            };
+        }
     }
 
     hideChatPanel() {
@@ -2641,6 +2890,18 @@ class CampfireValleyLiteGraph {
             el.className = `chat-message ${m.role === "user" ? "user" : "system"}`;
             el.innerHTML = this._markdownToHtml(m.text);
             container.appendChild(el);
+            if (m && typeof m.watch_report_url === "string" && m.watch_report_url.trim()) {
+                const row = document.createElement("div");
+                row.className = "chat-options";
+                const link = document.createElement("a");
+                link.className = "chat-option-btn";
+                link.href = m.watch_report_url;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                link.textContent = m.watch_report_label || "Open Watch Report";
+                row.appendChild(link);
+                container.appendChild(row);
+            }
             const options = m && Array.isArray(m.options) ? m.options : null;
             if (options && options.length) {
                 const row = document.createElement("div");
@@ -2925,7 +3186,9 @@ class CampfireValleyLiteGraph {
         }
 
         this.appendChatMessage(auditor, { role: "system", text: "Auditor created and linked. Select a node to chat.", ts: Date.now() });
-        this.ensureBackendCampfire(campfireName, "You are a helpful campfire agent. Keep responses concise and actionable.", "gemma3:4b");
+        this.getDefaultOllamaModel().then((model) => {
+            this.ensureBackendCampfire(campfireName, "You are a helpful campfire agent. Keep responses concise and actionable.", model);
+        });
     }
 
     async ensureBackendCampfire(name, systemPrompt, model) {
@@ -2938,7 +3201,7 @@ class CampfireValleyLiteGraph {
                     persona: {
                         name,
                         provider: "ollama",
-                        model: model || "gemma3:4b",
+                        model: model || await this.getDefaultOllamaModel(),
                         system_prompt: systemPrompt || ""
                     }
                 })
@@ -3016,7 +3279,7 @@ class CampfireValleyLiteGraph {
             return;
         }
         const systemPrompt = (node.properties && node.properties.role_prompt) || `You are ${target}.`;
-        await this.ensureBackendCampfire(target, systemPrompt, "gemma3:4b");
+        await this.ensureBackendCampfire(target, systemPrompt, await this.getDefaultOllamaModel());
         await this.fetchBackendCampfires(true);
     }
 
@@ -3378,7 +3641,7 @@ class CampfireValleyLiteGraph {
                 const looksMissing = res.status === 500 && /campfire.+not found/i.test(bodyText);
                 if (looksMissing) {
                     const systemPrompt = (node.properties && node.properties.role_prompt) || `You are ${target}.`;
-                    await this.ensureBackendCampfire(target, systemPrompt, "gemma3:4b");
+                    await this.ensureBackendCampfire(target, systemPrompt, await this.getDefaultOllamaModel());
                     res = await sendOnce();
                 }
             }
@@ -3426,6 +3689,12 @@ class CampfireValleyLiteGraph {
             }
             if (response && typeof response.rename_from === "string") {
                 msg.rename_from = response.rename_from;
+            }
+            const watch = response && typeof response.watch === "object" ? response.watch : null;
+            if (watch && typeof watch.report_url === "string" && watch.report_url.trim()) {
+                msg.watch_report_url = watch.report_url;
+                const watchId = typeof watch.watch_id === "string" ? watch.watch_id.trim() : "";
+                msg.watch_report_label = watchId ? `Open Watch Report (${watchId})` : "Open Watch Report";
             }
             this.appendChatMessage(node, msg);
             this.updateChatTitleFromBackend(node);

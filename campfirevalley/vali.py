@@ -229,6 +229,83 @@ class VALICoordinator:
             )
         finally:
             self._active_requests.pop(request_id, None)
+
+    async def request_service_via_mcp(
+        self,
+        service_type: VALIServiceType,
+        payload: Dict[str, Any],
+        requirements: Optional[Dict[str, Any]] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> VALIServiceResponse:
+        """
+        Request a local VALI service through the MCP broker request/response path.
+        Falls back to direct local execution when MCP is unavailable.
+        """
+        if not self.mcp_broker or not getattr(self.mcp_broker, "is_connected", None) or not self.mcp_broker.is_connected():
+            return await self.request_service(service_type, payload, requirements, timeout)
+        request_id = f"vali_{service_type.value}_{uuid4().hex}"
+        deadline = datetime.utcnow() + (timeout or self._default_timeout)
+        request = VALIServiceRequest(
+            service_type=service_type.value,
+            request_id=request_id,
+            payload=payload or {},
+            requirements=requirements or {},
+            deadline=deadline,
+        )
+        response_channel = f"vali.responses.{request_id}"
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+
+        async def _response_cb(_channel: str, msg: Dict[str, Any]) -> None:
+            if not future.done():
+                future.set_result(msg)
+
+        await self.mcp_broker.subscribe(response_channel, _response_cb)
+        try:
+            if hasattr(request, "model_dump"):
+                request_payload = request.model_dump(mode="json")
+            else:
+                request_payload = request.dict()
+            published = await self.mcp_broker.publish("vali.requests", {"data": request_payload})
+            if not published:
+                return VALIServiceResponse(
+                    request_id=request_id,
+                    status=VALIServiceStatus.FAILED.value,
+                    deliverables={},
+                    metadata={"error": "Failed to publish VALI request via MCP"},
+                )
+            try:
+                raw = await asyncio.wait_for(future, timeout=(timeout or self._default_timeout).total_seconds())
+            except asyncio.TimeoutError:
+                self.logger.warning("VALI MCP request timeout: %s", request_id)
+                return VALIServiceResponse(
+                    request_id=request_id,
+                    status=VALIServiceStatus.TIMEOUT.value,
+                    deliverables={},
+                    metadata={"error": "Request timeout"},
+                )
+        finally:
+            try:
+                await self.mcp_broker.unsubscribe(response_channel)
+            except Exception:
+                pass
+        if isinstance(raw, VALIServiceResponse):
+            return raw
+        if isinstance(raw, dict):
+            return VALIServiceResponse(**raw)
+        return VALIServiceResponse(
+            request_id=request_id,
+            status=VALIServiceStatus.FAILED.value,
+            deliverables={},
+            metadata={"error": f"Unexpected VALI MCP response type: {type(raw).__name__}"},
+        )
+
+    async def register_service(self, service: IVALIService) -> None:
+        """Register a local VALI service implementation."""
+        self.registry.register_service(service)
+
+    async def unregister_service(self, service_type: VALIServiceType) -> None:
+        """Unregister a local VALI service implementation."""
+        self.registry.unregister_service(service_type)
     
     async def scan_torch(self, torch: Torch, security_level: SecurityLevel = SecurityLevel.STANDARD) -> ScanResult:
         """
@@ -329,7 +406,7 @@ class VALICoordinator:
         return (response.status == VALIServiceStatus.COMPLETED.value and
                 response.deliverables.get("signature_valid", False))
     
-    async def _handle_service_request(self, message: Dict[str, Any]) -> None:
+    async def _handle_service_request(self, _channel: str, message: Dict[str, Any]) -> None:
         """Handle incoming VALI service requests via MCP"""
         try:
             request_data = message.get("data", {})
@@ -349,9 +426,13 @@ class VALICoordinator:
                 response = await service.process_request(request)
             
             # Send response back via MCP
+            if hasattr(response, "model_dump"):
+                response_payload = response.model_dump(mode="json")
+            else:
+                response_payload = response.dict()
             await self.mcp_broker.publish(
                 f"vali.responses.{request.request_id}",
-                response.dict()
+                response_payload
             )
             
         except Exception as e:
@@ -507,7 +588,7 @@ class VALICoordinator:
             self.logger.error(f"Failed to register federation service {service_type}: {e}")
             return False
     
-    async def _handle_discovery_message(self, message: Dict[str, Any]) -> None:
+    async def _handle_discovery_message(self, _channel: str, message: Dict[str, Any]) -> None:
         """Handle service discovery messages"""
         try:
             msg_type = message.get("type")
@@ -574,7 +655,7 @@ class VALICoordinator:
         except Exception as e:
             self.logger.error(f"Error handling discovery message: {e}")
     
-    async def _handle_federation_message(self, message: Dict[str, Any]) -> None:
+    async def _handle_federation_message(self, _channel: str, message: Dict[str, Any]) -> None:
         """Handle federation service messages"""
         try:
             if message.get("type") == "vali_request":

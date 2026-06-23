@@ -14,6 +14,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from campfirevalley.valley import Valley
+from campfirevalley.llm_defaults import get_default_ollama_model
 from campfirevalley.models import CampfireConfig
 import os
 from campfirevalley.web.api import run_web_server
@@ -107,7 +108,7 @@ async def create_demo_valley():
         name="Main Campfire",
         type="LLMCampfire",
         config={
-            "llm": {"provider": "ollama", "base_url": ollama_base, "model": "gemma3:4b"},
+            "llm": {"provider": "ollama", "base_url": ollama_base, "model": get_default_ollama_model()},
             "prompts": {"system": main_system_prompt},
         },
     )

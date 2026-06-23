@@ -2,13 +2,14 @@
 
 import asyncio
 import copy
+import html
 import json
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi import Body
+from fastapi import Body, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +33,18 @@ import base64
 from ..models import CampfireConfig, Torch
 from ..monitoring import get_monitoring_system, LogLevel
 from ..service_catalog import build_service_catalog
+from ..llm_defaults import get_default_ollama_model
+from ..zeitgeist_plugins import (
+    create_google_auth_start,
+    finish_google_oauth,
+    get_zeitgeist_plugin_catalog,
+    gmail_plugin_status,
+    google_calendar_plugin_status,
+    google_docs_plugin_status,
+    google_drive_plugin_status,
+    google_sheets_plugin_status,
+    peek_google_auth_state,
+)
 
 
 class WebSocketManager:
@@ -755,6 +768,7 @@ def _auditor_orchestrator_instruction() -> str:
         "Never create or manage auditors as separate campers.\n"
         "If the user asks to set up or create a team for the current campfire, plan campers and workflow for the current campfire unless they explicitly say new, another, or separate campfire/team.\n"
         "Only include campfire_to_create when the user explicitly asks for a new, another, or separate campfire/team.\n"
+        "Names like 'Intake Camper' are camper names, not campfire names. Put those in campers_to_create, not campfire_to_create.\n"
         "When producing a JSON plan, return ONLY valid JSON with keys:\n"
         "- campfire_to_create: optional object {name, persona, model, system_prompt} for explicit new campfire/team requests only\n"
         "- campers_to_create: array of {name, persona, model, system_prompt, rag_template}\n"
@@ -904,7 +918,7 @@ def _coerce_model(provider: str, model: str) -> str:
     m = (model or "").strip()
     if m:
         return m
-    return "gemma3:4b" if provider == "ollama" else "gpt-4o-mini"
+    return get_default_ollama_model() if provider == "ollama" else "gpt-4o-mini"
 
 
 def _pick_provider_and_model(requested_model: Optional[str]) -> tuple[str, str]:
@@ -918,7 +932,7 @@ def _pick_provider_and_model(requested_model: Optional[str]) -> tuple[str, str]:
     if "gemma" in lower or "llama" in lower or "mistral" in lower:
         return "ollama", requested
     p = _default_llm_provider()
-    return p, _coerce_model(p, requested if p == "openrouter" else "gemma3:4b")
+    return p, _coerce_model(p, requested if p == "openrouter" else get_default_ollama_model())
 
 
 def _parse_add_camper_command(text: str) -> Optional[str]:
@@ -1069,6 +1083,57 @@ def _derive_campfire_name(seed_text: str) -> str:
     if not kept:
         return "New Campfire"
     return (" ".join(kept) + " Campfire").strip()[:80]
+
+
+def _looks_like_camper_name(name: str) -> bool:
+    t = (name or "").strip().lower()
+    if not t:
+        return False
+    return t == "camper" or t.endswith(" camper")
+
+
+def _derive_parent_campfire_name_for_camper(camper_name: str) -> str:
+    raw = (camper_name or "").strip()
+    if not raw:
+        return "New Campfire"
+    base = re.sub(r"\s+camper\s*$", "", raw, flags=re.IGNORECASE).strip(" -_/")
+    if not base:
+        base = raw
+    if base.lower().endswith(" campfire"):
+        return base
+    return f"{base} Campfire"
+
+
+def _build_parent_campfire_config(
+    name: str,
+    goal_text: str = "",
+    persona: str = "",
+    model_hint: Optional[str] = None,
+    system_prompt: str = "",
+) -> CampfireConfig:
+    provider, model = _pick_provider_and_model(model_hint)
+    prompt = (system_prompt or "").strip()
+    if not prompt:
+        effective_goal = goal_text.strip() or "coordinate a specialist camper team"
+        prompt = (
+            f"You are {name}. Coordinate a specialist camper team to solve this goal: {effective_goal}. "
+            f"Use the saved workflow when the user asks you to run work, ask clarifying questions when needed, "
+            f"and keep final outputs concise and actionable."
+        )
+    return CampfireConfig(
+        name=name,
+        type="LLMCampfire",
+        config={
+            "llm": {
+                "provider": provider,
+                "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
+                "model": model,
+            },
+            "prompts": {"system": prompt},
+            "persona": {"name": name, "persona": persona or "team orchestrator", "model": model},
+            "rag": {"documents": _default_rag_documents(name, persona or goal_text)},
+        },
+    )
 
 
 def _unique_campfire_name(base_name: str) -> str:
@@ -1588,6 +1653,30 @@ async def get_campfire_tools(campfire: str):
     return {"status": "ok", "campfire": name, "tools": tools, "persisted": persisted}
 
 
+def _campfire_zeitgeist_tools(campfire: str) -> Dict[str, Any]:
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    name = (campfire or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Missing campfire")
+    if name not in campfire_parent and not name.lower().endswith(" camper"):
+        raise HTTPException(status_code=400, detail="Tools are configurable per-camper only")
+    cf = current_valley.campfires.get(name)
+    if not cf:
+        raise HTTPException(status_code=404, detail="Campfire not found")
+    cfg = getattr(cf, "config", None)
+    if isinstance(cfg, CampfireConfig):
+        conf = cfg.config or {}
+    elif isinstance(cfg, dict):
+        conf = cfg.get("config") or {}
+    else:
+        conf = {}
+    tools = (conf.get("tools") or {}).get("zeitgeist") or {}
+    if not isinstance(tools, dict):
+        tools = {}
+    return {"campfire": name, "tools": tools, "cf": cf, "cfg": cfg}
+
+
 @app.post("/api/campfire/tools")
 async def set_campfire_tools(payload: dict = Body(...)):
     if not current_valley:
@@ -1622,6 +1711,82 @@ async def set_campfire_tools(payload: dict = Body(...)):
     return {"status": "ok", "campfire": campfire, "tools": zeitgeist}
 
 
+@app.get("/api/zeitgeist/plugins")
+async def get_zeitgeist_plugins(campfire: str):
+    resolved = _campfire_zeitgeist_tools(campfire)
+    zeitgeist = resolved["tools"]
+    return {
+        "status": "ok",
+        "campfire": resolved["campfire"],
+        "catalog": get_zeitgeist_plugin_catalog(zeitgeist),
+        "plugins": {
+            "gmail": gmail_plugin_status(zeitgeist),
+            "google_docs": google_docs_plugin_status(zeitgeist),
+            "google_calendar": google_calendar_plugin_status(zeitgeist),
+            "google_drive": google_drive_plugin_status(zeitgeist),
+            "google_sheets": google_sheets_plugin_status(zeitgeist),
+        },
+    }
+
+
+@app.get("/api/zeitgeist/plugins/google/auth/start")
+async def start_google_plugin_auth(campfire: str, request: Request):
+    resolved = _campfire_zeitgeist_tools(campfire)
+    try:
+        flow = create_google_auth_start(str(request.base_url), resolved["tools"], resolved["campfire"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "status": "ok",
+        "campfire": resolved["campfire"],
+        "provider": "google",
+        "auth_url": flow.get("auth_url"),
+        "state": flow.get("state"),
+        "redirect_uri": flow.get("redirect_uri"),
+    }
+
+
+@app.get("/api/zeitgeist/plugins/gmail/auth/start")
+async def start_gmail_plugin_auth(campfire: str, request: Request):
+    return await start_google_plugin_auth(campfire, request)
+
+
+@app.get("/api/zeitgeist/plugins/google/auth/callback", response_class=HTMLResponse)
+async def finish_google_plugin_auth(code: str, state: str, request: Request):
+    try:
+        pending = peek_google_auth_state(state)
+        campfire_name = str((pending or {}).get("campfire") or "").strip()
+        resolved_tools = _campfire_zeitgeist_tools(campfire_name)["tools"] if campfire_name else {}
+        result = await finish_google_oauth(code, state, str(request.base_url), resolved_tools)
+    except HTTPException:
+        raise
+    except Exception as e:
+        return HTMLResponse(
+            content=(
+                "<html><body style='font-family: Arial, sans-serif; padding: 24px;'>"
+                f"<h2>Google Connection Failed</h2><p>{html.escape(str(e))}</p>"
+                "<p>You can return to CampfireValley and try connecting Google again.</p>"
+                "</body></html>"
+            ),
+            status_code=400,
+        )
+    campfire_name = str((result or {}).get("campfire") or "").strip()
+    return HTMLResponse(
+        content=(
+            "<html><body style='font-family: Arial, sans-serif; padding: 24px;'>"
+            "<h2>Google Services Connected</h2>"
+            f"<p>Campfire: {html.escape(campfire_name or '(unknown)')}</p>"
+            "<p>Gmail, Google Docs, and Google Calendar can now be used through Zeitgeist where enabled.</p>"
+            "</body></html>"
+        )
+    )
+
+
+@app.get("/api/zeitgeist/plugins/gmail/auth/callback", response_class=HTMLResponse)
+async def finish_gmail_plugin_auth(code: str, state: str, request: Request):
+    return await finish_google_plugin_auth(code, state, request)
+
+
 @app.get("/api/ollama/models")
 async def list_ollama_models():
     host = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434").rstrip("/")
@@ -1643,6 +1808,16 @@ async def list_ollama_models():
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to query Ollama: {e}")
+
+
+@app.get("/api/settings/defaults")
+def get_runtime_defaults():
+    return {
+        "status": "ok",
+        "defaults": {
+            "ollama_model": get_default_ollama_model(),
+        },
+    }
 
 
 async def _party_box_summary() -> Dict[str, Any]:
@@ -3083,10 +3258,16 @@ async def voice_ingest(payload: dict = Body(...)):
                         filtered_steps.append(s)
                 wf = dict(wf)
                 wf["steps"] = filtered_steps
+            plugin_names = []
+            plugins_block = tools.get("plugins") if isinstance(tools.get("plugins"), dict) else {}
+            for plugin_name, plugin_cfg in plugins_block.items():
+                if isinstance(plugin_cfg, dict) and plugin_cfg.get("enabled"):
+                    plugin_names.append(str(plugin_name))
             msg = (
                 f"Campfire: {parent}\n"
                 f"LLM: {(llm.get('provider') or 'ollama')} / {(llm.get('model') or '(default)')}\n"
                 f"Zeitgeist: enabled={bool(tools.get('enabled'))}, web_search={bool(tools.get('web_search'))}, image_ocr={bool(tools.get('image_ocr'))}\n"
+                f"Zeitgeist Plugins: " + (", ".join(plugin_names) if plugin_names else "(none)") + "\n"
                 f"Campers ({len(campers)}): " + (", ".join(campers) if campers else "(none)") + "\n"
                 f"Workflow: " + (json.dumps(wf, indent=2) if wf else "(none)") + "\n"
                 f"Schedule: " + (json.dumps(sched, indent=2) if sched else "(none)")
@@ -3130,9 +3311,9 @@ async def voice_ingest(payload: dict = Body(...)):
                     name=new_name,
                     type="LLMCampfire",
                     config={
-                        "llm": {"provider": "ollama", "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"), "model": "gemma3:4b"},
+                        "llm": {"provider": "ollama", "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"), "model": get_default_ollama_model()},
                         "prompts": {"system": _software_campfire_system_prompt(new_name, "generic")},
-                        "persona": {"name": new_name, "persona": "generic", "model": "gemma3:4b"},
+                        "persona": {"name": new_name, "persona": "generic", "model": get_default_ollama_model()},
                         "rag": {"documents": _default_rag_documents(new_name, "generic")},
                     },
                 )
@@ -3208,10 +3389,27 @@ async def voice_ingest(payload: dict = Body(...)):
             name = requested_name.strip() if isinstance(requested_name, str) else ""
             if not name:
                 name = f"Camper-{datetime.utcnow().strftime('%H%M%S')}"
+            camper_parent = (parent or "").strip()
+            created_parent = None
+            if not camper_parent:
+                camper_parent = _unique_campfire_name(_derive_parent_campfire_name_for_camper(name))
+                parent_cfg = _build_parent_campfire_config(
+                    camper_parent,
+                    goal_text=f"coordinate work for {name}",
+                )
+                ok_parent = await current_valley.provision_campfire(parent_cfg)
+                if not ok_parent:
+                    msg = f"Failed to create campfire '{camper_parent}' for camper '{name}'."
+                    _append_log(target, "assistant", msg)
+                    return {"status": "ok", "campfire": target, "response": {"text": msg, "ok": False}}
+                created_parent = camper_parent
             if name in current_valley.campfires:
-                msg = f"Camper '{name}' already exists."
-                _append_log(target, "assistant", msg)
-                return {"status": "ok", "campfire": target, "response": {"text": msg}}
+                existing_parent = campfire_parent.get(name)
+                if existing_parent == camper_parent:
+                    msg = f"Camper '{name}' already exists in '{camper_parent}'."
+                    _append_log(target, "assistant", msg)
+                    return {"status": "ok", "campfire": target, "response": {"text": msg, "parent": camper_parent}}
+                name = _unique_campfire_name(f"{camper_parent} {name}")
             provider, model = _pick_provider_and_model(None)
             base_url = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
             cfg = CampfireConfig(
@@ -3225,13 +3423,24 @@ async def voice_ingest(payload: dict = Body(...)):
                 },
             )
             ok = await current_valley.provision_campfire(cfg)
-            if ok and parent:
-                campfire_parent[name] = parent
+            if ok and camper_parent:
+                campfire_parent[name] = camper_parent
             msg = f"Created camper '{name}'. Select it to configure via chat/voice."
+            if ok and created_parent:
+                msg = f"Created campfire '{created_parent}' with camper '{name}'. Select the camper to configure via chat/voice."
             if not ok:
                 msg = f"Failed to create camper '{name}'."
             _append_log(target, "assistant", msg)
-            return {"status": "ok", "campfire": target, "response": {"text": msg, "created": [name] if ok else [], "parent": parent}}
+            return {
+                "status": "ok",
+                "campfire": target,
+                "response": {
+                    "text": msg,
+                    "created": [name] if ok else [],
+                    "created_campfire": created_parent,
+                    "parent": camper_parent or parent,
+                },
+            }
 
         effective = parent if parent in current_valley.campfires else None
         if not effective:
@@ -3293,28 +3502,30 @@ async def voice_ingest(payload: dict = Body(...)):
                 goal_text = str(create_campfire_request.get("goal") or "").strip()
             if not goal_text:
                 goal_text = str(message_to_user or cmd).strip()
-            base_name = requested_name or _derive_campfire_name(goal_text)
+            requested_name_is_camper = _looks_like_camper_name(requested_name)
+            if not requested_name_is_camper and isinstance(campers_to_create, list):
+                for raw in campers_to_create[:8]:
+                    if not isinstance(raw, dict):
+                        continue
+                    camper_candidate = str(raw.get("name") or "").strip()
+                    if camper_candidate and _normalize_label(camper_candidate) == _normalize_label(requested_name):
+                        requested_name_is_camper = True
+                        break
+            if requested_name_is_camper:
+                base_name = _derive_parent_campfire_name_for_camper(requested_name)
+            else:
+                base_name = requested_name or _derive_campfire_name(goal_text)
             plan_parent = _unique_campfire_name(base_name)
             persona = str(create_spec.get("persona") or "").strip() if isinstance(create_spec, dict) else ""
-            provider, model = _pick_provider_and_model(create_spec.get("model") if isinstance(create_spec, dict) else None)
             sys_prompt = ""
             if isinstance(create_spec, dict):
                 sys_prompt = str(create_spec.get("system_prompt") or "").strip()
-            if not sys_prompt:
-                sys_prompt = (
-                    f"You are {plan_parent}. Coordinate a specialist camper team to solve this goal: {goal_text}. "
-                    f"Use the saved workflow when the user asks you to run work, ask clarifying questions when needed, "
-                    f"and keep final outputs concise and actionable."
-                )
-            parent_cfg = CampfireConfig(
-                name=plan_parent,
-                type="LLMCampfire",
-                config={
-                    "llm": {"provider": provider, "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"), "model": model},
-                    "prompts": {"system": sys_prompt},
-                    "persona": {"name": plan_parent, "persona": persona or "team orchestrator", "model": model},
-                    "rag": {"documents": _default_rag_documents(plan_parent, persona or goal_text)},
-                },
+            parent_cfg = _build_parent_campfire_config(
+                plan_parent,
+                goal_text=goal_text,
+                persona=persona,
+                model_hint=create_spec.get("model") if isinstance(create_spec, dict) else None,
+                system_prompt=sys_prompt,
             )
             ok = await current_valley.provision_campfire(parent_cfg)
             if not ok:
@@ -3336,14 +3547,13 @@ async def voice_ingest(payload: dict = Body(...)):
                     continue
                 if name in current_valley.campfires:
                     existing_parent = campfire_parent.get(name)
-                    if not creating_new_campfire:
-                        camper_name_map[original_name] = name
-                        continue
                     if existing_parent == plan_parent:
                         camper_name_map[original_name] = name
                         continue
-                    if existing_parent != plan_parent:
-                        name = _unique_campfire_name(f"{plan_parent or parent or 'Campfire'} {original_name}")
+                    if not plan_parent:
+                        camper_name_map[original_name] = name
+                        continue
+                    name = _unique_campfire_name(f"{plan_parent or parent or 'Campfire'} {original_name}")
                 camper_name_map[original_name] = name
                 persona = raw.get("persona")
                 provider, model = _pick_provider_and_model(raw.get("model"))
@@ -3459,10 +3669,10 @@ async def voice_ingest(payload: dict = Body(...)):
                 "llm": {
                     "provider": "ollama",
                     "base_url": os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
-                    "model": "gemma3:4b",
+                    "model": get_default_ollama_model(),
                 },
                 "prompts": {"system": _software_campfire_system_prompt(str(target), "concise, helpful")},
-                "persona": {"name": target, "provider": "ollama", "model": "gemma3:4b"},
+                "persona": {"name": target, "provider": "ollama", "model": get_default_ollama_model()},
                 "rag": {"documents": _default_rag_documents(str(target), "concise, helpful")},
             }
             ok = await current_valley.provision_campfire(CampfireConfig(name=target, type="LLMCampfire", config=cfg))
@@ -3611,6 +3821,18 @@ async def get_rounds_catalog():
             "known_valleys": len((dock.get_known_valleys() or {}) if dock and getattr(dock, "get_known_valleys", None) else {}),
         },
     }
+
+
+@app.get("/api/watch/runs/{watch_id}/report", response_class=HTMLResponse)
+async def get_watch_run_report(watch_id: str):
+    if not current_valley:
+        raise HTTPException(status_code=404, detail="No valley available")
+    if not getattr(current_valley, "render_watch_report_html", None):
+        raise HTTPException(status_code=404, detail="Watch reporting not available")
+    html_doc = current_valley.render_watch_report_html(watch_id)
+    if not html_doc:
+        raise HTTPException(status_code=404, detail="Watch run not found")
+    return HTMLResponse(content=html_doc)
 
 
 @app.post("/api/rounds/run")
@@ -4028,7 +4250,7 @@ async def _handle_auditor_conversation(text: str) -> str:
             return "Please provide " + ", ".join(missing) + " for the new camper."
         from ..models import CampfireConfig
         cfg = {
-            "llm": {"model": f.get("model", "gemma3:4b")},
+            "llm": {"model": f.get("model", get_default_ollama_model())},
             "prompts": {"system": f.get("system_prompt") or _software_campfire_system_prompt(str(f.get("name") or "Camper"), str(f.get("persona") or ""))},
             "persona": {"name": f.get("name"), "persona": f.get("persona"), "model": f.get("model")},
             "rag": {"documents": _default_rag_documents(f.get("name") or "Camper", f.get("persona"))},
@@ -4052,7 +4274,7 @@ async def team_organize(request: dict = Body(...)):
         name = p.get("name") or f"{base}-{len(created)+1}"
         cfg = {
             "llm": {
-                "model": p.get("model") or "gemma3:4b"
+                "model": p.get("model") or get_default_ollama_model()
             },
             "prompts": {
                 "system": p.get("system_prompt") or _software_campfire_system_prompt(name, str(p.get("persona", "generic")))
@@ -4085,7 +4307,7 @@ async def team_add(request: dict = Body(...)):
         "llm": {
             "provider": p.get("provider") or "ollama",
             "base_url": p.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
-            "model": p.get("model") or "gemma3:4b"
+            "model": p.get("model") or get_default_ollama_model()
         },
         "prompts": {
             "system": p.get("system_prompt") or _software_campfire_system_prompt(name, str(p.get("persona", "generic")))

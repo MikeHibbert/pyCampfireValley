@@ -8,6 +8,7 @@ import os
 import re
 import math
 import time
+from datetime import timedelta
 from typing import Optional, List, Dict, Any, Union
 from campfires import LLMCamperMixin
 from campfires.core.openrouter import OpenRouterConfig, ChatMessage
@@ -16,8 +17,12 @@ import logging
 import httpx
 from .campfire import Campfire
 from .interfaces import IMCPBroker
+from .llm_defaults import get_default_ollama_model
+from .llm_service import get_llm_timeout_seconds
 from .models import Torch, CampfireConfig
 from .monitoring import get_monitoring_system, LogLevel, AlertSeverity
+from .vali import VALIServiceType
+from .zeitgeist_plugins import describe_zeitgeist_capabilities
 from .zeitgeist_runtime import build_zeitgeist_context
 
 
@@ -123,8 +128,13 @@ class LLMCampfire(Campfire):
     Extends the base CampfireValley Campfire with LLM capabilities from pyCampfires.
     """
     
-    def __init__(self, config: CampfireConfig, mcp_broker: IMCPBroker, 
-                 llm_config: OpenRouterConfig):
+    def __init__(
+        self,
+        config: CampfireConfig,
+        mcp_broker: IMCPBroker,
+        llm_config: OpenRouterConfig,
+        vali_coordinator: Optional['VALICoordinator'] = None,
+    ):
         """
         Initialize an LLM-enabled Campfire instance.
         
@@ -135,6 +145,7 @@ class LLMCampfire(Campfire):
         """
         super().__init__(config, mcp_broker)
         self.llm_config = llm_config
+        self.vali_coordinator = vali_coordinator
         self._llm_camper = None
         
         logger.info(f"LLM Campfire '{config.name}' initialized with {type(llm_config).__name__}")
@@ -199,24 +210,9 @@ class LLMCampfire(Campfire):
             llm_provider = (llm_block.get("provider") or "").strip().lower()
             selected_model = (llm_block.get("model") or "").strip() or None
             if llm_provider == "ollama":
-                base_url = (llm_block.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")).strip()
-                fallback_model = "gemma3:4b"
+                fallback_model = get_default_ollama_model()
                 if not selected_model:
                     selected_model = fallback_model
-                else:
-                    models = await _get_ollama_model_names(base_url)
-                    if models and selected_model not in models:
-                        try:
-                            await monitoring.log(
-                                LogLevel.WARNING,
-                                f"Configured ollama model '{selected_model}' not available; using '{fallback_model}'",
-                                f"campfire.{self.config.name}",
-                                context={"configured_model": selected_model, "fallback_model": fallback_model},
-                                correlation_id=corr,
-                            )
-                        except Exception:
-                            pass
-                        selected_model = fallback_model
             
             # Prepare the prompt with torch data (prefer 'content' or 'text')
             torch_data = torch.data.get('content') or torch.data.get('text') or str(torch.data)
@@ -241,12 +237,7 @@ class LLMCampfire(Campfire):
                 rag_prefix = f"Reference:\n{rag_lines}\n\n"
             tools_block = (self.config.config or {}).get("tools") or {}
             zeit = tools_block.get("zeitgeist") or {}
-            zeit_feats = []
-            if zeit.get("enabled"):
-                if zeit.get("web_search"):
-                    zeit_feats.append("web_search")
-                if zeit.get("image_ocr"):
-                    zeit_feats.append("image_ocr")
+            zeit_feats = describe_zeitgeist_capabilities(zeit)
             zeit_cap = ""
             if zeit_feats:
                 zeit_cap = f"External tools available via Zeitgeist: {', '.join(zeit_feats)}.\n"
@@ -339,17 +330,18 @@ class LLMCampfire(Campfire):
             
             # Process with LLM
             used_model = model
-            response = await self._llm_camper.process_with_llm(
-                prompt=context_prompt,
-                model=used_model
-            )
+            llm_cfg = self.config.config.get("llm") if isinstance(self.config.config, dict) else {}
+            provider = (llm_cfg.get("provider") or "").strip().lower() or "ollama"
+            response = None
+            if provider == "ollama" and self.vali_coordinator:
+                response, used_model = await self._process_with_mcp_llm(torch, context_prompt, used_model)
             if response is None:
-                try:
-                    llm_cfg = self.config.config.get("llm") if isinstance(self.config.config, dict) else {}
-                    provider = (llm_cfg.get("provider") or "").strip().lower() or "ollama"
-                except Exception:
-                    provider = "ollama"
-                fallback_model = "gemma3:4b"
+                response = await self._llm_camper.process_with_llm(
+                    prompt=context_prompt,
+                    model=used_model
+                )
+            if response is None:
+                fallback_model = get_default_ollama_model()
                 if provider == "ollama" and used_model and used_model != fallback_model:
                     try:
                         monitoring = get_monitoring_system()
@@ -370,7 +362,10 @@ class LLMCampfire(Campfire):
                     except Exception:
                         pass
                     used_model = fallback_model
-                    response = await self._llm_camper.process_with_llm(prompt=context_prompt, model=used_model)
+                    if self.vali_coordinator:
+                        response, used_model = await self._process_with_mcp_llm(torch, context_prompt, used_model)
+                    if response is None:
+                        response = await self._llm_camper.process_with_llm(prompt=context_prompt, model=used_model)
             response = await self._maybe_run_zeitgeist_tools(torch, prompt, response, model=model)
             
             # Update torch with LLM response
@@ -399,6 +394,51 @@ class LLMCampfire(Campfire):
         except Exception as e:
             logger.error(f"Error processing torch {torch.id} with LLM: {e}")
             return None
+
+    async def _process_with_mcp_llm(
+        self,
+        torch: Torch,
+        context_prompt: str,
+        model: Optional[str],
+    ) -> tuple[Optional[str], Optional[str]]:
+        if not self.vali_coordinator:
+            return None, model
+        llm_cfg = self.config.config.get("llm") if isinstance(self.config.config, dict) else {}
+        base_url = (llm_cfg.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")).strip()
+        timeout_seconds = get_llm_timeout_seconds()
+        try:
+            timeout_seconds = max(10.0, float(llm_cfg.get("timeout_seconds") or timeout_seconds))
+        except Exception:
+            timeout_seconds = get_llm_timeout_seconds()
+        corr = None
+        try:
+            if hasattr(torch, "metadata") and isinstance(torch.metadata, dict):
+                corr = (torch.metadata.get("correlation_id") or "").strip() or None
+        except Exception:
+            corr = None
+        corr = corr or getattr(torch, "torch_id", None)
+        response = await self.vali_coordinator.request_service_via_mcp(
+            VALIServiceType.AI_INFERENCE,
+            payload={
+                "provider": "ollama",
+                "prompt": context_prompt,
+                "model": model or llm_cfg.get("model") or get_default_ollama_model(),
+                "fallback_model": get_default_ollama_model(),
+                "base_url": base_url,
+                "think": llm_cfg.get("think"),
+                "campfire_name": self.config.name,
+                "correlation_id": corr,
+            },
+            requirements={"timeout_seconds": timeout_seconds},
+            timeout=timedelta(seconds=timeout_seconds + 10.0),
+        )
+        if response.status != "completed":
+            logger.warning("MCP LLM inference failed for %s: %s", self.config.name, response.metadata)
+            return None, model
+        deliverables = response.deliverables if isinstance(response.deliverables, dict) else {}
+        text = str(deliverables.get("text") or "").strip()
+        used_model = str(deliverables.get("model") or model or "").strip() or model
+        return text or None, used_model
 
     def _extract_tool_code_calls(self, text: str) -> List[Dict[str, str]]:
         if not text or not isinstance(text, str):
@@ -569,7 +609,7 @@ class LLMCamper(LLMCamperMixin):
                 messages = [ChatMessage(role="user", content=prompt)]
                 response = await self.llm_chat(
                     messages=messages,
-                    model=model or getattr(self.llm_config, "default_model", "gemma3:4b")
+                    model=model or getattr(self.llm_config, "default_model", get_default_ollama_model())
                 )
                 if response and hasattr(response, 'choices') and response.choices:
                     first_choice = response.choices[0]
@@ -659,8 +699,13 @@ class LLMCamper(LLMCamperMixin):
 
 
 # Factory functions for creating LLM campfires
-def create_openrouter_campfire(config: CampfireConfig, mcp_broker: IMCPBroker,
-                              api_key: str, default_model: str = "openai/gpt-3.5-turbo") -> LLMCampfire:
+def create_openrouter_campfire(
+    config: CampfireConfig,
+    mcp_broker: IMCPBroker,
+    api_key: str,
+    default_model: str = "openai/gpt-3.5-turbo",
+    vali_coordinator: Optional['VALICoordinator'] = None,
+) -> LLMCampfire:
     """
     Create an LLM campfire using OpenRouter.
     
@@ -677,12 +722,16 @@ def create_openrouter_campfire(config: CampfireConfig, mcp_broker: IMCPBroker,
         api_key=api_key,
         default_model=default_model
     )
-    return LLMCampfire(config, mcp_broker, llm_config)
+    return LLMCampfire(config, mcp_broker, llm_config, vali_coordinator=vali_coordinator)
 
 
-def create_ollama_campfire(config: CampfireConfig, mcp_broker: IMCPBroker,
-                          base_url: str = "http://localhost:11434", 
-                          default_model: str = "llama2") -> LLMCampfire:
+def create_ollama_campfire(
+    config: CampfireConfig,
+    mcp_broker: IMCPBroker,
+    base_url: str = "http://localhost:11434",
+    default_model: str = "llama2",
+    vali_coordinator: Optional['VALICoordinator'] = None,
+) -> LLMCampfire:
     """
     Create an LLM campfire using Ollama.
     
@@ -696,4 +745,4 @@ def create_ollama_campfire(config: CampfireConfig, mcp_broker: IMCPBroker,
         Configured LLM campfire
     """
     llm_config = OllamaConfig(base_url=base_url, model=default_model)
-    return LLMCampfire(config, mcp_broker, llm_config)
+    return LLMCampfire(config, mcp_broker, llm_config, vali_coordinator=vali_coordinator)

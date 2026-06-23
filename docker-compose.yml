@@ -21,6 +21,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - DEFAULT_OLLAMA_MODEL=${DEFAULT_OLLAMA_MODEL:-gemma4:e4b}
       - CONFIG_DIR=/app/data/configs
       - EMBEDDINGS_DIR=/app/data/embeddings
       - LOGS_DIR=/app/data/logs
@@ -93,6 +94,7 @@ services:
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - DEFAULT_OLLAMA_MODEL=${DEFAULT_OLLAMA_MODEL:-gemma4:e4b}
       - CONFIG_DIR=/app/data/configs
       - EMBEDDINGS_DIR=/app/data/embeddings
       - LOGS_DIR=/app/data/logs

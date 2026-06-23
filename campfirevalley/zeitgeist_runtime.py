@@ -7,6 +7,8 @@ import base64
 
 import aiohttp
 
+from .zeitgeist_plugins import build_plugin_context
+
 
 def _strip_html(text: str) -> str:
     if not text:
@@ -199,6 +201,9 @@ async def build_zeitgeist_context(user_text: str, zeitgeist_cfg: Dict[str, Any])
             await asyncio.sleep(0)
         if url_texts:
             blocks.append("Web page excerpts:\n" + "\n\n".join(url_texts))
+    plugin_block = await build_plugin_context(user_text, zeitgeist_cfg)
+    if plugin_block:
+        blocks.append(plugin_block)
     if not blocks:
         return ""
     if zeitgeist_cfg.get("image_ocr"):
