@@ -336,9 +336,13 @@ class LLMCampfire(Campfire):
             if provider == "ollama" and self.vali_coordinator:
                 response, used_model = await self._process_with_mcp_llm(torch, context_prompt, used_model)
             if response is None:
+                images = (torch.data or {}).get("images") or []
+                if not isinstance(images, list):
+                    images = []
                 response = await self._llm_camper.process_with_llm(
                     prompt=context_prompt,
-                    model=used_model
+                    model=used_model,
+                    images=images,
                 )
             if response is None:
                 fallback_model = get_default_ollama_model()
@@ -525,18 +529,14 @@ class LLMCampfire(Campfire):
         Returns:
             Enhanced prompt with context
         """
+        # NOTE: torch metadata (Torch ID, etc.) removed on purpose — gemma4
+        # misreads "torch_" as the PyTorch ML framework and hallucinates.
+        # The caller (process_torch) already embeds the real file content.
         context = f"""
-Context Information:
-- Torch ID: {torch.id}
-- Source: {torch.source}
-- Destination: {torch.destination}
-- Data Keys: {list(torch.data.keys()) if torch.data else 'None'}
+        {prompt}
 
-User Request:
-{prompt}
-
-Please process this request considering the torch context above.
-"""
+        Please process this request using the content above.
+        """
         return context.strip()
 
 
@@ -582,7 +582,7 @@ class LLMCamper(LLMCamperMixin):
         self._initialized = False
         logger.info("LLM Camper stopped")
     
-    async def process_with_llm(self, prompt: str, model: Optional[str] = None) -> Optional[str]:
+    async def process_with_llm(self, prompt: str, model: Optional[str] = None, images: Optional[list[str]] = None) -> Optional[str]:
         """
         Process a prompt with the configured LLM.
         
@@ -619,26 +619,101 @@ class LLMCamper(LLMCamperMixin):
                         return first_choice.message.content
                 return None
             elif isinstance(self.llm_config, OllamaConfig):
-                client = OllamaClient(self.llm_config)
-                await client.start_session()
                 try:
+                    if getattr(self.llm_config, "options", None) is None:
+                        self.llm_config.options = {}
+                    self.llm_config.options.setdefault("num_ctx", 16384)
+                    self.llm_config.options.setdefault("cfg_scale", 2.0)
+                    self.llm_config.temperature = 0.0
+                    if not getattr(self.llm_config, "max_tokens", None) or self.llm_config.max_tokens < 2048:
+                        self.llm_config.max_tokens = 4096
+                except Exception:
+                    pass
+                client = OllamaClient(self.llm_config)
+                    import re as _re
+                    _prompt_marker = None
+                    _split_idx = -1
+                    for _m in (
+                        "\n\nUser Request: ",
+                        "\n\nUser Request:",
+                        "\nUser Request: ",
+                        "\nUser Request:",
+                        "User Request: ",
+                        "User Request:",
+                        "\n\nUser request: ",
+                        "\n\nUser request:",
+                        "\nUser request: ",
+                        "\nUser request:",
+                        "User request: ",
+                        "User request:",
+                        "\n\nUSER REQUEST:",
+                        "\nUSER REQUEST:",
+                        "USER REQUEST:",
+                    ):
+                        _idx = prompt.find(_m)
+                        if _idx != -1:
+                            _split_idx = _idx
+                            _prompt_marker = _m
+                            break
+                    if _split_idx == -1:
+                        _m = _re.search(r"(?i)user\s*request\s*:", prompt)
+                        if _m:
+                            _split_idx = _m.start()
+                            _prompt_marker = prompt[_m.start():_m.end()]
+                    if _split_idx != -1:
+                        _system_part = prompt[:_split_idx].strip()
+                        _user_part = prompt[_split_idx + len(_prompt_marker):].strip()
+                    else:
+                        _system_part = ""
+                        _user_part = prompt
+                        _prompt_marker = "none"
+                    import logging as _log
+                    _log.getLogger("ollama_split").info(
+                        "OLLAMA SPLIT marker_found=%s marker=%r system_len=%d user_len=%d",
+                        _split_idx != -1, _prompt_marker if _split_idx != -1 else "none",
+                        len(_system_part), len(_user_part)
+                    )
+                    if not _system_part and "## PROJECT SUMMARY" in _user_part:
+                        _prefetch_marker = "## PROJECT SUMMARY"
+                        _idx = _user_part.index(_prefetch_marker)
+                        _prefetch_block = _user_part[_idx:]
+                        _end = _prefetch_block.find("\n\n[SYSTEM NOTE")
+                        if _end == -1:
+                            _end = len(_prefetch_block)
+                        _system_part = _prefetch_block[:_end].strip()
+                        _user_part = _prefetch_block[_end:].strip()
+                        if "User request:" in _user_part:
+                            _user_part = _user_part.split("User request:")[-1].strip()
+                    import logging as _log
+                    _log.getLogger("ollama_split").info(
+                        "OLLAMA SPLIT(specialist) system_len=%d user_len=%d | SYSTEM[0:400]=%r | USER=%r",
+                        len(_system_part), len(_user_part), _system_part[:400], _user_part[:200]
+                    )
+                    _chat_messages = []
+                    if _system_part:
+                        _chat_messages.append({"role": "system", "content": _system_part})
+                    _chat_messages.append({"role": "user", "content": _user_part})
+                    if images:
+                        _chat_messages[-1]["images"] = images
                     try:
-                        result = await client.generate(
-                            prompt=prompt,
-                            model=model or self.llm_config.model
-                        )
-                        logger.info("Ollama generate succeeded")
-                        return result
-                    except Exception as ge:
-                        logger.warning(f"Ollama generate failed, trying chat: {ge}")
                         result = await client.chat(
-                            messages=[{"role": "user", "content": prompt}],
+                            messages=_chat_messages,
                             model=model or self.llm_config.model
                         )
                         logger.info("Ollama chat succeeded")
                         return result
-                finally:
-                    await client.close_session()
+                    except Exception as ge:
+                        logger.warning(f"Ollama chat failed, trying generate fallback: {ge}")
+                        try:
+                            result = await client.generate(
+                                prompt=prompt,
+                                model=model or self.llm_config.model
+                            )
+                            logger.info("Ollama generate succeeded")
+                            return result
+                        except Exception as ge2:
+                            logger.warning(f"Ollama generate also failed: {ge2}")
+                            raise
             else:
                 logger.error(f"Unsupported LLM client type for chat: {type(self.llm_config)}")
                 return None
@@ -684,7 +759,7 @@ class LLMCamper(LLMCamperMixin):
         """Initialize Ollama connection"""
         # Create OllamaConfig object (base_url only for compatibility)
         try:
-            config = OllamaConfig(base_url=self.llm_config.base_url)
+            config = OllamaConfig(base_url=self.llm_config.base_url, timeout=120, max_tokens=2048, options={"num_ctx": 8192})
         except Exception:
             # Fallback to whatever config was provided
             config = self.llm_config
