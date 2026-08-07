@@ -127,7 +127,7 @@ async def run_ollama_inference(
             "OLLAMA SPLIT marker=%s system_len=%d user_len=%d",
             _marker, len(_system_part), len(_user_part)
         )
-        generate_payload = {"model": model_name, "prompt": _user_part if _system_part else prompt, "stream": False, "think": think, "options": {"temperature": 0.0, "num_ctx": 16384, "cfg_scale": 2.0}}
+        generate_payload = {"model": model_name, "prompt": _user_part if _system_part else prompt, "stream": False, "think": think, "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0}}
         if _system_part:
             generate_payload["system"] = _system_part
         generate_response = await client.post(f"{host}/api/generate", json=generate_payload)
@@ -151,7 +151,7 @@ async def run_ollama_inference(
             "messages": _chat_messages,
             "stream": False,
             "think": think,
-            "options": {"temperature": 0.0, "num_ctx": 16384, "cfg_scale": 2.0},
+            "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0},
         }
         chat_response = await client.post(f"{host}/api/chat", json=chat_payload)
         chat_response.raise_for_status()
