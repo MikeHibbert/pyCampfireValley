@@ -431,6 +431,19 @@ class Valley(IValley):
                         default_model=model
                     )
                     logger.info(f"Created LLMCampfire '{campfire_name}' via OpenRouter with model '{model}'")
+                elif provider == "ollama_cloud":
+                    from .llm_campfire import create_ollama_cloud_campfire
+                    api_key = llm_config.get('api_key') or os.getenv('OLLAMA_CLOUD_API_KEY') or 'demo_key_placeholder'
+                    base_url = llm_config.get("base_url") or os.getenv("OLLAMA_CLOUD_HOST", "https://ollama.com")
+                    campfire = create_ollama_cloud_campfire(
+                        campfire_config,
+                        self.mcp_broker,
+                        vali_coordinator=self.vali_coordinator,
+                        api_key=api_key,
+                        default_model=model,
+                        base_url=base_url
+                    )
+                    logger.info(f"Created LLMCampfire '{campfire_name}' via Ollama Cloud with model '{model}'")
                 else:
                     from .llm_campfire import create_ollama_campfire
                     base_url = llm_config.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
@@ -482,10 +495,21 @@ class Valley(IValley):
                     if isinstance(campfire_config.config, dict):
                         llm_cfg = (campfire_config.config.get("llm") or {}) if isinstance(campfire_config.config.get("llm"), dict) else {}
                     provider = (llm_cfg.get("provider") or os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
-                    if provider not in {"ollama", "openrouter"}:
+                    if provider not in {"ollama", "ollama_cloud", "openrouter"}:
                         provider = "ollama"
                     model = llm_cfg.get("model") or get_default_ollama_model()
                     base_url = llm_cfg.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+                    auditor_llm_block = {
+                        "provider": provider,
+                        "base_url": base_url,
+                        "model": model,
+                    }
+                    if provider == "ollama_cloud":
+                        auditor_llm_block["api_key"] = (
+                            llm_cfg.get("api_key")
+                            or os.getenv("OLLAMA_CLOUD_API_KEY")
+                            or "demo_key_placeholder"
+                        )
                     system_prompt = (
                         "You are the Auditor and Orchestrator for this Campfire. You do not solve the user's domain problem. "
                         "You identify which campers are needed, create them, assign them ordered tasks, and coordinate their outputs. "
@@ -495,11 +519,7 @@ class Valley(IValley):
                         name=auditor_name,
                         type="LLMCampfire",
                         config={
-                            "llm": {
-                                "provider": provider,
-                                "base_url": base_url,
-                                "model": model,
-                            },
+                            "llm": auditor_llm_block,
                             "prompts": {"system": system_prompt},
                         },
                     )

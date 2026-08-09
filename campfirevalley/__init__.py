@@ -27,7 +27,7 @@ from .interfaces import *
 from .config import ValleyConfig, CampfireConfig
 from .valley import Valley
 from .campfire import Campfire
-from .llm_campfire import LLMCampfire, LLMCamper, create_openrouter_campfire, create_ollama_campfire
+from .llm_campfire import LLMCampfire, LLMCamper, create_openrouter_campfire, create_ollama_campfire, create_ollama_cloud_campfire
 from .mcp import RedisMCPBroker
 from .key_manager import CampfireKeyManager, IKeyManager
 from . import campfires
@@ -113,6 +113,7 @@ __all__ = [
     # Factory functions
     "create_openrouter_campfire",
     "create_ollama_campfire",
+    "create_ollama_cloud_campfire",
     
     # Default campfires
     "campfires",
