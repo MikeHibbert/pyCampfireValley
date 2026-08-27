@@ -704,6 +704,7 @@ class Valley(IValley):
             "default_fail_reroute": "plan",
             "save_trace": True,
             "save_learning": True,
+            "plan_mode": "llm",
         }
         if isinstance(watch, dict):
             settings.update(watch)
@@ -1843,6 +1844,12 @@ class Valley(IValley):
         plan_result: Dict[str, Any] = {}
         execute_result: Dict[str, Any] = {"summary": ""}
         history: List[Dict[str, Any]] = []
+        plan_mode = str(settings.get("plan_mode") or "llm").strip().lower()
+        if plan_mode == "deterministic":
+            plan_result = self._default_watch_plan(campfire_name)
+            plan_result["_planner"] = f"{campfire_name} Auditor"
+            plan_result["_planner_source"] = "deterministic"
+            reroute_to = "execute"
 
         while True:
             if reroute_to == "discover":
