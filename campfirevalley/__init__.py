@@ -28,6 +28,7 @@ from .config import ValleyConfig, CampfireConfig
 from .valley import Valley
 from .campfire import Campfire
 from .llm_campfire import LLMCampfire, LLMCamper, create_openrouter_campfire, create_ollama_campfire, create_ollama_cloud_campfire
+from . import llm_airllm
 from .mcp import RedisMCPBroker
 from .key_manager import CampfireKeyManager, IKeyManager
 from . import campfires

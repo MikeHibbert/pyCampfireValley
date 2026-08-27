@@ -333,12 +333,47 @@ class LLMCampfire(Campfire):
             llm_cfg = self.config.config.get("llm") if isinstance(self.config.config, dict) else {}
             provider = (llm_cfg.get("provider") or "").strip().lower() or "ollama"
             response = None
-            if provider in ("ollama", "ollama_cloud") and self.vali_coordinator:
+            if provider == "ollama":
+                # Try native tool calling first (direct Ollama API with tools)
+                # This allows web_search, fetch_url, and MCP tools via native API
+                native_tools = self._build_native_tools()
+                images = (torch.data or {}).get("images") or []
+                if not isinstance(images, list):
+                    images = []
+                if native_tools and not self.vali_coordinator:
+                    # No Vali coordinator — use native tools directly
+                    response = await self._native_tool_chat(
+                        system_prompt=self._prepare_context_prompt(torch, ""),
+                        user_message=context_prompt,
+                        tool_defs=native_tools,
+                        images=images,
+                        model=used_model,
+                    )
+                elif native_tools and self.vali_coordinator:
+                    # Has Vali coordinator — try native first, fall back to Vali
+                    try:
+                        response = await self._native_tool_chat(
+                            system_prompt=self._prepare_context_prompt(torch, ""),
+                            user_message=context_prompt,
+                            tool_defs=native_tools,
+                            images=images,
+                            model=used_model,
+                        )
+                    except Exception as ne:
+                        logger.warning("Native tool chat failed, falling back to Vali: %s", ne)
+                        response = None
+                    if response is None and self.vali_coordinator:
+                        response, used_model = await self._process_with_mcp_llm(torch, context_prompt, used_model)
+            elif provider == "ollama_cloud" and self.vali_coordinator:
                 response, used_model = await self._process_with_mcp_llm(torch, context_prompt, used_model)
             if response is None:
+                images = (torch.data or {}).get("images") or []
+                if not isinstance(images, list):
+                    images = []
                 response = await self._llm_camper.process_with_llm(
                     prompt=context_prompt,
-                    model=used_model
+                    model=used_model,
+                    images=images,
                 )
             if response is None:
                 fallback_model = get_default_ollama_model()
@@ -446,6 +481,193 @@ class LLMCampfire(Campfire):
         used_model = str(deliverables.get("model") or model or "").strip() or model
         return text or None, used_model
 
+    # ── Native tool calling (Ollama tools API) ───────────────────────────
+    # Added by Andrew patches: enables direct tool calls via Ollama's
+    # /api/chat tools parameter, eliminating fragile regex-based mcp_call()
+    # text parsing. Also provides synthetic web_search/fetch_url tools.
+
+    def _build_native_tools(self) -> list[dict]:
+        """Convert MCP tool definitions to Ollama's tool format."""
+        tools = []
+        if self.mcp_broker:
+            try:
+                for t in self.mcp_broker.get_all_tools():
+                    tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.input_schema or {"type": "object", "properties": {}},
+                        },
+                    })
+            except Exception:
+                pass
+        # Synthetic tools for web search and URL fetching
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for current information. Use for any factual question, "
+                               "current events, movie details, historical facts, or anything you're unsure about.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query"
+                        }
+                    },
+                    "required": ["query"]
+                },
+            },
+        })
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "fetch_url",
+                "description": "Fetch the contents of a specific URL. Use when you need to read a specific "
+                               "web page the user has referenced.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL to fetch"
+                        }
+                    },
+                    "required": ["url"]
+                },
+            },
+        })
+        return tools
+
+    async def _native_tool_chat(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tool_defs: list[dict],
+        images: Optional[list[str]] = None,
+        model: Optional[str] = None,
+        max_rounds: int = 10,
+    ) -> Optional[str]:
+        """Run a tool-enabled chat with Ollama's native tool calling.
+
+        Manages the full round-trip: send messages with tool definitions,
+        execute tool calls (MCP tools via broker, web_search/fetch_url locally),
+        feed results back, repeat until the model produces a text-only response.
+        """
+        from .zeitgeist_runtime import build_zeitgeist_context
+        import logging
+        import re
+
+        messages: list[dict] = [
+            {"role": "system", "content": system_prompt},
+        ]
+        if images:
+            messages.append({"role": "user", "content": user_message, "images": images})
+        else:
+            messages.append({"role": "user", "content": user_message})
+
+        for _round in range(max_rounds):
+            content, tool_calls = await self._call_ollama_chat(messages, tools=tool_defs, model=model)
+
+            if not tool_calls:
+                # Model produced text only — we're done
+                return content or ""
+
+            # Add assistant message with tool_calls to history
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": content or ""}
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.get("id", f"call_{_round}_{i}"),
+                    "type": "function",
+                    "function": {
+                        "name": tc["function"]["name"],
+                        "arguments": tc["function"].get("arguments", {}),
+                    },
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+            messages.append(assistant_msg)
+
+            # Execute each tool call
+            for i, tc in enumerate(tool_calls):
+                fn = tc.get("function", {})
+                tool_name = fn.get("name", "")
+                tool_args = fn.get("arguments", {}) or {}
+                tool_call_id = tc.get("id", f"call_{_round}_{i}")
+
+                logger.info("native tool call: %s %s", tool_name, tool_args)
+
+                try:
+                    if tool_name in ("web_search", "fetch_url"):
+                        # Local synthetic tools
+                        query = tool_args.get("query", tool_args.get("url", ""))
+                        result_text = await build_zeitgeist_context(
+                            query, {"enabled": True, "web_search": True}
+                        )
+                    elif self.mcp_broker:
+                        # MCP tools
+                        result = await self.mcp_broker.call_tool(tool_name, tool_args)
+                        result_text = str(result or "")
+                    else:
+                        result_text = f"Error: Tool '{tool_name}' not available (no MCP broker)"
+                except Exception as e:
+                    result_text = f"Error: {e}"
+
+                # Add tool result to messages
+                messages.append({
+                    "role": "tool",
+                    "content": result_text,
+                    "tool_call_id": tool_call_id,
+                })
+
+        return content or None
+
+    async def _call_ollama_chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        model: Optional[str] = None,
+    ) -> tuple[str, list[dict]]:
+        """Direct call to Ollama chat API with optional tools.
+
+        Returns (content, tool_calls) where tool_calls is a list of
+        {"id": str, "function": {"name": str, "arguments": dict}}.
+        """
+        import os
+        import httpx
+        from .llm_service import get_llm_timeout_seconds
+
+        ollama_url = os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")
+        model_name = model or self.llm_config.model if self.llm_config else get_default_ollama_model()
+        timeout = get_llm_timeout_seconds()
+
+        data: dict[str, Any] = {
+            "model": model_name,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0},
+        }
+        if tools:
+            data["tools"] = tools
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(f"{ollama_url}/api/chat", json=data)
+                if resp.status_code != 200:
+                    logger.error("Ollama chat %s: %s", resp.status_code, resp.text[:500])
+                    return "", []
+                result = resp.json()
+        except Exception as e:
+            logger.error("Ollama chat failed: %s", e)
+            return "", []
+
+        msg = result.get("message", {})
+        content = msg.get("content", "") or ""
+        tool_calls = msg.get("tool_calls", [])
+        return content, tool_calls
+
     def _extract_tool_code_calls(self, text: str) -> List[Dict[str, str]]:
         if not text or not isinstance(text, str):
             return []
@@ -531,18 +753,14 @@ class LLMCampfire(Campfire):
         Returns:
             Enhanced prompt with context
         """
+        # NOTE: torch metadata (Torch ID, etc.) removed on purpose — gemma4
+        # misreads "torch_" as the PyTorch ML framework and hallucinates.
+        # The caller (process_torch) already embeds the real file content.
         context = f"""
-Context Information:
-- Torch ID: {torch.id}
-- Source: {torch.source}
-- Destination: {torch.destination}
-- Data Keys: {list(torch.data.keys()) if torch.data else 'None'}
+        {prompt}
 
-User Request:
-{prompt}
-
-Please process this request considering the torch context above.
-"""
+        Please process this request using the content above.
+        """
         return context.strip()
 
 
@@ -588,7 +806,7 @@ class LLMCamper(LLMCamperMixin):
         self._initialized = False
         logger.info("LLM Camper stopped")
     
-    async def process_with_llm(self, prompt: str, model: Optional[str] = None) -> Optional[str]:
+    async def process_with_llm(self, prompt: str, model: Optional[str] = None, images: Optional[list[str]] = None) -> Optional[str]:
         """
         Process a prompt with the configured LLM.
         
@@ -625,9 +843,92 @@ class LLMCamper(LLMCamperMixin):
                         return first_choice.message.content
                 return None
             elif isinstance(self.llm_config, OllamaConfig):
-                client = OllamaClient(self.llm_config)
-                await client.start_session()
                 try:
+                    if getattr(self.llm_config, "options", None) is None:
+                        self.llm_config.options = {}
+                    self.llm_config.options.setdefault("num_ctx", 4096)
+                    self.llm_config.options.setdefault("use_cache", False)
+                    self.llm_config.options.setdefault("cfg_scale", 2.0)
+                    self.llm_config.temperature = 0.0
+                    if not getattr(self.llm_config, "max_tokens", None) or self.llm_config.max_tokens < 2048:
+                        self.llm_config.max_tokens = 4096
+                except Exception:
+                    pass
+                client = OllamaClient(self.llm_config)
+                import re as _re
+                _prompt_marker = None
+                _split_idx = -1
+                for _m in (
+                    "\n\nUser Request: ",
+                    "\n\nUser Request:",
+                    "\nUser Request: ",
+                    "\nUser Request:",
+                    "User Request: ",
+                    "User Request:",
+                    "\n\nUser request: ",
+                    "\n\nUser request:",
+                    "\nUser request: ",
+                    "\nUser request:",
+                    "User request: ",
+                    "User request:",
+                    "\n\nUSER REQUEST:",
+                    "\nUSER REQUEST:",
+                    "USER REQUEST:",
+                ):
+                    _idx = prompt.find(_m)
+                    if _idx != -1:
+                        _split_idx = _idx
+                        _prompt_marker = _m
+                        break
+                if _split_idx == -1:
+                    _m = _re.search(r"(?i)user\s*request\s*:", prompt)
+                    if _m:
+                        _split_idx = _m.start()
+                        _prompt_marker = prompt[_m.start():_m.end()]
+                if _split_idx != -1:
+                    _system_part = prompt[:_split_idx].strip()
+                    _user_part = prompt[_split_idx + len(_prompt_marker):].strip()
+                else:
+                    _system_part = ""
+                    _user_part = prompt
+                    _prompt_marker = "none"
+                import logging as _log
+                _log.getLogger("ollama_split").info(
+                    "OLLAMA SPLIT marker_found=%s marker=%r system_len=%d user_len=%d",
+                    _split_idx != -1, _prompt_marker if _split_idx != -1 else "none",
+                    len(_system_part), len(_user_part)
+                )
+                if not _system_part and "## PROJECT SUMMARY" in _user_part:
+                    _prefetch_marker = "## PROJECT SUMMARY"
+                    _idx = _user_part.index(_prefetch_marker)
+                    _prefetch_block = _user_part[_idx:]
+                    _end = _prefetch_block.find("\n\n[SYSTEM NOTE")
+                    if _end == -1:
+                        _end = len(_prefetch_block)
+                    _system_part = _prefetch_block[:_end].strip()
+                    _user_part = _prefetch_block[_end:].strip()
+                    if "User request:" in _user_part:
+                        _user_part = _user_part.split("User request:")[-1].strip()
+                import logging as _log
+                _log.getLogger("ollama_split").info(
+                    "OLLAMA SPLIT(specialist) system_len=%d user_len=%d | SYSTEM[0:400]=%r | USER=%r",
+                    len(_system_part), len(_user_part), _system_part[:400], _user_part[:200]
+                )
+                _chat_messages = []
+                if _system_part:
+                    _chat_messages.append({"role": "system", "content": _system_part})
+                _chat_messages.append({"role": "user", "content": _user_part})
+                if images:
+                    _chat_messages[-1]["images"] = images
+                try:
+                    result = await client.chat(
+                        messages=_chat_messages,
+                        model=model or self.llm_config.model
+                    )
+                    logger.info("Ollama chat succeeded")
+                    return result
+                except Exception as ge:
+                    logger.warning(f"Ollama chat failed, trying generate fallback: {ge}")
                     try:
                         result = await client.generate(
                             prompt=prompt,
@@ -635,16 +936,9 @@ class LLMCamper(LLMCamperMixin):
                         )
                         logger.info("Ollama generate succeeded")
                         return result
-                    except Exception as ge:
-                        logger.warning(f"Ollama generate failed, trying chat: {ge}")
-                        result = await client.chat(
-                            messages=[{"role": "user", "content": prompt}],
-                            model=model or self.llm_config.model
-                        )
-                        logger.info("Ollama chat succeeded")
-                        return result
-                finally:
-                    await client.close_session()
+                    except Exception as ge2:
+                        logger.warning(f"Ollama generate also failed: {ge2}")
+                        raise
             else:
                 logger.error(f"Unsupported LLM client type for chat: {type(self.llm_config)}")
                 return None
@@ -695,10 +989,12 @@ class LLMCamper(LLMCamperMixin):
                 model=getattr(self.llm_config, "model", None) or self.llm_config.default_model,
                 api_key=getattr(self.llm_config, "api_key", None),
                 temperature=getattr(self.llm_config, "temperature", 0.7),
-                max_tokens=getattr(self.llm_config, "max_tokens", 1000),
+                max_tokens=getattr(self.llm_config, "max_tokens", 2048),
                 top_p=getattr(self.llm_config, "top_p", 0.9),
                 top_k=getattr(self.llm_config, "top_k", 40),
                 repeat_penalty=getattr(self.llm_config, "repeat_penalty", 1.1),
+                timeout=120,
+                options={"num_ctx": 4096, "use_cache": False},
             )
         except Exception:
             # Fallback to whatever config was provided

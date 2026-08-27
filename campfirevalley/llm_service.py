@@ -102,7 +102,41 @@ async def run_ollama_inference(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     async with httpx.AsyncClient(timeout=timeout) as client:
-        generate_payload = {"model": model_name, "prompt": prompt, "stream": False, "think": think}
+        _markers = [
+            "\n\nUser Request:", "\nUser Request:", "User Request:",
+            "\n\nUser request: ", "\n\nUser request:", "\nUser request: ", "\nUser request:",
+            "User request: ", "User request:",
+            "\n\nUSER REQUEST:", "\nUSER REQUEST:", "USER REQUEST:",
+        ]
+        _split_idx = -1
+        _marker = ""
+        for _m in _markers:
+            _idx = prompt.find(_m)
+            if _idx != -1:
+                _split_idx = _idx
+                _marker = _m
+                break
+        if _split_idx == -1:
+            import re as _re
+            _m = _re.search(r"(?i)user\s*request\s*:", prompt)
+            if _m:
+                _split_idx = _m.start()
+                _marker = prompt[_m.start():_m.end()]
+        if _split_idx != -1:
+            _system_part = prompt[:_split_idx].strip()
+            _user_part = prompt[_split_idx + len(_marker):].strip()
+        else:
+            _system_part = ""
+            _user_part = prompt
+            _marker = "none"
+        import logging as _log
+        _log.getLogger("ollama_split").info(
+            "OLLAMA SPLIT marker=%s system_len=%d user_len=%d",
+            _marker, len(_system_part), len(_user_part)
+        )
+        generate_payload = {"model": model_name, "prompt": _user_part if _system_part else prompt, "stream": False, "think": think, "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0}}
+        if _system_part:
+            generate_payload["system"] = _system_part
         generate_response = await client.post(f"{host}/api/generate", json=generate_payload, headers=headers)
         if generate_response.status_code == 200:
             body = generate_response.json() if generate_response.content else {}
@@ -115,11 +149,16 @@ async def run_ollama_inference(
             "Ollama generate failed with status %s, trying chat fallback",
             generate_response.status_code,
         )
+        _chat_messages = []
+        if _system_part:
+            _chat_messages.append({"role": "system", "content": _system_part})
+        _chat_messages.append({"role": "user", "content": _user_part or prompt})
         chat_payload = {
             "model": model_name,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": _chat_messages,
             "stream": False,
             "think": think,
+            "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0},
         }
         chat_response = await client.post(f"{host}/api/chat", json=chat_payload, headers=headers)
         chat_response.raise_for_status()
