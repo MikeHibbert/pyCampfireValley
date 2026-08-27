@@ -44,11 +44,12 @@ class _MemoryBroker:
 
 @pytest.mark.asyncio
 async def test_vali_ai_inference_round_trips_via_mcp(monkeypatch):
-    async def _fake_run(prompt, model, base_url, timeout_seconds, think=False):
+    async def _fake_run(prompt, model, base_url, timeout_seconds, think=False, api_key=None):
         assert prompt == "Say hello"
         assert model == "gemma4:e4b"
         assert timeout_seconds == 95.0
         assert think is False
+        assert api_key is None
         return {"text": "hello from mcp", "endpoint": "generate", "raw_status": 200}
 
     monkeypatch.setattr("campfirevalley.llm_service.run_ollama_inference", _fake_run)
@@ -85,8 +86,9 @@ async def test_vali_ai_inference_round_trips_via_mcp(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_vali_ai_inference_allows_think_override(monkeypatch):
-    async def _fake_run(prompt, model, base_url, timeout_seconds, think=False):
+    async def _fake_run(prompt, model, base_url, timeout_seconds, think=False, api_key=None):
         assert think == "low"
+        assert api_key is None
         return {"text": "hello with low think", "endpoint": "generate", "raw_status": 200}
 
     monkeypatch.setattr("campfirevalley.llm_service.run_ollama_inference", _fake_run)
@@ -116,6 +118,64 @@ async def test_vali_ai_inference_allows_think_override(monkeypatch):
 
     assert response.status == "completed"
     assert response.metadata["think"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_vali_ai_inference_uses_bearer_api_key_for_ollama_cloud(monkeypatch):
+    async def _fake_run(prompt, model, base_url, timeout_seconds, think=False, api_key=None):
+        assert api_key == "ck_123"
+        assert base_url == "https://ollama.com"
+        return {"text": "cloud reply", "endpoint": "generate", "raw_status": 200}
+
+    monkeypatch.setattr("campfirevalley.llm_service.run_ollama_inference", _fake_run)
+
+    broker = _MemoryBroker()
+    await broker.connect()
+    registry = VALIServiceRegistry()
+    coordinator = VALICoordinator(broker, registry, valley_name="Local Valley")
+    await coordinator.start()
+    await coordinator.register_service(AIInferenceService(default_ollama_host="http://ollama", default_timeout_seconds=90))
+
+    response = await coordinator.request_service_via_mcp(
+        VALIServiceType.AI_INFERENCE,
+        payload={
+            "provider": "ollama_cloud",
+            "prompt": "cloud hello",
+            "model": "glm-5",
+            "base_url": "https://ollama.com",
+            "api_key": "ck_123",
+            "campfire_name": "Cloud",
+        },
+        requirements={"timeout_seconds": 95},
+        timeout=timedelta(seconds=2),
+    )
+
+    await coordinator.stop()
+
+    assert response.status == "completed"
+    assert response.deliverables["text"] == "cloud reply"
+    assert response.deliverables["provider"] == "ollama_cloud"
+
+
+@pytest.mark.asyncio
+async def test_vali_ai_inference_rejects_unknown_provider():
+    broker = _MemoryBroker()
+    await broker.connect()
+    registry = VALIServiceRegistry()
+    coordinator = VALICoordinator(broker, registry, valley_name="Local Valley")
+    await coordinator.start()
+    await coordinator.register_service(AIInferenceService(default_ollama_host="http://ollama", default_timeout_seconds=90))
+
+    response = await coordinator.request_service_via_mcp(
+        VALIServiceType.AI_INFERENCE,
+        payload={"provider": "bogus", "prompt": "hello", "model": "x"},
+        requirements={"timeout_seconds": 95},
+        timeout=timedelta(seconds=2),
+    )
+
+    await coordinator.stop()
+
+    assert response.status == "failed"
 
 
 @pytest.mark.asyncio

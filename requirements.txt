@@ -1,6 +1,6 @@
 # Core dependencies for CampfireValley library
-# Base campfires framework
-campfires>=0.4.3
+# Base campfires framework (published as pycampfires)
+pycampfires>=0.4.4
 
 # Core dependencies
 pydantic>=2.0.0

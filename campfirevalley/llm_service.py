@@ -43,7 +43,7 @@ def get_default_ollama_think_value() -> Any:
     return False
 
 
-async def get_ollama_model_names(base_url: str) -> Set[str]:
+async def get_ollama_model_names(base_url: str, api_key: Optional[str] = None) -> Set[str]:
     now = time.time()
     ts = float(_OLLAMA_MODELS_CACHE.get("ts") or 0.0)
     cached = _OLLAMA_MODELS_CACHE.get("models")
@@ -51,10 +51,13 @@ async def get_ollama_model_names(base_url: str) -> Set[str]:
         return cached
     models: Set[str] = set()
     url = (base_url or "").rstrip("/") + "/api/tags"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
         timeout = httpx.Timeout(10.0, connect=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
         if response.status_code == 200:
             data = response.json() if response.content else {}
             items = data.get("models") if isinstance(data, dict) else None
@@ -90,10 +93,14 @@ async def run_ollama_inference(
     base_url: str,
     timeout_seconds: float,
     think: Any = False,
+    api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     host = (base_url or "").rstrip("/")
     model_name = str(model or "").strip() or get_default_ollama_model()
     timeout = httpx.Timeout(timeout_seconds, connect=min(10.0, timeout_seconds))
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     async with httpx.AsyncClient(timeout=timeout) as client:
         _markers = [
             "\n\nUser Request:", "\nUser Request:", "User Request:",
@@ -130,7 +137,7 @@ async def run_ollama_inference(
         generate_payload = {"model": model_name, "prompt": _user_part if _system_part else prompt, "stream": False, "think": think, "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0}}
         if _system_part:
             generate_payload["system"] = _system_part
-        generate_response = await client.post(f"{host}/api/generate", json=generate_payload)
+        generate_response = await client.post(f"{host}/api/generate", json=generate_payload, headers=headers)
         if generate_response.status_code == 200:
             body = generate_response.json() if generate_response.content else {}
             return {
@@ -153,7 +160,7 @@ async def run_ollama_inference(
             "think": think,
             "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0},
         }
-        chat_response = await client.post(f"{host}/api/chat", json=chat_payload)
+        chat_response = await client.post(f"{host}/api/chat", json=chat_payload, headers=headers)
         chat_response.raise_for_status()
         body = chat_response.json() if chat_response.content else {}
         return {
@@ -170,13 +177,16 @@ class AIInferenceService(BaseVALIService):
         super().__init__(
             VALIServiceType.AI_INFERENCE,
             {
-                "providers": ["ollama"],
+                "providers": ["ollama", "ollama_cloud"],
                 "default_timeout_seconds": default_timeout_seconds or get_llm_timeout_seconds(),
                 "default_think": get_default_ollama_think_value(),
             },
         )
         self.default_ollama_host = (
             str(default_ollama_host or os.getenv("OLLAMA_HOST") or "http://host.docker.internal:11434").strip()
+        )
+        self.default_ollama_cloud_host = (
+            str(os.getenv("OLLAMA_CLOUD_HOST") or "https://ollama.com").strip()
         )
         self.default_timeout_seconds = float(default_timeout_seconds or get_llm_timeout_seconds())
         self.default_think = get_default_ollama_think_value()
@@ -187,7 +197,7 @@ class AIInferenceService(BaseVALIService):
             payload = request.payload if isinstance(request.payload, dict) else {}
             requirements = request.requirements if isinstance(request.requirements, dict) else {}
             provider = str(payload.get("provider") or "ollama").strip().lower()
-            if provider != "ollama":
+            if provider not in ("ollama", "ollama_cloud"):
                 return VALIServiceResponse(
                     request_id=request.request_id,
                     status=VALIServiceStatus.FAILED.value,
@@ -202,7 +212,13 @@ class AIInferenceService(BaseVALIService):
                     deliverables={},
                     metadata={"error": "Missing prompt for MCP inference"},
                 )
-            base_url = str(payload.get("base_url") or self.default_ollama_host).strip()
+            is_cloud = provider == "ollama_cloud"
+            base_url = str(payload.get("base_url") or (
+                self.default_ollama_cloud_host if is_cloud else self.default_ollama_host
+            )).strip()
+            api_key = str(payload.get("api_key") or (
+                os.getenv("OLLAMA_CLOUD_API_KEY") if is_cloud else os.getenv("OLLAMA_API_KEY")
+            ) or "").strip() or None
             fallback_model = str(payload.get("fallback_model") or get_default_ollama_model()).strip()
             requested_model = str(payload.get("model") or fallback_model).strip() or fallback_model
             think = payload.get("think", self.default_think)
@@ -213,11 +229,13 @@ class AIInferenceService(BaseVALIService):
                 timeout_seconds = max(10.0, float(requirements.get("timeout_seconds") or timeout_seconds))
             except Exception:
                 timeout_seconds = self.default_timeout_seconds
-            available_models = await get_ollama_model_names(base_url)
+            available_models = await get_ollama_model_names(base_url, api_key=api_key)
             used_model = requested_model
             if available_models and requested_model not in available_models:
                 used_model = fallback_model if fallback_model in available_models else requested_model
-            inference = await run_ollama_inference(prompt, used_model, base_url, timeout_seconds, think=think)
+            inference = await run_ollama_inference(
+                prompt, used_model, base_url, timeout_seconds, think=think, api_key=api_key
+            )
             text = str(inference.get("text") or "").strip()
             status = VALIServiceStatus.COMPLETED.value if text else VALIServiceStatus.FAILED.value
             return VALIServiceResponse(

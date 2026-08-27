@@ -1,0 +1,18 @@
+version: 1
+campfire: Legal Team
+steps:
+- camper: Contract Researcher
+  task: Read the agreement text, extract the key commercial and legal clauses, and
+    summarize the core facts, obligations, and any sections that appear truncated
+    or need manual confirmation.
+  camper_id: fdd9ec56fa5149ac9225f8726e52e4bc
+- camper: Contract Analyst
+  task: Using the agreement text and previous findings, identify the main legal and
+    commercial risks, points that favor one party, and items worth renegotiating or
+    validating manually.
+  camper_id: f8d7a4aa49b5442a9320c9b452d40376
+- camper: Legal Reporter
+  task: Prepare the final client-facing review. Explain the key findings, major risks,
+    and practical next steps without exposing internal orchestration details.
+  camper_id: 045425649f6f4f76b719a1a2ea11fcd9
+updated_at: '2026-06-23T09:07:28.101232'

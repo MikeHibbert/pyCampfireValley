@@ -364,6 +364,8 @@ class LLMCampfire(Campfire):
                         response = None
                     if response is None and self.vali_coordinator:
                         response, used_model = await self._process_with_mcp_llm(torch, context_prompt, used_model)
+            elif provider == "ollama_cloud" and self.vali_coordinator:
+                response, used_model = await self._process_with_mcp_llm(torch, context_prompt, used_model)
             if response is None:
                 images = (torch.data or {}).get("images") or []
                 if not isinstance(images, list):
@@ -375,7 +377,7 @@ class LLMCampfire(Campfire):
                 )
             if response is None:
                 fallback_model = get_default_ollama_model()
-                if provider == "ollama" and used_model and used_model != fallback_model:
+                if provider in ("ollama", "ollama_cloud") and used_model and used_model != fallback_model:
                     try:
                         monitoring = get_monitoring_system()
                         corr = None
@@ -437,7 +439,12 @@ class LLMCampfire(Campfire):
         if not self.vali_coordinator:
             return None, model
         llm_cfg = self.config.config.get("llm") if isinstance(self.config.config, dict) else {}
-        base_url = (llm_cfg.get("base_url") or os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434")).strip()
+        provider = (llm_cfg.get("provider") or "ollama").strip().lower()
+        base_url = (llm_cfg.get("base_url") or os.getenv(
+            "OLLAMA_CLOUD_HOST",
+            os.getenv("OLLAMA_HOST", "http://host.docker.internal:11434"),
+        )).strip()
+        api_key = llm_cfg.get("api_key") or None
         timeout_seconds = get_llm_timeout_seconds()
         try:
             timeout_seconds = max(10.0, float(llm_cfg.get("timeout_seconds") or timeout_seconds))
@@ -453,11 +460,12 @@ class LLMCampfire(Campfire):
         response = await self.vali_coordinator.request_service_via_mcp(
             VALIServiceType.AI_INFERENCE,
             payload={
-                "provider": "ollama",
+                "provider": "ollama_cloud" if provider == "ollama_cloud" else "ollama",
                 "prompt": context_prompt,
                 "model": model or llm_cfg.get("model") or get_default_ollama_model(),
                 "fallback_model": get_default_ollama_model(),
                 "base_url": base_url,
+                "api_key": api_key,
                 "think": llm_cfg.get("think"),
                 "campfire_name": self.config.name,
                 "correlation_id": corr,
@@ -976,7 +984,18 @@ class LLMCamper(LLMCamperMixin):
         """Initialize Ollama connection"""
         # Create OllamaConfig object (base_url only for compatibility)
         try:
-            config = OllamaConfig(base_url=self.llm_config.base_url, timeout=120, max_tokens=2048, options={"num_ctx": 4096, "use_cache": False})
+            config = OllamaConfig(
+                base_url=self.llm_config.base_url,
+                model=getattr(self.llm_config, "model", None) or self.llm_config.default_model,
+                api_key=getattr(self.llm_config, "api_key", None),
+                temperature=getattr(self.llm_config, "temperature", 0.7),
+                max_tokens=getattr(self.llm_config, "max_tokens", 2048),
+                top_p=getattr(self.llm_config, "top_p", 0.9),
+                top_k=getattr(self.llm_config, "top_k", 40),
+                repeat_penalty=getattr(self.llm_config, "repeat_penalty", 1.1),
+                timeout=120,
+                options={"num_ctx": 4096, "use_cache": False},
+            )
         except Exception:
             # Fallback to whatever config was provided
             config = self.llm_config
@@ -1022,19 +1041,52 @@ def create_ollama_campfire(
     mcp_broker: IMCPBroker,
     base_url: str = "http://localhost:11434",
     default_model: str = "llama2",
+    api_key: Optional[str] = None,
     vali_coordinator: Optional['VALICoordinator'] = None,
 ) -> LLMCampfire:
     """
     Create an LLM campfire using Ollama.
-    
+
     Args:
         config: Campfire configuration
         mcp_broker: MCP broker
         base_url: Ollama server base URL
         default_model: Default model to use
-        
+        api_key: Optional Bearer API key (required for Ollama Cloud)
+
     Returns:
         Configured LLM campfire
     """
-    llm_config = OllamaConfig(base_url=base_url, model=default_model)
+    llm_config = OllamaConfig(base_url=base_url, model=default_model, api_key=api_key)
     return LLMCampfire(config, mcp_broker, llm_config, vali_coordinator=vali_coordinator)
+
+
+def create_ollama_cloud_campfire(
+    config: CampfireConfig,
+    mcp_broker: IMCPBroker,
+    api_key: Optional[str] = None,
+    default_model: str = "llama3.1",
+    base_url: str = "https://ollama.com",
+    vali_coordinator: Optional['VALICoordinator'] = None,
+) -> LLMCampfire:
+    """
+    Create an LLM campfire using Ollama Cloud.
+
+    Args:
+        config: Campfire configuration
+        mcp_broker: MCP broker
+        api_key: Ollama Cloud API key
+        default_model: Default model to use
+        base_url: Ollama Cloud base URL
+
+    Returns:
+        Configured LLM campfire
+    """
+    return create_ollama_campfire(
+        config,
+        mcp_broker,
+        base_url=base_url,
+        default_model=default_model,
+        api_key=api_key,
+        vali_coordinator=vali_coordinator,
+    )

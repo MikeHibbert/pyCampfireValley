@@ -909,8 +909,10 @@ def _refresh_graph_context_from_snapshot(graph: Any) -> None:
 
 def _default_llm_provider() -> str:
     provider = (os.getenv("LLM_PROVIDER") or "").strip().lower()
-    if provider in {"ollama", "openrouter"}:
+    if provider in {"ollama", "ollama_cloud", "openrouter"}:
         return provider
+    if os.getenv("OLLAMA_CLOUD_API_KEY"):
+        return "ollama_cloud"
     return "ollama" if not os.getenv("OPENROUTER_API_KEY") else "openrouter"
 
 
@@ -918,7 +920,9 @@ def _coerce_model(provider: str, model: str) -> str:
     m = (model or "").strip()
     if m:
         return m
-    return get_default_ollama_model() if provider == "ollama" else "gpt-4o-mini"
+    if provider in ("ollama", "ollama_cloud"):
+        return get_default_ollama_model()
+    return "gpt-4o-mini"
 
 
 def _pick_provider_and_model(requested_model: Optional[str]) -> tuple[str, str]:
@@ -930,9 +934,10 @@ def _pick_provider_and_model(requested_model: Optional[str]) -> tuple[str, str]:
     if ("gpt" in lower or "claude" in lower or "openai" in lower) and os.getenv("OPENROUTER_API_KEY"):
         return "openrouter", requested
     if "gemma" in lower or "llama" in lower or "mistral" in lower:
-        return "ollama", requested
+        p = _default_llm_provider()
+        return p, requested
     p = _default_llm_provider()
-    return p, _coerce_model(p, requested if p == "openrouter" else get_default_ollama_model())
+    return p, _coerce_model(p, requested)
 
 
 def _parse_add_camper_command(text: str) -> Optional[str]:
@@ -2154,8 +2159,8 @@ async def set_campfire_llm(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="Missing campfire or model")
     if campfire not in campfire_parent and not campfire.lower().endswith(" camper"):
         raise HTTPException(status_code=400, detail="LLM model is configurable per-camper only")
-    if provider != "ollama":
-        raise HTTPException(status_code=400, detail="Only ollama provider is supported in the UI currently")
+    if provider not in ("ollama", "ollama_cloud"):
+        raise HTTPException(status_code=400, detail="Only ollama and ollama_cloud providers are supported in the UI currently")
     cf = current_valley.campfires.get(campfire)
     if not cf:
         raise HTTPException(status_code=404, detail="Campfire not found")
