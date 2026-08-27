@@ -41,7 +41,7 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        "campfires>=0.4.0",
+        "pycampfires>=0.4.4",
         "pydantic>=2.0.0",
         "PyYAML>=6.0",
         "redis>=4.5.0",
