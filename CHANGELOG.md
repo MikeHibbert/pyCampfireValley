@@ -6,16 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.2.5] - 2026-08-27
 ### Added
-- Demo: runnable `examples/legal_team_demo.py` that provisions a real legal watch team, reviews the sample software development agreement PDF, and emits direct file links for the watch report and saved result
-- Tests: focused legal end-to-end coverage in `tests/test_legal_e2e.py` using the real agreement PDF as input
-
-### Changed
-- Watch orchestration: planner prompts and fallback behavior now push auditors toward specialist non-auditor campers for `discover` and `execute`
-- Demo/docs: updated README, demo guide, and testing guidance for the legal watch demo and report artifacts
-
-### Fixed
-- Legal demo: tuned verifier/reporter prompt behavior so the live Ollama-backed watch run converges more reliably and records usable learning data
+- Watch: `plan_mode` setting (`"llm"` default, `"deterministic"` opt-in) that skips the LLM plan/discover rounds and uses the deterministic default watch plan directly, while keeping the verify round
+- Onboarding: `onboard.sh` installer script (opencode-style) with provider/model detection, setup-only smoke test, and optional docker bring-up
 
 ## [1.2.3] - 2026-05-04
 ### Added
