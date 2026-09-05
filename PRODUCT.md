@@ -56,3 +56,13 @@ not trust:
 - Screen-aware: the screen-capture MCP (mcp_screen :8005/:8006) lets the
   Timberwolf see the user's screen; a Playwright MCP server is a candidate for
   UI-driven work.
+
+## The Timberwolf fronts the TUI (user, m4673)
+
+The TUI is not a bare tool dump: the Timberwolf is the main user-facing AI
+that the user talks to — they ask for tasks, the Timberwolf runs them on the
+project. That means the valley must **emit surface + development events** the
+same way opencode and Grok Build do: what is being built, which commands ran,
+what the agents are doing right now — everything a coding TUI shows. The UI
+subscribes to the event stream (SSE/websocket), renders progress live, and the
+Timberwolf narrates in chat while campers do the work underneath.
