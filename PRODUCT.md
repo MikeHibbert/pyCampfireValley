@@ -114,3 +114,28 @@ over the product valley.
 When the Sable class is built, its docstring opens:
 
 > Sable, a wise and far sighted eagle.
+
+### Install story (user direction, m4882): least-friction, opencode/grok-cli style
+
+Both reference projects lead with ONE command:
+
+- opencode: `curl -fsSL https://opencode.ai/install | bash` + package managers
+  (npm/scoop/choco/brew/mise) + desktop app downloads.
+- grok-cli: `curl -fsSL .../install.sh | bash` + `bun add -g grok-dev`, then
+  `grok` just works (self-management: update/uninstall subcommands).
+
+CampfireValley install target (to build):
+
+1. `pipx install campfirevalley` (primary; we are already on PyPI) or
+   `curl -fsSL <raw install.sh> | bash` once we ship an install script.
+2. `campfirevalley onboard MyValley` (exists today) - config + manifest in one
+   step; extend it to also fetch API keys (interactive prompts, stored via
+   credentials/).
+3. `campfirevalley start MyValley` + `campfirevalley tui` - the valley is up,
+   the leader introduces itself, the steward + Sable are already provisioned.
+4. Update/uninstall via pipx/uv tool upgrade; grok-cli-style `campfirevalley
+   update` wrapper once shipped.
+
+Principles copied from both: one-line happy path first; package managers as
+alternatives; self-management commands; the tool speaks for itself in the
+first 60 seconds (onboard wizard prints the TUI URL and opens the door).
