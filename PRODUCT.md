@@ -66,3 +66,11 @@ same way opencode and Grok Build do: what is being built, which commands ran,
 what the agents are doing right now — everything a coding TUI shows. The UI
 subscribes to the event stream (SSE/websocket), renders progress live, and the
 Timberwolf narrates in chat while campers do the work underneath.
+
+### Who fronts (user correction, m4679)
+
+The face of the TUI is the valley's MAIN LEADER, not a fixed role: an
+Andrew-class valley is fronted by Andrew; a Timberwolf-class valley (the
+public product) is fronted by the Timberwolf. Same event stream, same TUI —
+the leading persona is a role the valley assigns (config: `leader`), and the
+UI renders whoever holds it.
