@@ -14,6 +14,7 @@ from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime
 import yaml
 from .interfaces import IValley, IDock, IPartyBox, IMCPBroker, IFederationManager, IKeyManager
+from .events import EventBus
 from .llm_defaults import get_default_ollama_model
 from .models import Torch, ValleyConfig, CampfireConfig, CommunityMembership, FederationMembership
 from .config import ConfigManager
@@ -54,6 +55,8 @@ class Valley(IValley):
         self.name = name
         self.manifest_path = manifest_path
         self.mcp_broker_url = mcp_broker
+        # Event bus: the dev-event stream the TUI subscribes to.
+        self.events = EventBus()
         self.party_box = party_box
         self.config_dir = config_dir
         self._workflow_cache: Dict[str, Any] = {}
@@ -201,6 +204,7 @@ class Valley(IValley):
             elif self.config.env.get("auto_create_dock", True):
                 logger.warning("Dock creation skipped - MCP broker not connected")
             
+            self.events.emit("valley_started", text=f"Valley {self.name} started", valley=self.name)
             self._running = True
             logger.info(f"Valley '{self.name}' started successfully")
             self._start_schedules_from_disk()
@@ -252,6 +256,7 @@ class Valley(IValley):
         if self.mcp_broker:
             await self.mcp_broker.disconnect()
         
+        self.events.emit("valley_stopped", text=f"Valley {self.name} stopping", valley=self.name)
         self._running = False
         logger.info(f"Valley '{self.name}' stopped")
     
@@ -2243,6 +2248,7 @@ class Valley(IValley):
         if self._watch_enabled_for_torch(campfire_name, torch):
             watch_resp = await self._run_watch_for_torch(campfire_name, torch)
             if watch_resp is not None:
+                self.events.emit("torch_completed", text="", valley=self.name, torch_id=getattr(torch, "torch_id", ""), detail={"campfire": str(campfire)[:40]})
                 return watch_resp
         service_resp = await self.process_service_call(campfire_name, torch)
         if service_resp is not None:
@@ -2903,6 +2909,7 @@ class Valley(IValley):
     async def process_torch(self, torch: 'Torch') -> Optional['Torch']:
         """Process a torch by routing it to the appropriate campfire"""
         if not self._running:
+            self.events.emit("torch_received", text=str(getattr(torch, "objective", ""))[:200], valley=self.name, torch_id=getattr(torch, "torch_id", ""))
             raise RuntimeError("Valley must be started before processing torches")
         
         logger.info(f"Processing torch {torch.torch_id} from {torch.sender_valley}")
