@@ -28,6 +28,12 @@ from .zeitgeist_runtime import build_zeitgeist_context
 
 logger = logging.getLogger(__name__)
 
+def _specialist_think_default() -> bool:
+    """General rule: specialists run with thinking OFF (token/context
+    discipline). OLLAMA_THINK=true overrides for the whole valley."""
+    return os.getenv("OLLAMA_THINK", "false").strip().lower() in ("true", "1", "yes", "on")
+
+
 _beliefs_collection = None
 _OLLAMA_MODELS_CACHE: Dict[str, Any] = {"ts": 0.0, "models": set()}
 
@@ -477,7 +483,8 @@ class LLMCampfire(Campfire):
                 "fallback_model": get_default_ollama_model(),
                 "base_url": base_url,
                 "api_key": api_key,
-                "think": llm_cfg.get("think"),
+                "think": (llm_cfg.get("think") if llm_cfg.get("think") is not None
+                          else _specialist_think_default()),
                 "campfire_name": self.config.name,
                 "correlation_id": corr,
             },
@@ -658,7 +665,8 @@ class LLMCampfire(Campfire):
             "model": model_name,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": 0.0, "num_ctx": 4096, "use_cache": False, "cfg_scale": 2.0},
+            "think": _specialist_think_default(),
+            "options": {"temperature": 0.0, "num_ctx": 16384, "cfg_scale": 2.0},
         }
         if tools:
             data["tools"] = tools
@@ -1005,7 +1013,7 @@ class LLMCamper(LLMCamperMixin):
                 top_k=getattr(self.llm_config, "top_k", 40),
                 repeat_penalty=getattr(self.llm_config, "repeat_penalty", 1.1),
                 timeout=120,
-                options={"num_ctx": 4096, "use_cache": False},
+                options={"num_ctx": 4096},
             )
         except Exception:
             # Fallback to whatever config was provided
