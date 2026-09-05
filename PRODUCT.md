@@ -108,3 +108,9 @@ interpretation - the same record-not-judge discipline as the queen-bee
 eagle. It does NOT get: work board introspection, lesson stores, model
 profiles, or any Andrew-side machinery. Eagle on Andrew's mountain; Sable
 over the product valley.
+
+### Sable class docstring (user direction, m4803)
+
+When the Sable class is built, its docstring opens:
+
+> Sable, a wise and far sighted eagle.
