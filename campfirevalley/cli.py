@@ -221,6 +221,17 @@ Examples:
     )
     daemon_status_parser = daemon_sub.add_parser("status", help="Show daemon status")
     daemon_status_parser.add_argument("name", help="Valley name")
+
+    # TUI command (live event-stream panels; the valley leader fronts)
+    tui_parser = subparsers.add_parser(
+        "tui",
+        help="Open the valley TUI (live event stream panels)",
+    )
+    tui_parser.add_argument(
+        "--url",
+        default="http://localhost:8020",
+        help="Valley events endpoint base (default: http://localhost:8020)",
+    )
     
     args = parser.parse_args()
     
@@ -243,6 +254,9 @@ Examples:
             daemon_status(args)
         else:
             print("Specify a daemon action: run|status")
+    elif args.command == "tui":
+        from .tui import run_tui
+        asyncio.run(run_tui(args.url))
     else:
         parser.print_help()
 
