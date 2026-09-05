@@ -81,3 +81,11 @@ The TUI is shared infrastructure: because it lives in pyCampfireValley, an
 Andrew-class valley benefits from it as well. One TUI implementation, folded
 into the runtime — Andrew's valley renders the same event stream and panels
 with Andrew (the valley leader) fronting. No fork, no second client.
+
+### The TUI as the work pipe (user direction, m4686)
+
+The TUI feeds local context from whatever project folder the user points it
+at. That context flows to the valley's leader (Andrew or Timberwolf), who
+assigns a campfire to do the work on it — and the finished result is
+delivered back to the right folder. The TUI is the pipe: local context in,
+campfire work assigned, artifacts out to the folder they came from.
