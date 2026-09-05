@@ -139,3 +139,19 @@ CampfireValley install target (to build):
 Principles copied from both: one-line happy path first; package managers as
 alternatives; self-management commands; the tool speaks for itself in the
 first 60 seconds (onboard wizard prints the TUI URL and opens the door).
+
+### Domain-knowledge ingest for Andrew (user direction, Sep 5, m4973-m4975)
+
+Teaching Andrew a domain from logs/documents: never load the corpus into
+context (docs run till end of context and break length rules). Build the
+RAG ingest path instead - reusing the uppoo M4 shape (pgvector + HNSW +
+retrieval): (1) chunk documents by headings/paragraphs with slight overlap;
+(2) embed chunks (nomic-embed-text local, ~8k token input cap - chunking
+mandatory; or OpenRouter embeddings 1536-dim); (3) store vectors + text +
+provenance (file/section/date per chunk - citable answers); (4) retrieve at
+question time (embed question, top-k 3-5 chunks as grounding into Andrew's
+prompt - his grounding_source telemetry already records it); (5) optional
+per-file digest embedded alongside raw chunks for "what's in here overall".
+No fine-tuning into persona (knowledge lives in stores, not in him -
+division line). DELIVERABLE (queued after dojo): a document-ingest tool +
+retrieval tool Andrew can call, so "teach Andrew a domain" is one command.
