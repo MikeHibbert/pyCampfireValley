@@ -113,13 +113,29 @@ class EventBus:
         return len(self._subs)
 
 
-def build_events_app(bus: EventBus) -> FastAPI:
+def build_events_app(bus: EventBus, send_torch=None) -> FastAPI:
     """Tiny FastAPI app: GET /events (SSE live stream), GET /events/recent."""
     app = FastAPI(title="campfirevalley-events")
 
     @app.get("/events/leader")
     async def leader():
         return {"leader": bus.leader or "the valley"}
+
+    @app.post("/torchs")
+    async def send_torch_route(body: dict):
+        """Folder work pipe: TUI sends a folder torch (objective + context + folder)."""
+        if send_torch is None:
+            return {"error": "no torch sender wired on this valley"}
+        if not str((body or {}).get("objective") or "").strip():
+            return {"error": "objective is required"}
+        try:
+            import inspect as _inspect
+            result = send_torch(body or {})
+            if _inspect.isawaitable(result):
+                result = await result
+            return {"ok": True, "torch_id": result}
+        except Exception as e:
+            return {"error": str(e)[:300]}
 
     @app.get("/events/recent")
     async def recent(limit: int = 100):
@@ -150,8 +166,8 @@ def build_events_app(bus: EventBus) -> FastAPI:
     return app
 
 
-def run_events_server(bus: EventBus, host: str = "0.0.0.0", port: int = 8020) -> None:
+def run_events_server(bus: EventBus, host: str = "0.0.0.0", port: int = 8020, send_torch=None) -> None:
     """Blocking: serve the event stream (call from a thread or a process)."""
     import uvicorn
 
-    uvicorn.run(build_events_app(bus), host=host, port=port, log_level="warning")
+    uvicorn.run(build_events_app(bus, send_torch=send_torch), host=host, port=port, log_level="warning")
