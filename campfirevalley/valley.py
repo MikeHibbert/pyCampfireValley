@@ -469,6 +469,14 @@ class Valley(IValley):
                     name=campfire_name,
                     valley_name=self.name
                 )
+            elif campfire_config.type == "steward":
+                # The Timberwolf: deterministic care — monitor, keep, report, heal.
+                # Division line: no persona, no lessons, no self-editing surface.
+                from .campfires.steward import StewardCampfire
+                campfire = StewardCampfire(
+                    mcp_broker=self.mcp_broker,
+                    config=campfire_config,
+                )
             elif campfire_config.type == "justice":
                 from .justice import JusticeCampfire
                 campfire = JusticeCampfire(
@@ -1121,8 +1129,8 @@ class Valley(IValley):
             "Return ONLY valid JSON with this schema:\n"
             "{"
             "\"rounds\": {"
-            "\"discover\": {\"goal\": \"...\", \"campers\": [\"...\"]},"
-            "\"plan\": {\"goal\": \"...\", \"campers\": [\"...\"]},"
+            "\"discover\": {\"goal\": \"...\", \"campers\": [\"...\"], \"parallel\": false},"
+            "\"plan\": {\"goal\": \"...\", \"campers\": [\"...\"], \"parallel\": false},"
             "\"execute\": {\"goal\": \"...\", \"campers\": [\"...\"], \"steps\": [{\"camper\": \"...\", \"task\": \"...\"}]},"
             "\"verify\": {\"goal\": \"...\", \"campers\": [\"...\"], \"pass_criteria\": [\"...\"]},"
             "\"improve\": {\"goal\": \"...\", \"campers\": [\"...\"], \"focus_areas\": [\"...\"]}"
@@ -1204,33 +1212,64 @@ class Valley(IValley):
         correlation_id: str,
         watch_id: str,
         prior_rounds: List[Dict[str, Any]],
+        parallel: bool = False,
     ) -> Dict[str, Any]:
         outputs: List[Dict[str, Any]] = []
         prompt = self._watch_round_prompt(campfire_name, round_name, goal, original_text, current_input, prior_rounds)
-        for camper in campers:
-            cf = self.campfires.get(camper)
-            if not cf:
-                continue
-            round_torch = Torch(
-                claim=f"watch_{round_name}",
-                source_campfire=f"{campfire_name} Watch",
-                channel="watch",
-                torch_id=f"watch_{uuid.uuid4().hex}",
-                sender_valley=self.name,
-                target_address=f"valley:{self.name}/{camper}",
-                data={"text": prompt, "service_mode": True, "parent": campfire_name, "watch_round": round_name},
-                signature="watch_placeholder",
-                metadata={
-                    "correlation_id": correlation_id,
-                    "parent": campfire_name,
-                    "watch_generated": True,
-                    "watch_run_id": watch_id,
-                    "watch_round": round_name,
-                },
-            )
-            resp = await cf.process_torch(round_torch)
-            text = self._extract_torch_response_text(resp)
-            outputs.append({"camper": camper, "ok": bool(text), "text": text or ""})
+        if parallel:
+            import asyncio
+            async def _run_camper(camper: str) -> dict:
+                cf = self.campfires.get(camper)
+                if not cf:
+                    return {"camper": camper, "ok": False, "text": ""}
+                round_torch = Torch(
+                    claim=f"watch_{round_name}",
+                    source_campfire=f"{campfire_name} Watch",
+                    channel="watch",
+                    torch_id=f"watch_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{self.name}/{camper}",
+                    data={"text": prompt, "service_mode": True, "parent": campfire_name, "watch_round": round_name},
+                    signature="watch_placeholder",
+                    metadata={
+                        "correlation_id": correlation_id,
+                        "parent": campfire_name,
+                        "watch_generated": True,
+                        "watch_run_id": watch_id,
+                        "watch_round": round_name,
+                    },
+                )
+                resp = await cf.process_torch(round_torch)
+                text = self._extract_torch_response_text(resp)
+                return {"camper": camper, "ok": bool(text), "text": text or ""}
+            tasks = [asyncio.create_task(_run_camper(c)) for c in campers]
+            for task in asyncio.as_completed(tasks):
+                outputs.append(await task)
+        else:
+            for camper in campers:
+                cf = self.campfires.get(camper)
+                if not cf:
+                    continue
+                round_torch = Torch(
+                    claim=f"watch_{round_name}",
+                    source_campfire=f"{campfire_name} Watch",
+                    channel="watch",
+                    torch_id=f"watch_{uuid.uuid4().hex}",
+                    sender_valley=self.name,
+                    target_address=f"valley:{self.name}/{camper}",
+                    data={"text": prompt, "service_mode": True, "parent": campfire_name, "watch_round": round_name},
+                    signature="watch_placeholder",
+                    metadata={
+                        "correlation_id": correlation_id,
+                        "parent": campfire_name,
+                        "watch_generated": True,
+                        "watch_run_id": watch_id,
+                        "watch_round": round_name,
+                    },
+                )
+                resp = await cf.process_torch(round_torch)
+                text = self._extract_torch_response_text(resp)
+                outputs.append({"camper": camper, "ok": bool(text), "text": text or ""})
         summary = "\n\n---\n\n".join(
             [f"{item['camper']}:\n{item['text']}" for item in outputs if item.get("text")]
         ).strip()
@@ -1892,6 +1931,7 @@ class Valley(IValley):
                     corr,
                     watch_id,
                     history,
+                    parallel=discover_spec.get("parallel", False),
                 )
                 if not discover_result.get("summary"):
                     discover_result["summary"] = original_text
@@ -1922,6 +1962,7 @@ class Valley(IValley):
                     corr,
                     watch_id,
                     history,
+                    parallel=plan_spec.get("parallel", False),
                 )
                 plan_round["planner"] = str(plan_result.get("_planner") or "")
                 plan_round["planner_source"] = str(plan_result.get("_planner_source") or "")
@@ -2925,6 +2966,50 @@ class Valley(IValley):
         except Exception as e:
             logger.error(f"Error processing torch {torch.torch_id}: {e}")
             raise
+
+    async def process_torch_parallel(
+        self,
+        torches: list['Torch'],
+        *,
+        timeout: float = 120,
+    ) -> dict[str, 'Torch | None']:
+        """Process multiple torches in parallel, each routed to its target campfire.
+
+        Args:
+            torches: List of torches to process concurrently.
+            timeout: Maximum seconds to wait for all to complete.
+
+        Returns:
+            Dict mapping torch.torch_id to result (None if timed out/failed).
+        """
+        if not self._running:
+            raise RuntimeError("Valley must be started before processing torches")
+
+        import asyncio
+        tasks: dict[str, asyncio.Task] = {}
+        for torch in torches:
+            task = asyncio.create_task(self.process_torch(torch))
+            tasks[torch.torch_id] = task
+
+        done, pending = await asyncio.wait(
+            tasks.values(), timeout=timeout, return_when=asyncio.ALL_COMPLETED
+        )
+
+        for t in pending:
+            t.cancel()
+
+        results: dict[str, 'Torch | None'] = {}
+        for torch_id, task in tasks.items():
+            if task in done:
+                try:
+                    results[torch_id] = task.result()
+                except Exception as exc:
+                    logger.error(f"Parallel torch {torch_id} failed: {exc}")
+                    results[torch_id] = None
+            else:
+                results[torch_id] = None
+
+        return results
 
     def _resolve_campfire_by_identifier(self, identifier: str) -> Optional[str]:
         ident = (identifier or "").strip()
