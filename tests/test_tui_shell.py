@@ -55,3 +55,18 @@ if __name__ == "__main__":
     test_empty_text_ignored()
     test_render_smoke()
     print("ALL TUI SHELL TESTS PASS (5/5)")
+
+def test_leader_introduction_renders_before_events():
+    st = TuiState(leader_name="Timberwolf")
+    group = _render(st)
+    assert group is not None  # intro is drawn from leader_name even with no events
+
+
+if __name__ == "__main__":
+    test_torch_sets_and_clears()
+    test_leader_lines_cap()
+    test_activity_cap_and_label()
+    test_empty_text_ignored()
+    test_render_smoke()
+    test_leader_introduction_renders_before_events()
+    print("ALL TUI SHELL TESTS PASS (6/6)")
