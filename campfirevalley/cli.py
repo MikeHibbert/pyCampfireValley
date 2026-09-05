@@ -222,6 +222,22 @@ Examples:
     daemon_status_parser = daemon_sub.add_parser("status", help="Show daemon status")
     daemon_status_parser.add_argument("name", help="Valley name")
 
+    # Knowledge commands (teach a domain / ask for grounding)
+    learn_parser = subparsers.add_parser(
+        "learn",
+        help="Teach a domain: ingest a file or directory of markdown/text",
+    )
+    learn_parser.add_argument("path", help="File or directory to ingest")
+    learn_parser.add_argument("--db", default="./knowledge", help="Knowledge store path (default ./knowledge)")
+
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Ask the taught domain for grounding (top-k chunks with provenance)",
+    )
+    ask_parser.add_argument("question", help="The question to ground")
+    ask_parser.add_argument("--db", default="./knowledge", help="Knowledge store path (default ./knowledge)")
+    ask_parser.add_argument("--k", type=int, default=5, help="Number of chunks (default 5)")
+
     # TUI command (live event-stream panels; the valley leader fronts)
     tui_parser = subparsers.add_parser(
         "tui",
@@ -275,6 +291,12 @@ Examples:
             daemon_status(args)
         else:
             print("Specify a daemon action: run|status")
+    elif args.command == "learn":
+        from .knowledge import _cli_learn
+        _cli_learn(args)
+    elif args.command == "ask":
+        from .knowledge import _cli_ask
+        _cli_ask(args)
     elif args.command == "tui":
         from .tui import run_tui
         asyncio.run(run_tui(args.url))
