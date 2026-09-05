@@ -89,3 +89,22 @@ at. That context flows to the valley's leader (Andrew or Timberwolf), who
 assigns a campfire to do the work on it — and the finished result is
 delivered back to the right folder. The TUI is the pipe: local context in,
 campfire work assigned, artifacts out to the folder they came from.
+
+### Sable: the Golden Eagle for product valleys (user direction, m4790-m4792)
+
+The Golden Eagle's monitoring should exist in product valleys too - but not
+as a full Andrew-side eagle (patrol over kumbaya runs, work board, cadence,
+token spend - that machinery is queen-bee-side). For the public product a
+chopped-down watcher ships instead: a lean oversight layer named **Sable**
+that keeps only what a standalone valley needs.
+
+Sable watches:
+- campfire health (steward monitor facts),
+- failed/torched-out work (torch failures, repeated errors),
+- event-stream anomalies (stalls: long gaps between torches and completions).
+
+Sable reports to the valley leader (Timberwolf) as facts, not
+interpretation - the same record-not-judge discipline as the queen-bee
+eagle. It does NOT get: work board introspection, lesson stores, model
+profiles, or any Andrew-side machinery. Eagle on Andrew's mountain; Sable
+over the product valley.
