@@ -232,6 +232,27 @@ Examples:
         default="http://localhost:8020",
         help="Valley events endpoint base (default: http://localhost:8020)",
     )
+
+    # Dojo commands (forge, test, take away a kindling)
+    dojo_parser = subparsers.add_parser(
+        "dojo",
+        help="Forge and test kindlings (AI personalities)",
+    )
+    dojo_sub = dojo_parser.add_subparsers(dest="dojo_cmd", help="Dojo actions")
+    dojo_gen = dojo_sub.add_parser("generate", help="Generate a kindling from a plain-language description")
+    dojo_gen.add_argument("description", help="What should this personality be like?")
+    dojo_gen.add_argument("--name", default="", help="Name for the kindling (optional)")
+    dojo_gen.add_argument("--out", default="", help="Where to save the kindling JSON (default: ./<name>.kindling.json)")
+    dojo_gen.add_argument("--model", default="", help="LLM model (default: env OLLAMA_MODEL / llama3.2)")
+    dojo_gen.add_argument("--base-url", default="", help="LLM base URL (default: env OLLAMA_CLOUD_BASE_URL or OLLAMA_BASE_URL)")
+    dojo_test = dojo_sub.add_parser("test", help="Try a kindling with a sample request")
+    dojo_test.add_argument("kindling", help="Path to the kindling JSON file")
+    dojo_test.add_argument("request", help="A sample request to try")
+    dojo_test.add_argument("--model", default="", help="LLM model override")
+    dojo_test.add_argument("--base-url", default="", help="LLM base URL override")
+    dojo_show = dojo_sub.add_parser("show", help="Print the copy-paste take-away block")
+    dojo_show.add_argument("kindling", help="Path to the kindling JSON file")
+
     
     args = parser.parse_args()
     
@@ -257,6 +278,9 @@ Examples:
     elif args.command == "tui":
         from .tui import run_tui
         asyncio.run(run_tui(args.url))
+    elif args.command == "dojo":
+        from .dojo import _cli_dojo
+        _cli_dojo(args)
     else:
         parser.print_help()
 
