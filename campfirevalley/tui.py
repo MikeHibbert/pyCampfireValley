@@ -82,19 +82,40 @@ def _render(state: TuiState):
     return Group(activity_panel, task_panel, chat_panel)
 
 
-async def run_tui(base_url: str) -> None:
+async def run_tui(base_url: str, folder: str = "") -> None:
     """Consume the valley SSE stream and render live panels."""
     console = Console()
     state = TuiState()
     state.leader_name = await _fetch_leader_name(base_url) or state.leader_name
     url = EVENT_URL.format(base=base_url.rstrip("/"))
     console.print("[bold]CampfireValley TUI[/] - listening to " + url)
+    if folder:
+        console.print("[bold green]Bound to folder:[/] " + folder + "  (type a request + Enter to send it as a torch)")
+    input_queue: asyncio.Queue = asyncio.Queue()
+
+    import threading
+
+    def _reader() -> None:
+        while True:
+            try:
+                line = input()
+                input_queue.put_nowait(line)
+            except EOFError:
+                return
+
+    threading.Thread(target=_reader, daemon=True).start()
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream("GET", url) as resp:
                 resp.raise_for_status()
                 with Live(_render(state), refresh_per_second=4, screen=False) as live:
                     async for line in resp.aiter_lines():
+                        # drain any typed requests without stalling the stream
+                        while not input_queue.empty():
+                            request = input_queue.get_nowait()
+                            if folder and request.strip():
+                                status = await _send_folder_torch(base_url, folder, request)
+                                console.print("[dim]" + status + "[/]")
                         if not line.startswith("data:"):
                             continue
                         payload = line[5:].strip()
@@ -108,6 +129,26 @@ async def run_tui(base_url: str) -> None:
         console.print("\n[dim]TUI closed - the valley carries on.[/]")
     except httpx.HTTPError as e:
         console.print("[red]Could not reach the valley event stream at " + url + ": " + str(e) + "[/]")
+
+
+async def _send_folder_torch(base_url: str, folder: str, request: str) -> str:
+    """Send a folder torch: typed request + bound folder context. Returns a status line."""
+    import os
+
+    body = {
+        "objective": request.strip()[:400],
+        "folder": folder,
+        "context": "bound folder: " + folder + " (cwd files visible to the campfire)",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(base_url.rstrip("/") + "/torchs", json=body)
+            if resp.status_code == 200:
+                torch_id = (resp.json() or {}).get("torch_id", "")
+                return "torch sent - " + str(torch_id)
+            return "send failed (" + str(resp.status_code) + ") - " + resp.text[:120]
+    except Exception as e:
+        return "send failed: " + str(e)
 
 
 async def _fetch_leader_name(base_url: str) -> Optional[str]:
@@ -134,4 +175,9 @@ def register(parser: argparse.ArgumentParser, subparsers) -> None:
         default="http://localhost:8020",
         help="Valley events endpoint base (default: http://localhost:8020)",
     )
-    tui_parser.set_defaults(func=lambda a: asyncio.run(run_tui(a.url)))
+    tui_parser.add_argument(
+        "--folder",
+        default="",
+        help="Bind a local project folder - typed requests are sent as folder torches",
+    )
+    tui_parser.set_defaults(func=lambda a: asyncio.run(run_tui(a.url, folder=a.folder)))

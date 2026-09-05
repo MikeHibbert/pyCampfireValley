@@ -209,6 +209,20 @@ class Valley(IValley):
             
             self.events.emit("valley_started", text=f"Valley {self.name} started", valley=self.name)
             await self.sable.start()
+            try:
+                import threading as _threading
+                from .events import run_events_server as _run_events_server
+                self._events_port = int((self.config.env or {}).get('EVENTS_PORT', '8020') or 8020)
+                self._events_thread = _threading.Thread(
+                    target=_run_events_server,
+                    args=(self.events,),
+                    kwargs={'host': '0.0.0.0', 'port': self._events_port, 'send_torch': self._send_folder_torch},
+                    daemon=True,
+                )
+                self._events_thread.start()
+                logger.info(f"Events server listening on :{self._events_port} (SSE + torch pipe)")
+            except Exception as e:
+                logger.warning(f"Events server not started: {e}")
             self._running = True
             logger.info(f"Valley '{self.name}' started successfully")
             self._start_schedules_from_disk()
@@ -261,6 +275,11 @@ class Valley(IValley):
             await self.mcp_broker.disconnect()
         
         await self.sable.stop()
+        try:
+            if getattr(self, '_events_thread', None) is not None and self._events_thread.is_alive():
+                logger.info('Events server stops with the valley (daemon thread).')
+        except Exception:
+            pass
         self.events.emit("valley_stopped", text=f"Valley {self.name} stopping", valley=self.name)
         self._running = False
         logger.info(f"Valley '{self.name}' stopped")
@@ -3034,6 +3053,30 @@ class Valley(IValley):
 
         return results
 
+    async def _send_folder_torch(self, body: dict) -> str:
+        """Folder work pipe: build a folder torch from a TUI request and process it.
+
+        body: {objective, context?, folder?, target_campfire?}. Returns the torch id."""
+        from .models import Torch
+        objective = str((body or {}).get('objective') or '').strip()
+        if not objective:
+            raise ValueError('objective is required')
+        folder = str((body or {}).get('folder') or '').strip()
+        context = str((body or {}).get('context') or '').strip()
+        target = str((body or {}).get('target_campfire') or '').strip()
+        data = {'objective': objective}
+        if folder:
+            data['folder'] = folder
+        if context:
+            data['context'] = context[:8000]
+        torch = Torch(
+            claim='folder_work',
+            data=data,
+            target_address=(self.name + ':' + target) if target else (self.name + ':local'),
+        )
+        await self.process_torch(torch)
+        return str(getattr(torch, 'torch_id', '') or '')
+
     def _leader_narrate_torch(self, torch: 'Torch', outcome: str, campfire_name: str = "") -> None:
         """Leader narration over the event stream: a torch arrived, was finished, or failed.
 
@@ -3041,7 +3084,7 @@ class Valley(IValley):
         Best-effort: narration never disturbs the work."""
         try:
             tid = str(getattr(torch, 'torch_id', '') or (torch if isinstance(torch, str) else '') or 'torch')
-            obj = str(getattr(torch, 'objective', '') or '').strip()[:120]
+            obj = str(getattr(torch, 'objective', '') or (getattr(torch, 'data', {}) or {}).get('objective', '') or '').strip()[:120]
             if outcome == 'received':
                 text = 'A torch has arrived - ' + (obj or tid) + '. I am handing it to ' + (campfire_name or 'the right campfire') + '.'
             elif outcome == 'completed':
