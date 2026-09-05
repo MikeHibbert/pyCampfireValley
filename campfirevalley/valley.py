@@ -15,6 +15,7 @@ from datetime import datetime
 import yaml
 from .interfaces import IValley, IDock, IPartyBox, IMCPBroker, IFederationManager, IKeyManager
 from .events import EventBus
+from .sable import Sable
 from .llm_defaults import get_default_ollama_model
 from .models import Torch, ValleyConfig, CampfireConfig, CommunityMembership, FederationMembership
 from .config import ConfigManager
@@ -57,6 +58,8 @@ class Valley(IValley):
         self.mcp_broker_url = mcp_broker
         # Event bus: the dev-event stream the TUI subscribes to.
         self.events = EventBus()
+        # Sable: the valley's own oversight (a wise and far sighted eagle).
+        self.sable = Sable(self, bus=self.events)
         self.party_box = party_box
         self.config_dir = config_dir
         self._workflow_cache: Dict[str, Any] = {}
@@ -205,6 +208,7 @@ class Valley(IValley):
                 logger.warning("Dock creation skipped - MCP broker not connected")
             
             self.events.emit("valley_started", text=f"Valley {self.name} started", valley=self.name)
+            await self.sable.start()
             self._running = True
             logger.info(f"Valley '{self.name}' started successfully")
             self._start_schedules_from_disk()
@@ -256,6 +260,7 @@ class Valley(IValley):
         if self.mcp_broker:
             await self.mcp_broker.disconnect()
         
+        await self.sable.stop()
         self.events.emit("valley_stopped", text=f"Valley {self.name} stopping", valley=self.name)
         self._running = False
         logger.info(f"Valley '{self.name}' stopped")
@@ -2972,6 +2977,10 @@ class Valley(IValley):
                     
         except Exception as e:
             logger.error(f"Error processing torch {torch.torch_id}: {e}")
+            try:
+                self.sable.record_failure(str(torch.torch_id), str(torch.target_address)[:60], str(e))
+            except Exception:
+                pass
             raise
 
     async def process_torch_parallel(
