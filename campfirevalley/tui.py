@@ -29,11 +29,12 @@ ACTIVITY_MAX = 200
 class TuiState:
     """Rolling state the panels render from."""
 
-    def __init__(self) -> None:
+    def __init__(self, leader_name: str = "the valley") -> None:
         self.activity = []  # (time, text)
         self.current_torch = None
         self.leader_lines = []
-        self.leader_name = "the valley"
+        self.leader_name = leader_name
+        self.leader_introduced = False
 
     def observe(self, ev: dict) -> None:
         etype = ev.get("type") or "agent_say"
@@ -68,6 +69,10 @@ def _render(state: TuiState):
     task_panel = Panel(task_text, title="Current work", border_style="dim")
 
     chat = Text()
+    if not state.leader_introduced:
+        intro = ("Good evening. I am " + state.leader_name +
+                 " — leader of this valley. I will speak here as the work happens.")
+        chat.append(state.leader_name + ": " + intro + "\n", style="bold magenta")
     for line in state.leader_lines[-5:]:
         chat.append(state.leader_name + ": " + line + "\n", style="bold magenta")
     if not state.leader_lines:
@@ -81,6 +86,7 @@ async def run_tui(base_url: str) -> None:
     """Consume the valley SSE stream and render live panels."""
     console = Console()
     state = TuiState()
+    state.leader_name = await _fetch_leader_name(base_url) or state.leader_name
     url = EVENT_URL.format(base=base_url.rstrip("/"))
     console.print("[bold]CampfireValley TUI[/] - listening to " + url)
     try:
@@ -102,6 +108,19 @@ async def run_tui(base_url: str) -> None:
         console.print("\n[dim]TUI closed - the valley carries on.[/]")
     except httpx.HTTPError as e:
         console.print("[red]Could not reach the valley event stream at " + url + ": " + str(e) + "[/]")
+
+
+async def _fetch_leader_name(base_url: str) -> Optional[str]:
+    """Ask the valley who fronts (leader role). Falls back to None silently."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(base_url.rstrip("/") + "/events/leader")
+            if resp.status_code == 200:
+                name = (resp.json() or {}).get("leader")
+                return str(name) if name else None
+    except Exception:
+        return None
+    return None
 
 
 def register(parser: argparse.ArgumentParser, subparsers) -> None:

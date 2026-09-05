@@ -56,11 +56,12 @@ class ValleyEvent:
 class EventBus:
     """In-memory pub/sub with a bounded replay ring. Never raises."""
 
-    def __init__(self, ring_size: int = _RING_DEFAULT):
+    def __init__(self, ring_size: int = _RING_DEFAULT, leader: str = ""):
         self._ring: List[ValleyEvent] = []
         self._ring_size = max(10, int(ring_size))
         self._subs: List[asyncio.Queue] = []
         self._counter = 0
+        self.leader = str(leader or "")
 
     def emit(
         self,
@@ -115,6 +116,10 @@ class EventBus:
 def build_events_app(bus: EventBus) -> FastAPI:
     """Tiny FastAPI app: GET /events (SSE live stream), GET /events/recent."""
     app = FastAPI(title="campfirevalley-events")
+
+    @app.get("/events/leader")
+    async def leader():
+        return {"leader": bus.leader or "the valley"}
 
     @app.get("/events/recent")
     async def recent(limit: int = 100):
