@@ -74,3 +74,10 @@ Andrew-class valley is fronted by Andrew; a Timberwolf-class valley (the
 public product) is fronted by the Timberwolf. Same event stream, same TUI —
 the leading persona is a role the valley assigns (config: `leader`), and the
 UI renders whoever holds it.
+
+### Andrew-class valleys get the same TUI (user direction, m4683)
+
+The TUI is shared infrastructure: because it lives in pyCampfireValley, an
+Andrew-class valley benefits from it as well. One TUI implementation, folded
+into the runtime — Andrew's valley renders the same event stream and panels
+with Andrew (the valley leader) fronting. No fork, no second client.
