@@ -469,6 +469,14 @@ class Valley(IValley):
                     name=campfire_name,
                     valley_name=self.name
                 )
+            elif campfire_config.type == "steward":
+                # The Timberwolf: deterministic care — monitor, keep, report, heal.
+                # Division line: no persona, no lessons, no self-editing surface.
+                from .campfires.steward import StewardCampfire
+                campfire = StewardCampfire(
+                    mcp_broker=self.mcp_broker,
+                    config=campfire_config,
+                )
             elif campfire_config.type == "justice":
                 from .justice import JusticeCampfire
                 campfire = JusticeCampfire(
