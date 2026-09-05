@@ -213,6 +213,17 @@ class LLMCampfire(Campfire):
                 fallback_model = get_default_ollama_model()
                 if not selected_model:
                     selected_model = fallback_model
+            # Allow per-torch model override from torch.data or metadata
+            try:
+                torch_model = None
+                if isinstance(torch.data, dict):
+                    torch_model = torch.data.get("model")
+                if not torch_model and isinstance(torch.metadata, dict):
+                    torch_model = torch.metadata.get("model")
+                if isinstance(torch_model, str) and torch_model.strip():
+                    selected_model = torch_model.strip()
+            except Exception:
+                pass
             
             # Prepare the prompt with torch data (prefer 'content' or 'text')
             torch_data = torch.data.get('content') or torch.data.get('text') or str(torch.data)
