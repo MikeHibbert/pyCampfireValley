@@ -2963,7 +2963,10 @@ class Valley(IValley):
                 resolved_name = self._resolve_campfire_by_identifier(campfire_name) or campfire_name
             if resolved_name in self.campfires:
                 logger.info(f"Routing torch {torch.torch_id} to campfire '{resolved_name}'")
-                return await self._process_target_campfire(resolved_name, torch)
+                self._leader_narrate_torch(torch, 'received', resolved_name)
+                resp = await self._process_target_campfire(resolved_name, torch)
+                self._leader_narrate_torch(torch, 'completed', resolved_name)
+                return resp
             else:
                 # If no specific campfire found, try to route through dock if available
                 if self.dock:
@@ -2981,6 +2984,7 @@ class Valley(IValley):
                 self.sable.record_failure(str(torch.torch_id), str(torch.target_address)[:60], str(e))
             except Exception:
                 pass
+            self._leader_narrate_torch(torch, 'failed', '')
             raise
 
     async def process_torch_parallel(
@@ -3019,13 +3023,36 @@ class Valley(IValley):
             if task in done:
                 try:
                     results[torch_id] = task.result()
+                    if results[torch_id] is not None:
+                        self._leader_narrate_torch(torch_id, 'completed', '')
                 except Exception as exc:
                     logger.error(f"Parallel torch {torch_id} failed: {exc}")
+                    self._leader_narrate_torch(torch_id, 'failed', '')
                     results[torch_id] = None
             else:
                 results[torch_id] = None
 
         return results
+
+    def _leader_narrate_torch(self, torch: 'Torch', outcome: str, campfire_name: str = "") -> None:
+        """Leader narration over the event stream: a torch arrived, was finished, or failed.
+
+        Facts-first, warm voice - the leader is whoever the valley says it is.
+        Best-effort: narration never disturbs the work."""
+        try:
+            tid = str(getattr(torch, 'torch_id', '') or (torch if isinstance(torch, str) else '') or 'torch')
+            obj = str(getattr(torch, 'objective', '') or '').strip()[:120]
+            if outcome == 'received':
+                text = 'A torch has arrived - ' + (obj or tid) + '. I am handing it to ' + (campfire_name or 'the right campfire') + '.'
+            elif outcome == 'completed':
+                text = 'Done. ' + (obj or tid) + ' has been seen through by ' + (campfire_name or 'the campfire') + '.'
+            elif outcome == 'failed':
+                text = 'That one stumbled - ' + (obj or tid) + ' could not be completed at ' + (campfire_name or 'its campfire') + '. Sable has the details.'
+            else:
+                return
+            self.events.emit('leader_say', text, valley=self.name, campfire=campfire_name, torch_id=tid, detail={'source': 'leader'})
+        except Exception:
+            pass
 
     def _resolve_campfire_by_identifier(self, identifier: str) -> Optional[str]:
         ident = (identifier or "").strip()
