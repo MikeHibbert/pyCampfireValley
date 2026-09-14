@@ -14,7 +14,10 @@ import aiohttp
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+DEFAULT_GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+]
 DEFAULT_GOOGLE_DOCS_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/documents.readonly",
