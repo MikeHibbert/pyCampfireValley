@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-09-15
+### Changed
+- Google (Gmail) OAuth: default Gmail scopes widened to include `gmail.send`, so tokens minted through the consent flow can send mail (outbound email leg for notify-on-complete / reply-inbox protocols)
+
+## [1.2.7] - 2026-09-05
+### Changed
+- LLM: think-default parity with deployment (`OLLAMA_THINK` gate) + `num_ctx` 16384 in chat payload
+
+## [1.2.6] - 2026-09-01
+### Added
+- `process_torch_parallel` + parallel watch rounds + per-torch model override (ported from deployment patches)
+- Dependency: `pycampfires>=0.4.4` (rebranded campfires)
+
 ## [1.2.5] - 2026-08-27
 ### Added
 - Watch: `plan_mode` setting (`"llm"` default, `"deterministic"` opt-in) that skips the LLM plan/discover rounds and uses the deterministic default watch plan directly, while keeping the verify round
