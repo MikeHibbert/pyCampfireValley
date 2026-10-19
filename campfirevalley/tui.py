@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from urllib.parse import quote
 from typing import Optional
 
 import httpx
@@ -82,12 +83,15 @@ def _render(state: TuiState):
     return Group(activity_panel, task_panel, chat_panel)
 
 
-async def run_tui(base_url: str, folder: str = "") -> None:
+async def run_tui(base_url: str, folder: str = "", campfire: str = "") -> None:
     """Consume the valley SSE stream and render live panels."""
     console = Console()
     state = TuiState()
     state.leader_name = await _fetch_leader_name(base_url) or state.leader_name
     url = EVENT_URL.format(base=base_url.rstrip("/"))
+    if campfire:
+        # work_c067bee3d2: narrow the live-tier stream to the campfire this TUI drives.
+        url = url + "?campfire=" + quote(campfire)
     console.print("[bold]CampfireValley TUI[/] - listening to " + url)
     if folder:
         console.print("[bold green]Bound to folder:[/] " + folder + "  (type a request + Enter to send it as a torch)")
@@ -180,4 +184,9 @@ def register(parser: argparse.ArgumentParser, subparsers) -> None:
         default="",
         help="Bind a local project folder - typed requests are sent as folder torches",
     )
-    tui_parser.set_defaults(func=lambda a: asyncio.run(run_tui(a.url, folder=a.folder)))
+    tui_parser.add_argument(
+        "--campfire",
+        default="",
+        help="Narrow the live stream to one campfire (the one this TUI drives)",
+    )
+    tui_parser.set_defaults(func=lambda a: asyncio.run(run_tui(a.url, folder=a.folder, campfire=a.campfire)))
