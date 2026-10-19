@@ -1,4 +1,4 @@
-﻿"""CampfireValley - A distributed torch processing framework
+"""CampfireValley - A distributed torch processing framework
 
 CampfireValley provides a secure, scalable platform for processing and routing
 "torches" (data packets) across a network of valleys (nodes) using campfires
