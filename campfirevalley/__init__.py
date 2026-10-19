@@ -1,4 +1,4 @@
-"""CampfireValley - A distributed torch processing framework
+﻿"""CampfireValley - A distributed torch processing framework
 
 CampfireValley provides a secure, scalable platform for processing and routing
 "torches" (data packets) across a network of valleys (nodes) using campfires
@@ -91,7 +91,7 @@ from .party_box import (
     FileSystemPartyBox, PartyBoxManager
 )
 
-__version__ = "1.2.3"
+__version__ = "1.2.9"
 
 __all__ = [
     # Core classes
