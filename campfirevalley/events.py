@@ -6,6 +6,13 @@ lifecycle and torch events. The bus keeps a bounded in-memory ring so a
 newly connected TUI can replay recent history, and every subscriber gets a
 live asyncio.Queue. An optional FastAPI app (build_events_app) exposes the
 stream as SSE on /events and recent history on /events/recent.
+
+Tiers (work_206b9187b0): every event carries a `tier` — "ledger" (default:
+the full torrent, the durable record) or "live" (only what a person needs at
+that moment: state transitions, errors and escalations, final verses not
+token deltas, aggregated heartbeats, leader changes, torch receipts). A
+small policy function (live_worthy) decides promotion at emit time; workers
+keep emitting unchanged.
 """
 
 from __future__ import annotations
@@ -37,6 +44,14 @@ EVENT_TYPES = (
 
 _RING_DEFAULT = 500
 
+# Two plainly named tiers (work_206b9187b0): "ledger" is the default — the
+# full torrent, the durable record. "live" is only what a person needs at
+# that moment. Promotion from ledger to live is decided by live_worthy() at
+# emit time; explicit tier= on emit() always wins.
+TIER_LEDGER = "ledger"
+TIER_LIVE = "live"
+TIERS = (TIER_LEDGER, TIER_LIVE)
+
 
 @dataclass
 class ValleyEvent:
@@ -48,9 +63,60 @@ class ValleyEvent:
     campfire: str = ""
     torch_id: str = ""
     detail: Dict[str, Any] = field(default_factory=dict)
+    tier: str = TIER_LEDGER
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), default=str)
+
+
+def live_worthy(ev: "ValleyEvent") -> bool:
+    """Small promotion policy (work_206b9187b0): decide at emit time whether
+    an event belongs on the "live" tier — only what a person needs at that
+    moment. Everything else stays on the "ledger" tier (the full torrent,
+    the durable record). Workers keep emitting unchanged; this runs inside
+    EventBus.emit when no explicit tier was passed.
+
+    Live-worthy: state transitions, errors and escalations, final verses
+    (not token deltas), aggregated heartbeats, leader changes, torch
+    receipts.
+    """
+    try:
+        etype = str(getattr(ev, "type", "") or "")
+        detail = getattr(ev, "detail", None) or {}
+        text = str(getattr(ev, "text", "") or "")
+
+        # Valley lifecycle = state transitions.
+        if etype in ("valley_started", "valley_stopped", "campfire_assigned"):
+            return True
+        # Torch receipts: a torch arriving or completing is a receipt a
+        # person needs; per-campfire torch progress churn is not.
+        if etype in ("torch_received", "torch_completed"):
+            return True
+        # Leader changes / leader words.
+        if etype == "leader_say":
+            return True
+        # Errors and escalations, wherever they surface.
+        if etype in ("tool_finished", "command_output") and detail.get("error"):
+            return True
+        if "error" in etype or "escalat" in etype or "fail" in etype:
+            return True
+        if detail.get("escalate") or detail.get("level") in ("error", "critical"):
+            return True
+        # Final verses, not token deltas: a verse/turn completing is live;
+        # streaming token deltas are ledger-only.
+        if etype == "agent_say" and (detail.get("final") or detail.get("done") or "final" in text.lower()):
+            return True
+        if "token" in etype or detail.get("delta") is not None or detail.get("token_delta"):
+            return False
+        # Aggregated heartbeats only: a heartbeat carrying an aggregate
+        # summary is live; per-tick heartbeats are ledger-only.
+        if "heartbeat" in etype or "heartbeat" in text.lower():
+            return bool(detail.get("aggregate") or detail.get("summary") or detail.get("aggregated"))
+        # Steward patrol noise stays on the ledger unless it escalates.
+        return False
+    except Exception:
+        # The bus never raises; on any surprise, keep the durable default.
+        return False
 
 
 class EventBus:
@@ -72,6 +138,7 @@ class EventBus:
         campfire: str = "",
         torch_id: str = "",
         detail: Optional[Dict[str, Any]] = None,
+        tier: Optional[str] = None,
     ) -> ValleyEvent:
         if type not in EVENT_TYPES:
             type = "agent_say"
@@ -83,28 +150,59 @@ class EventBus:
             torch_id=torch_id,
             detail=detail or {},
         )
+        # Tier (work_206b9187b0): explicit tier= wins; otherwise the small
+        # policy function decides promotion at emit time. Workers keep
+        # emitting unchanged — they pass no tier and get the policy verdict.
+        if tier in TIERS:
+            ev.tier = tier
+        else:
+            ev.tier = TIER_LIVE if live_worthy(ev) else TIER_LEDGER
         self._counter += 1
         self._ring.append(ev)
         if len(self._ring) > self._ring_size:
             del self._ring[: len(self._ring) - self._ring_size]
-        for q in list(self._subs):
+        for sub in list(self._subs):
+            # Tiered subscriptions are stored as (queue, tier) tuples and
+            # plain subscriptions as the bare queue (work_206b9187b0).
+            # Deliver to a tiered subscriber only when the event's tier
+            # matches; an untiered subscriber keeps receiving the full
+            # torrent (ledger + live), unchanged behavior.
+            q = sub[0] if isinstance(sub, tuple) else sub
+            want = sub[1] if isinstance(sub, tuple) else None
+            if want is not None and ev.tier != want:
+                continue
             try:
                 q.put_nowait(ev)
             except Exception:
                 pass
         return ev
 
-    def recent(self, limit: int = 100) -> List[ValleyEvent]:
-        return list(self._ring[-max(1, int(limit)):])
+    def recent(self, limit: int = 100, tier: Optional[str] = None) -> List[ValleyEvent]:
+        """Recent events, optionally filtered to one tier (work_206b9187b0):
+        a live consumer asks for tier="live"; the durable record reads all."""
+        evs = list(self._ring[-max(1, int(limit)):])
+        if tier in TIERS:
+            evs = [e for e in evs if e.tier == tier]
+        return evs
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self, tier: Optional[str] = None) -> asyncio.Queue:
+        """Subscribe to the bus. With tier="live" the queue receives only
+        live-tier events (what a person needs at that moment); with no tier
+        it receives the full torrent (ledger + live), unchanged behavior."""
         q: asyncio.Queue = asyncio.Queue(maxsize=1000)
-        self._subs.append(q)
+        if tier in TIERS:
+            self._subs.append((q, tier))  # type: ignore[arg-type]
+        else:
+            self._subs.append(q)
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         try:
-            self._subs.remove(q)
+            for i, sub in enumerate(list(self._subs)):
+                qt = sub[0] if isinstance(sub, tuple) else sub
+                if qt is q:
+                    del self._subs[i]
+                    return
         except Exception:
             pass
 
@@ -138,17 +236,19 @@ def build_events_app(bus: EventBus, send_torch=None) -> FastAPI:
             return {"error": str(e)[:300]}
 
     @app.get("/events/recent")
-    async def recent(limit: int = 100):
-        return {"events": [e.to_json() for e in bus.recent(limit)]}
+    async def recent(limit: int = 100, tier: Optional[str] = None):
+        # tier="live" serves only what a person needs at that moment
+        # (work_206b9187b0); default serves the full torrent.
+        return {"events": [e.to_json() for e in bus.recent(limit, tier=tier)]}
 
     @app.get("/events")
-    async def stream():
-        q = bus.subscribe()
+    async def stream(tier: Optional[str] = None):
+        q = bus.subscribe(tier=tier)
 
         async def gen():
             try:
                 yield "retry: 3000\n\n"
-                for ev in bus.recent(50):
+                for ev in bus.recent(50, tier=tier):
                     yield f"data: {ev.to_json()}\n\n"
                 while True:
                     try:
