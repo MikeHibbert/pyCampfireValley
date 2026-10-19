@@ -1,6 +1,8 @@
 import asyncio, sys
 sys.path.insert(0, r"C:\Users\Mike\Documents\Python\CampfireValley")
-from campfirevalley.events import EventBus, build_events_app, EVENT_TYPES
+from campfirevalley.events import (
+    EventBus, build_events_app, EVENT_TYPES, TIER_LIVE, TIER_LEDGER,
+)
 
 def test_emit_ring_recent():
     bus = EventBus(ring_size=10)
@@ -37,11 +39,18 @@ def test_sse_app():
     bus = EventBus()
     app = build_events_app(bus)
     c = TestClient(app)
-    bus.emit("agent_say", "hi there")
+    # WHY (work_c067bee3d2-s1): /events/recent now defaults to the live
+    # replay (was the full torrent), so the fixture event is emitted
+    # live-tier to appear in the default replay; the torrent stays
+    # reachable via an explicit ?tier=ledger ask.
+    bus.emit("agent_say", "hi there", tier=TIER_LIVE)
     r = c.get("/events/recent?limit=5")
     assert r.status_code == 200
     body = r.json()
     assert body["events"] and "hi there" in body["events"][-1]
+    bus.emit("agent_say", "ledger chatter")  # default tier -> ledger
+    ledger = c.get("/events/recent?tier=ledger&limit=5").json()
+    assert any("ledger chatter" in e for e in ledger["events"])
     # WHY (work_206b9187b0-s1, declared-work discipline): the original test
     # streamed GET /events — an infinite SSE response — via TestClient.
     # Observed live twice: all 5 smoke tests pass, then the pytest process

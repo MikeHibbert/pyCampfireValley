@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from urllib.parse import quote
 from typing import Optional
 
 import httpx
@@ -82,12 +83,31 @@ def _render(state: TuiState):
     return Group(activity_panel, task_panel, chat_panel)
 
 
-async def run_tui(base_url: str, folder: str = "") -> None:
+async def run_tui(base_url: str, folder: str = "", campfire: str = "", topics: str = "") -> None:
     """Consume the valley SSE stream and render live panels."""
     console = Console()
     state = TuiState()
     state.leader_name = await _fetch_leader_name(base_url) or state.leader_name
     url = EVENT_URL.format(base=base_url.rstrip("/"))
+    # Topic declaration (work_8648d80e16-s2): the TUI declares its topics
+    # using the routing keys the events already carry (topic_of(): torch_id
+    # set -> "torch", else campfire set -> "campfire", else "valley"), so the
+    # bus routes only those instead of the full broadcast torrent. A
+    # --campfire TUI auto-declares the "campfire" topic - every event
+    # carrying that campfire value lives on that topic - and --topics
+    # overrides explicitly (comma-separated valley/campfire/torch). Blank
+    # declaration = everything, the unchanged backward-compatible behavior.
+    params = []
+    if campfire:
+        # work_c067bee3d2: narrow the live-tier stream to the campfire this TUI drives.
+        params.append("campfire=" + quote(campfire))
+    declared = [t.strip() for t in topics.split(",") if t.strip()] if topics else []
+    if not declared and campfire:
+        declared = ["campfire"]
+    if declared:
+        params.append("topics=" + quote(",".join(declared)))
+    if params:
+        url = url + "?" + "&".join(params)
     console.print("[bold]CampfireValley TUI[/] - listening to " + url)
     if folder:
         console.print("[bold green]Bound to folder:[/] " + folder + "  (type a request + Enter to send it as a torch)")
@@ -180,4 +200,14 @@ def register(parser: argparse.ArgumentParser, subparsers) -> None:
         default="",
         help="Bind a local project folder - typed requests are sent as folder torches",
     )
-    tui_parser.set_defaults(func=lambda a: asyncio.run(run_tui(a.url, folder=a.folder)))
+    tui_parser.add_argument(
+        "--campfire",
+        default="",
+        help="Narrow the live stream to one campfire (the one this TUI drives)",
+    )
+    tui_parser.add_argument(
+        "--topics",
+        default="",
+        help="Declare bus-level topics (valley/campfire/torch, comma-separated) - the bus routes only these; blank = full torrent",
+    )
+    tui_parser.set_defaults(func=lambda a: asyncio.run(run_tui(a.url, folder=a.folder, campfire=a.campfire, topics=a.topics)))
