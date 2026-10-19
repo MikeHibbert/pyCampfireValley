@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-10-19
+### Added
+- Events: tier the bus — `tier` field on emitted events (`ledger` by default; person-relevant events promoted to `interactive` by policy), full fire-hose stays on the ledger tier
+- Events: topic-keyed subscription routing (`valley` / `campfire` / `torch_id` fields) so browsers and watchers can subscribe to what they need instead of drinking every broadcast
+### Changed
+- Module `__version__` now tracks the release version (was stale at 1.2.3 since the 1.2.x dist bumps went through pyproject only)
+
 ## [1.2.8] - 2026-09-15
 ### Changed
 - Google (Gmail) OAuth: default Gmail scopes widened to include `gmail.send`, so tokens minted through the consent flow can send mail (outbound email leg for notify-on-complete / reply-inbox protocols)
