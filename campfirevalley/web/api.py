@@ -4506,6 +4506,266 @@ async def startup_event():
     asyncio.create_task(update_loop())
 
 
+# ---------------------------------------------------------------------------
+# The Valley Contract - bare tier (agent handoff surface for AndruIDE)
+#
+# Contract v1: docs/valley-contract.md (PR #25). A bare valley exposes the
+# agent-executor tier only: /ready, POST /agent/handoff, GET /kumbayas/runs
+# [+ /{id}], POST /kumbayas/runs/{id}/cancel, POST /chat. The /work surface
+# is Andrew-tier and MUST stay absent here (contract conformance enforces the
+# refusal). Run shape matches the contract; unknown fields are ignored by
+# clients, so extras added below are safe. (Father, 12 Nov 2026: bare
+# pyCampfireValley = work executor for AndruIDE calls.)
+# ---------------------------------------------------------------------------
+
+_contract_runs: Dict[str, Dict[str, Any]] = {}
+_contract_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _contract_evict() -> None:
+    """Keep the newest 200 runs; the registry is in-memory and per-process."""
+    overflow = len(_contract_runs) - 200
+    if overflow > 0:
+        for run_id in list(_contract_runs)[:overflow]:
+            _contract_runs.pop(run_id, None)
+            _contract_tasks.pop(run_id, None)
+
+
+def _contract_finalize_cancel(run: Dict[str, Any]) -> None:
+    run["status"] = "cancelled"
+    verse = run["verses"][0] if run.get("verses") else {}
+    verse["status"] = "cancelled"
+    verse["error"] = "cancelled by request"
+    run["updated_at"] = _contract_now()
+    run["finished_at"] = _contract_now()
+
+
+async def _contract_stop_task(run: Dict[str, Any]) -> None:
+    """Cancel the run's task and make the record land as cancelled.
+
+    A task cancelled before its first tick never executes its body, so the
+    finally-block never fires; after awaiting the cancellation we finish the
+    record here if the executor didn't.
+    """
+    task = _contract_tasks.get(run.get("id") or "")
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+    if run.get("status") in (None, "", "running"):
+        _contract_finalize_cancel(run)
+
+
+def _contract_now() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _contract_pick_campfire(explicit: str = "") -> Optional[str]:
+    if not current_valley:
+        return None
+    name = (explicit or "").strip()
+    campfires = getattr(current_valley, "campfires", {}) or {}
+    if name:
+        return name if name in campfires else None
+    try:
+        visible = list((current_valley.config.campfires or {}).get("visible") or [])
+    except Exception:
+        visible = []
+    for candidate in visible:
+        if candidate in campfires:
+            return candidate
+    return next(iter(campfires), None)  # first configured campfire, if any
+
+
+def _torch_reply_text(data: Any) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    if isinstance(data, dict):
+        for key in ("llm_response", "response", "text", "reply"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return json.dumps(data)
+    return str(data)
+
+
+def _run_public(run: Dict[str, Any]) -> Dict[str, Any]:
+    return copy.deepcopy(run)
+
+
+@app.get("/ready")
+async def contract_ready():
+    status = "ready" if current_valley else "unknown"
+    if current_valley is not None and getattr(current_valley, "_running", True) is False:
+        status = "stopped"
+    return {
+        "service": str(getattr(current_valley, "name", "") or ""),
+        "status": status,
+        "draining": False,
+        "contract": 1,
+        "capabilities": ["agent"],
+    }
+
+
+@app.post("/agent/handoff", status_code=202)
+async def agent_handoff(payload: dict = Body(...)):
+    """Contract bare tier: hand a unit of work to the valley.
+
+    Body: {title, prompt, details?, session_id?, campfire?} -> 202 {id}.
+    The run appears in GET /kumbayas/runs immediately (status running) and
+    resolves to completed/failed as the campfire finishes the torch.
+    """
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+    if not current_valley:
+        raise HTTPException(status_code=409, detail="no campers configured")
+    campfire = _contract_pick_campfire(str(payload.get("campfire") or ""))
+    if not campfire:
+        raise HTTPException(status_code=409, detail="no campers configured")
+    title = (str(payload.get("title") or "").strip() or "agent-handoff")[:80]
+    session_id = (str(payload.get("session_id") or "").strip() or f"agent:{uuid.uuid4().hex[:8]}")
+    run_id = str(uuid.uuid4())
+    created = _contract_now()
+    run: Dict[str, Any] = {
+        "id": run_id,
+        "kumbaya": title,
+        "status": "running",
+        "session_id": session_id,
+        "created_at": created,
+        "updated_at": created,
+        "finished_at": None,
+        "campfire": campfire,
+        "verses": [
+            {"verse": "handoff", "kind": "agent", "status": "running", "result": None,
+             "checkpoint": None, "error": None}
+        ],
+    }
+    _contract_runs[run_id] = run
+    _contract_evict()
+
+    details = payload.get("details")
+    if isinstance(details, dict) and details:
+        prompt = f"{prompt}\n\nContext:\n" + "\n".join(
+            f"- {k}: {v}" for k, v in list(details.items())[:20]
+        )
+
+    async def _execute() -> None:
+        record = _contract_runs.get(run_id)
+        if record is None:
+            return
+        record["verses"][0]["status"] = "running"
+        try:
+            torch = Torch(
+                claim="agent_handoff",
+                source_campfire="service",
+                channel="service",
+                torch_id=f"agent_{run_id}",
+                sender_valley=str(payload.get("sender_valley") or "andruide"),
+                target_address=f"valley:{current_valley.name}/{campfire}",
+                data={"text": prompt, "original_text": prompt},
+                signature="service_placeholder",
+                metadata={"run_id": run_id, "session_id": session_id},
+            )
+            resp = await current_valley.process_torch(torch)
+            text = _torch_reply_text(getattr(resp, "data", None))
+            if resp is None or not text:
+                raise RuntimeError("campfire returned no response")
+            record["status"] = "completed"
+            record["result"] = text
+            verse = record["verses"][0]
+            verse["status"] = "completed"
+            verse["result"] = text[:4000]
+        except asyncio.CancelledError:
+            record["status"] = "cancelled"
+            record["verses"][0]["status"] = "cancelled"
+            record["verses"][0]["error"] = "cancelled by request"
+            raise
+        except Exception as exc:
+            record["status"] = "failed"
+            record["error"] = str(exc)
+            verse = record["verses"][0]
+            verse["status"] = "failed"
+            verse["error"] = str(exc)
+        finally:
+            record["updated_at"] = _contract_now()
+            record["finished_at"] = _contract_now()
+            _contract_tasks.pop(run_id, None)
+
+    _contract_tasks[run_id] = asyncio.create_task(_execute())
+    return {"id": run_id}
+
+
+@app.get("/kumbayas/runs")
+async def contract_runs_list():
+    runs = sorted(_contract_runs.values(), key=lambda r: r.get("created_at") or "", reverse=True)
+    return [_run_public(r) for r in runs]
+
+
+@app.get("/kumbayas/runs/{run_id}")
+async def contract_run_detail(run_id: str):
+    run = _contract_runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return _run_public(run)
+
+
+@app.post("/kumbayas/runs/{run_id}/cancel")
+async def contract_cancel_run(run_id: str):
+    run = _contract_runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    task = _contract_tasks.get(run_id)
+    if task is not None and not task.done():
+        await _contract_stop_task(run)
+    if run["status"] == "running":  # task was never started; nothing to await
+        _contract_finalize_cancel(run)
+    return {"status": run["status"], "id": run_id}
+
+
+@app.post("/chat")
+async def contract_chat(payload: dict = Body(...)):
+    """Contract both-tier shape: a synchronous turn with the valley.
+
+    interrupt=true first stops any running handoff run for this session
+    (same semantics Andrew's /chat proved live on 12 Nov).
+    """
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    session_id = str(payload.get("session_id") or "").strip()
+    if session_id and bool(payload.get("interrupt")):
+        for other_id, other in list(_contract_runs.items()):
+            if other.get("session_id") == session_id and other.get("status") == "running":
+                await _contract_stop_task(other)
+                if other.get("status") == "running" and other_id not in _contract_tasks:
+                    _contract_finalize_cancel(other)
+    if not current_valley:
+        raise HTTPException(status_code=409, detail="no campers configured")
+    campfire = _contract_pick_campfire()
+    if not campfire:
+        raise HTTPException(status_code=409, detail="no campers configured")
+    torch = Torch(
+        claim="service_request",
+        source_campfire="service",
+        channel="service",
+        torch_id=f"service_{uuid.uuid4().hex}",
+        sender_valley="andruide",
+        target_address=f"valley:{current_valley.name}/{campfire}",
+        data={"text": message},
+        signature="service_placeholder",
+    )
+    resp = await current_valley.process_torch(torch)
+    return {"reply": _torch_reply_text(getattr(resp, "data", None))}
+
+
 def create_web_server(valley: Valley, host: str = "0.0.0.0", port: int = 8000):
     """Create and configure the web server for a valley"""
     set_valley(valley)
