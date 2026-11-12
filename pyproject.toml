@@ -63,6 +63,12 @@ optional = [
     "elasticsearch>=8.0.0",
     "grafana-api>=1.0.3",
 ]
+# The Valley Contract's mDNS handshake (campfirevalley/mdns.py): discovery is
+# always optional — without this extra the valley serves, it simply is not
+# findable on the network.
+mdns = [
+    "zeroconf>=0.150.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/MikeHibbert/pyCamperValley"
