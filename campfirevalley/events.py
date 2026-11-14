@@ -30,7 +30,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, Iterable, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
 EVENT_TYPES = (
@@ -57,6 +57,16 @@ _RING_DEFAULT = 500
 TIER_LEDGER = "ledger"
 TIER_LIVE = "live"
 TIERS = (TIER_LEDGER, TIER_LIVE)
+
+# Topic declarations are a closed set (work_8648d80e16-s1-s2, regression
+# repair 14 Nov 2026): the bus routes by topic bucket, so a misspelled
+# topic would silently starve its subscriber forever — a queue that never
+# receives, streaming keepalives until someone reads logs. Strict
+# validation ("never silent starvation") beats permissive routing here:
+# an unknown declaration raises ValueError at subscribe time, which the
+# /events route maps to HTTP 400 so a bad client fails fast instead of
+# hanging. "*" is the explicit all-topics declaration, not a topic.
+TOPICS = ("valley", "campfire", "torch")
 
 
 @dataclass
@@ -235,6 +245,17 @@ class EventBus:
         if isinstance(topics, str):
             # Tolerate a comma-separated string declaration ("torch,valley").
             topics = [t.strip() for t in topics.split(",") if t.strip()]
+        # Strict declaration check (work_8648d80e16-s1-s2, regression repair
+        # 14 Nov 2026): anything outside TOPICS (or "*") raises instead of
+        # creating a bucket no event will ever route into — silent starvation
+        # was the failure this repairs; the test suite pins the ValueError.
+        if topics and "*" not in topics:
+            unknown = [str(t) for t in topics if str(t) not in TOPICS]
+            if unknown:
+                raise ValueError(
+                    "unknown topic declaration: %s (known: %s, or '*')"
+                    % (", ".join(unknown), ", ".join(TOPICS))
+                )
         entry = (q, tier) if tier in TIERS else q
         if not topics or "*" in topics:
             self._subs.setdefault("*", []).append(entry)
@@ -346,7 +367,15 @@ def build_events_app(bus: EventBus, send_torch=None) -> FastAPI:
             [t.strip() for t in topics.split(",") if t.strip()] if topics else None
         )
         matches = value_filter(campfire, torch)
-        q = bus.subscribe(tier=eff_tier, topics=topic_set)
+        # Validate the declaration BEFORE streaming (work_8648d80e16-s1-s2,
+        # regression repair 14 Nov 2026): the bus raises ValueError on an
+        # unknown topic; mapped to 400 here. Previously the subscribe
+        # silently succeeded, the generator streamed keepalives forever and
+        # every test/browser client hung — fail fast at the door.
+        try:
+            q = bus.subscribe(tier=eff_tier, topics=topic_set)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         async def gen():
             try:
